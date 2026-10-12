@@ -44,10 +44,10 @@ TV_LOGIN_WEB_BASE_URL=...
 
 ### Build on GitHub (no local setup)
 
-The workflow `.github/workflows/build-tpk.yml` builds the full `NuvioTpk` package (Tizen 8+/9) on GitHub's servers. It only runs when you start it by hand.
+The workflow `.github/workflows/build-tpk.yml` builds the full `NuvioTpk` package (Tizen 8+/9) on GitHub's servers. It runs on every push, and you can also start it by hand.
 
 1. **Add the keys once:** repo **Settings → Secrets and variables → Actions → New repository secret**, name it `LOCAL_PROPERTIES` and paste the `local.properties` lines above. The value is hidden after saving and masked in logs. Without it the build still runs, but without API keys.
-2. **Start a build:** **Actions → Build TPK → Run workflow**, type the branch to build (default `master`) and press the green button.
+2. **Start a build:** push to any branch, or use **Actions → Build TPK → Run workflow** (choose the branch under "Use workflow from"). The button only appears once the workflow is on `master`, and a branch needs the workflow file to build on push, so merge `master` into older branches first.
 3. **Download the result:** open the finished run, scroll to **Artifacts** and download `NuvioTpk`. Unzip it to get the `.tpk`. Artifacts are kept for 90 days.
 
 The first build is slow (roughly 1–2 hours) because the C code is compiled under ARM emulation; later runs reuse the cached libraries. If a build fails, the last 60 lines of the log are shown at the top of the run page.

@@ -4,18 +4,21 @@ name: Build TPK
 # `NV_TPK_PACOTES=NuvioTpk bash tools/tpk.sh` does on a computer, and uploads
 # the .tpk as a downloadable artifact.
 #
-# Manual only: Actions tab -> Build TPK -> Run workflow. Pick the branch to
-# build in the "Branch to build" box; it never runs on push.
+# Runs on every push to any branch, and by hand: Actions tab -> Build TPK ->
+# Run workflow (that button shows once this file is on the default branch).
+# A new push to the same branch cancels the build still running for it.
 
 on:
+  push:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Branch to build"
-        default: "master"
       pacotes:
         description: "Packages to build (space separated)"
         default: "NuvioTpk"
+
+concurrency:
+  group: build-tpk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -31,8 +34,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.ref }}
 
       # tools/tpk.sh compiles libnuvio.so inside a linux/arm/v5 container.
       - name: Enable ARM emulation for Docker
