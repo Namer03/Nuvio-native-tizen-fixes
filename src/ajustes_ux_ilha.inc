@@ -5,7 +5,7 @@
 // --- INSPETOR -----------------------------------------------------------------------
 static const char *ajTipoRotulo(int op) {
   if (inativa(op)) return "Indisponível agora";
-  if (op == AJ_ENVIAR_LOG) return "Ação";
+  if (op == AJ_ENVIAR_LOG || op == AJ_EXPORTAR_LOG) return "Ação";
   switch (ajTipo(op)) {
     case AJL_TOG: return "Ligar ou desligar";
     case AJL_ACAO: return "Abre uma tela";
@@ -46,6 +46,7 @@ static int ajDicasDe(int op, AjDica *d) {
       d[n++] = (AjDica){ "OK", liga == 2 ? "Ligar as duas" : liga == 1 ? "Ligar a outra" : "Mostrar" };
     }
     else if (op == AJ_ENVIAR_LOG && !inativa(op)) d[n++] = (AjDica){ "OK", "Enviar" };
+    else if (op == AJ_EXPORTAR_LOG && !inativa(op)) d[n++] = (AjDica){ "OK", "Exportar" };
     else if (op >= 0 && !inativa(op)) switch (ajTipo(op)) {
       case AJL_TOG: d[n++] = (AjDica){ "OK", "Mudar" }; break;
       case AJL_ESC: d[n++] = (AjDica){ "OK", op == AJ_TEMA ? "Mudar" : "Escolher" }; break;
@@ -1013,7 +1014,7 @@ static void aj2InspetorDiferencas(void) {
 // --- A TELA ---------------------------------------------------------------------
 static int ajModalAberto(void) {
   return (uxEditor && (uxRestaurar || uxAvisoRisco || uxEditor == 2)) || riscoFolha || frAberta || ajVinculoAtivo() ||
-         teclado_aberto() || registro_envio_aberto() || apoioAberto;
+         teclado_aberto() || registro_envio_aberto() || registro_exportar_aberto() || apoioAberto;
 }
 static void ajDesenharTela(void) {
   int modal = ajModalAberto();
@@ -1071,6 +1072,7 @@ static void ajDesenharTela(void) {
   }
   ajDesenharModais();
   if (registro_envio_aberto()) registro_envio_desenhar();
+  if (registro_exportar_aberto()) registro_exportar_desenhar();
 }
 
 // --- ADDONS (addonsui.c) COMO UMA CATEGORIA DE AJUSTES ------------------------------

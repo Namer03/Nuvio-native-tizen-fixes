@@ -80,6 +80,11 @@ float celb_embutido_altura(int dono, float w, float hMax);
 // do dono.
 void  celb_desenhar_em(int dono, GfxRect r, float alpha);
 
+// So o QR (moldura branca + codigo) com o canto em (x, y), para outros paineis
+// (exportar registro). celb_qr_lado = o lado total, moldura incluida.
+float celb_qr_lado(void);
+void  celb_qr_desenhar(const char *url, float x, float y, float alpha);
+
 // --- testes ---
 // Onde o cartao (ou o bloco hospedado) ficou no ultimo desenho (0 se fechado).
 GfxRect celb_cartao_rect(void);

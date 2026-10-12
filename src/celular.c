@@ -9,6 +9,7 @@ void celular_fechar(void) {}
 int  celular_estado(void) { return CEL_PARADO; }
 const char *celular_url(void) { return ""; }
 int  celular_pegar(char *d, size_t n) { (void)d; (void)n; return 0; }
+int  celular_exportar_abrir(const char *t, const char *x, size_t n) { (void)t; (void)x; (void)n; return 0; }
 int  celular_porta(void) { return 0; }
 #else
 
@@ -50,6 +51,9 @@ static int  temRecebido;
 static time_t expira;
 // Montadas na abertura (thread do app, por causa do i18n); o fio so le.
 static char pagina[12288], pagEnviado[8192], pagUsado[8192];
+// Modo exportar: o texto a entregar (copia, zerada ao fechar).
+static char  *expTexto;
+static size_t expN;
 
 int celular_disponivel(void) { return 1; }
 int celular_estado(void) { return estado; }
@@ -199,6 +203,23 @@ static void estiloAcento(char *dst, size_t n) {
            R, G, B, ajustes_tinta_foco() > 128 ? "#fff" : "#111", R, G, B);
 }
 
+static void montarPaginas(const char *titulo);
+static void montarPaginaExport(const char *titulo) {
+  char t[256], h1[256], baixar[128], cv[128];
+  montarPaginas(titulo);   // pagEnviado/pagUsado; a `pagina` e trocada abaixo
+  estiloAcento(cv, sizeof cv);
+  escapar(t, sizeof t, i18n(titulo && *titulo ? titulo : "Exportar registro"));
+  escapar(h1, sizeof h1, i18n("Toque para baixar o registro. Ele fica salvo neste celular."));
+  escapar(baixar, sizeof baixar, i18n("Baixar registro"));
+  snprintf(pagina, sizeof pagina,
+    "<!doctype html><html lang='%s'><head><meta charset=utf-8><title>%s</title>" CEL_ESTILO "%s"
+    "</head><body><main>" CEL_MARCA "<h1>%s</h1><p>%s</p>"
+    "<a class=ok href='/%s/" CEL_EXPORT_NOME "' download style='display:block;text-align:center;"
+    "text-decoration:none;font:600 18px system-ui,sans-serif;padding:16px 22px;border-radius:999px'>%s</a>"
+    "</main></body></html>",
+    idioma_iso(ajustes_idioma()), t, cv, t, h1, token, baixar);
+}
+
 static void montarPaginas(const char *titulo) {
   char t[256], h1[256], ph[256], colar[96], enviar[128], fim[384], usado[384], cel[128], cv[128];
   int lang = ajustes_idioma();
@@ -263,12 +284,25 @@ static int esperar(int fd, long prazo) {
   }
 }
 
-static void enviarTudo(int c, const char *b, size_t n) {
+static int enviarTudo(int c, const char *b, size_t n) {
   while (n) {
     ssize_t w = send(c, b, n, MSG_NOSIGNAL);
-    if (w <= 0) return;
+    if (w <= 0) return 0;
     b += w; n -= (size_t)w;
   }
+  return 1;
+}
+
+// O ARQUIVO EXPORTADO. 1 = foi inteiro (so no GET: o HEAD nao manda corpo).
+static int responderArquivo(int c, int cabeca) {
+  char cab[512];
+  int k = snprintf(cab, sizeof cab,
+    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %zu\r\n"
+    "Content-Disposition: attachment; filename=\"" CEL_EXPORT_NOME "\"\r\n"
+    "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: same-origin\r\n"
+    "Connection: close\r\n\r\n", expN);
+  if (!enviarTudo(c, cab, (size_t)k)) return 0;
+  return cabeca ? 0 : enviarTudo(c, expTexto, expN);
 }
 
 static void responder(int c, int cod, const char *corpo) {
@@ -388,6 +422,13 @@ static int atender(int c, int *erros) {
     }
   }
   { char *q = strchr(caminho, '?'); if (q) *q = 0; }
+  if (expTexto && caminho[0] == '/' && !strncmp(caminho + 1, token, CEL_TOKEN_N) &&
+      !strcmp(caminho + 1 + CEL_TOKEN_N, "/" CEL_EXPORT_NOME)) {
+    if (strcmp(metodo, "GET") && strcmp(metodo, "HEAD")) { responder(c, 405, NULL); return 0; }
+    r = responderArquivo(c, metodo[0] == 'H');
+    if (r) { estado = CEL_RECEBIDO; puts("[celular] registro baixado"); }
+    return r;
+  }
   if (caminho[0] != '/' || strcmp(caminho + 1, token)) {
     // O favicon que todo navegador pede nao e tentativa de adivinhar o token.
     if (strcmp(caminho, "/favicon.ico")) (*erros)++;
@@ -401,7 +442,7 @@ static int atender(int c, int *erros) {
     responder(c, 200, metodo[0] == 'G' ? pagina : NULL);
     return 0;
   }
-  if (strcmp(metodo, "POST")) { responder(c, 405, NULL); return 0; }
+  if (strcmp(metodo, "POST") || expTexto) { responder(c, 405, NULL); return 0; }
 
   // POST: tamanho declarado, dentro do teto, e corpo de formulario.
   if (!cabecalho(cab, "Content-Length", tam, sizeof tam)) { responder(c, 400, pagUsado); return 0; }
@@ -452,6 +493,8 @@ static void *servir(void *arg) {
 #ifdef SO_NOSIGPIPE
       { int um = 1; setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &um, sizeof um); }
 #endif
+      { struct timeval tv; tv.tv_sec = 10; tv.tv_usec = 0;   // celular lento nao prende o fio
+        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); }
       if (atender(c, &erros)) { close(c); break; }
       close(c);
       if (erros >= CEL_ERROS_MAX) {
@@ -476,18 +519,18 @@ void celular_fechar(void) {
   memset(recebido, 0, sizeof recebido);
   temRecebido = 0;
   pthread_mutex_unlock(&trava);
+  if (expTexto) { memset(expTexto, 0, expN); free(expTexto); expTexto = NULL; expN = 0; }
   memset(token, 0, sizeof token);
   url[0] = 0;
   porta = 0;
   estado = CEL_PARADO;
 }
 
-int celular_abrir(const char *titulo) {
+static int abrirServidor(const char *titulo) {
   struct sockaddr_in a;
   socklen_t tam = sizeof a;
   char ip[48];
   int um = 1;
-  celular_fechar();
   if (!ipLan(ip, sizeof ip)) { puts("[celular] sem IP de rede local"); return 0; }
   if (!gerarToken() || pipe(acorda)) { acorda[0] = acorda[1] = -1; return 0; }
   ouvir = socket(AF_INET, SOCK_STREAM, 0);
@@ -508,7 +551,7 @@ int celular_abrir(const char *titulo) {
   snprintf(hostLocal, sizeof hostLocal, "127.0.0.1:%d", porta);
   snprintf(origem, sizeof origem, "http://%s", hostLan);
   snprintf(url, sizeof url, "http://%s/%s", hostLan, token);
-  montarPaginas(titulo);
+  if (expTexto) montarPaginaExport(titulo); else montarPaginas(titulo);
   expira = time(NULL) + CEL_VALIDADE_S;
   estado = CEL_ESPERANDO;
   if (pthread_create(&fio, NULL, servir, NULL)) { celular_fechar(); return 0; }
@@ -516,5 +559,21 @@ int celular_abrir(const char *titulo) {
   // Sem IP nem token no log: so que subiu.
   printf("[celular] servidor no ar (porta %d)\n", porta);
   return 1;
+}
+
+int celular_abrir(const char *titulo) {
+  celular_fechar();
+  return abrirServidor(titulo);
+}
+
+int celular_exportar_abrir(const char *titulo, const char *texto, size_t n) {
+  celular_fechar();
+  if (!texto || !n) return 0;
+  expTexto = malloc(n + 1);
+  if (!expTexto) return 0;
+  memcpy(expTexto, texto, n);
+  expTexto[n] = 0;
+  expN = n;
+  return abrirServidor(titulo);   // falhou: celular_fechar() ja soltou o texto
 }
 #endif

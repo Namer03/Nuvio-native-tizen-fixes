@@ -2295,6 +2295,7 @@ void app_evento(const SDL_Event *e) {
   // O painel de envio do registro (Ajustes > Enviar registro, ou o "Enviar
   // agora" do painel): modal, come o teclado enquanto aberto.
   if (registro_envio_evento(e)) return;
+  if (registro_exportar_evento(e)) return;
   // A CENTRAL DE CONTROLE (central.h, CH+ segurado) e uma camada: aberta, come
   // o teclado todo, por cima do player, das folhas e das ilhas.
   if (central_aberta()) { central_evento(e); return; }

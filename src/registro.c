@@ -11,6 +11,10 @@
 #include "avisos.h"
 #include "redesaude.h"
 #include "tex_cache.h"
+#include "celular.h"
+#include "celbotao.h"
+#include "logexport.h"
+#include "resolucao.h"
 #define NV_ESCALA_TELA   // o arquivo inteiro mede pela tela virtual (escala.h)
 #include "escala.h"
 #include "ponteiro.h"
@@ -589,6 +593,7 @@ int registro_evento(const SDL_Event *e) {
 
 #include "registro_ilha.inc"
 #include "registro_envio.inc"
+#include "registro_exportar.inc"
 
 static void registro_desenharCorpo_(void);
 // Camada ampliada (escala.h): o corpo desenha na tela virtual.

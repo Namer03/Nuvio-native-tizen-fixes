@@ -57,6 +57,15 @@ const char *celular_url(void);
 // ate n-1 bytes.
 int  celular_pegar(char *dst, size_t n);
 
+// EXPORTAR (QR "Exportar registro"): o mesmo servidor de uso unico, ao
+// contrario. GET /<token> abre uma pagina com o botao de baixar, e
+// GET /<token>/<nome> entrega `texto` (`n` bytes, copiado aqui) como arquivo;
+// quando o download sai inteiro o servidor fecha (CEL_RECEBIDO). As mesmas
+// travas: token, validade, Host/Origin, limite de caminhos errados. O texto
+// tem de vir ja limpo (logexport.h). 1 = no ar.
+#define CEL_EXPORT_NOME "nuvio-registro.txt"
+int  celular_exportar_abrir(const char *titulo, const char *texto, size_t n);
+
 // --- testes ---
 int  celular_porta(void);
 #endif

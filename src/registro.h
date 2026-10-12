@@ -73,6 +73,13 @@ void registro_envio_abrir(void);
 int  registro_envio_aberto(void);
 int  registro_envio_evento(const SDL_Event *e);   // 1 = consumido
 void registro_envio_desenhar(void);
+// O PAINEL "EXPORTAR REGISTRO" (Ajustes > Sobre e ajuda): o registro, ja sem
+// URLs completas, chaves nem e-mails, baixado pelo celular via QR na mesma
+// rede (celular.h modo exportar). Mesmo contrato do painel de envio.
+void registro_exportar_abrir(void);
+int  registro_exportar_aberto(void);
+int  registro_exportar_evento(const SDL_Event *e);   // 1 = consumido
+void registro_exportar_desenhar(void);
 // Teste do ponteiro (#99): 0 = "Tentar de novo", 1 = "Fechar" (no erro).
 int  registro_envio_teste_foco(void);
 // O fim do log em mono, numa caixa (o "pacote" do mockup): a previa da linha
