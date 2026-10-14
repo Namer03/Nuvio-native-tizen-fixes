@@ -6,19 +6,19 @@ This fork focuses on stability fixes and new features for **Samsung Tizen device
 
 > ⚠️ **Development Status: Active Testing and Setup**
 >
-> Application changes are being integrated and validated. Live feature validation and runtime testing are pending local Nuvio Supabase backend key configuration.
+> Application changes are being integrated into the main application. Live feature validation and runtime testing are pending local Nuvio Supabase backend key configuration.
 
 ---
 
 ## 🛠️ Main Application Fixes
 
-- **Regex Engine Stability:** Core regular-expression stability fixes have been integrated into the main application logic. **Status:** Integrated; awaiting validation.
+- **Regex Engine Stability:** Core regular-expression stability fixes have been integrated into the main application logic. **Status:** Pushed.
+- **Microphone Voice Search:** Adds microphone input capabilities for voice-activated content searches directly within the Tizen interface. **Status:** Pushed.
 
 ## ✨ Features and Roadmap
 
-- **QR Code Local Log Exporter:** Generates an on-screen QR code to simplify exporting application logs from physical TV hardware for debugging. **Status:** Built; awaiting validation.
-- **Microphone Voice Search:** Adds microphone input capabilities for voice-activated content searches directly within the Tizen interface. **Status:** Current focus.
-- **DTS and Dolby TrueHD Downmixing:** Implements audio downmixing to convert high-definition audio tracks into compatible stereo formats, helping prevent silent playback and audio-related playback failures on native TV speakers. **Status:** Planned.
+- **DTS and Dolby TrueHD Downmixing:** Implements audio downmixing to convert high-definition audio tracks into compatible stereo formats, helping prevent silent playback and audio-related playback failures on native TV speakers. **Status:** Main application integration and debugging active.
+- **Source Management and Tab Overhaul:** Plans to rework the "All" tab layout and implement robust source sorting mechanisms. **Status:** Next feature / Planned.
 
 ---
 
