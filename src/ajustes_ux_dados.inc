@@ -200,9 +200,8 @@ static const char *uxSinonimos(int op) {
     case AJ_PROXIMO_AUTO: case AJ_PROXIMO_CONTAGEM: return "proximo episodio automatico autoplay creditos contagem netflix sozinho next episode auto play countdown";
     case AJ_CW_MINIMO: return "minimo continuar assistindo porcentagem percentual entrar fileira retomada progresso quanto assistir comecou piso minimum percent continue watching threshold row";
     case AJ_FONTE_PREPARAR: return "preparar fonte ao abrir titulo antecipar resolver antecipado play instantaneo inicio rapido debrid painel arquivo prepare source ahead instant start";
-    case AJ_FONTE_REUSAR: case AJ_FONTE_REUSAR_PRAZO: return "lembrar fonte escolhida mesma fonte lancamento release grupo episodio prazo dias remember picked source same release";
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO: return "reusar ultimo link sem busca retomar validade cache horas reuse last link cache duration";
-    case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES: return "grupo bingegroup binge proximo episodio mesma fonte sessoes reusar prefer binge group next episode reuse sessions";
+    case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES: return "grupo bingegroup binge proximo episodio mesma fonte lembrar fonte escolhida lancamento release sessoes reusar prefer binge group remember picked source same release next episode reuse sessions";
     case AJ_FONTE_PRECARREGAR: return "precarregar video buffer episodio proximo creditos preload video next episode";
     case AJ_FONTE_CONFERIR_VARIAS: return "conferir varias fontes ao mesmo tempo paralelo paralela simultaneo verificar verificacao automatico rapido inicio debrid painel arquivos parallel check several sources speed";
     case AJ_FONTE_AQUECER: return "aquecer conexoes conexao rede dns tls antecipar preparar abrir titulo inicio rapido lento demora warm preconnect connection network speed";
@@ -268,7 +267,7 @@ static const char *uxCaminhoAntigo(int op) {
     case AJ_HIST_CONTA: case AJ_SOCIAL:
       return "Contas e serviços";
     case AJ_FONTE_MANUAL: case AJ_FONTE_AUTO: case AJ_FONTE_REPOR: case AJ_FONTE_PRIORIDADE: case AJ_FONTE_TOCAR_CONFERINDO: case AJ_FONTE_AQUECER: case AJ_FONTE_CONFERIR_VARIAS: case AJ_FONTE_PREPARAR: case AJ_FONTE_PRECARREGAR:
-    case AJ_FONTE_REUSAR: case AJ_FONTE_REUSAR_PRAZO: case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
+    case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO:
     case AJ_FONTE_HDR: case AJ_FONTE_PRAZO: case AJ_FONTE_TEXTO: case AJ_FONTE_ORDEM_ADDON: case AJ_TAM_MAX: case AJ_TAM_MIN:
     case AJ_FONTE_ESCOPO: case AJ_FONTE_ADDONS_PERM: case AJ_FONTE_PLUGINS_PERM: case AJ_FONTE_OUTROS:

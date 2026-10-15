@@ -1815,14 +1815,13 @@ typedef struct {
 } PreparoQualidade;
 static int preparoGrupoSemPerda(int i, void *u) {
   const PreparoQualidade *p = u;
-  int q, ga = -1;
+  int q;
   for (q = 0; q < p->n && p->ordem[q] != i; q++) {}
   if (q == p->n || p->excl[q] || p->grupo[q] < 0) return 0;
   if (p->melhor < 0 || p->melhor == i) return 1;
-  for (int j = 0; j < p->n; j++) if (p->ordem[j] == p->melhor) { ga = p->grupo[j]; break; }
+  // Como stream_grupo_sem_perda: sem comparar qualidade, so a compatibilidade.
   const Stream *s = &p->fontes[i], *melhor = &p->fontes[p->melhor];
-  return p->grupo[q] <= ga && s->altura >= melhor->altura && s->dolbyVision >= melhor->dolbyVision &&
-         !(p->lg && s->altura == melhor->altura && stream_e_mp4(melhor) && !stream_e_mp4(s));
+  return !(p->lg && s->altura == melhor->altura && stream_e_mp4(melhor) && !stream_e_mp4(s));
 }
 void stream_preparo_definir_episodio(StreamPreparo *p, int t, int e) {
   if (p) { p->debrid.temporada = t; p->debrid.episodio = e; }
@@ -2578,16 +2577,18 @@ int stream_verificar_proxima_vod(int atualIdx, int tentativas, int *conferidas) 
   return stream_verificar_proxima_vod_sessao(atualIdx, tentativas, conferidas, nv_perfil_sessao_ler());
 }
 
+// A FONTE QUE O AUTOMATICO JA TOCOU pode ser seguida aqui? (fontepref.c, a
+// memoria do automatico). Ja nao compara qualidade (dono, 16/10: o que provou
+// que toca manda, e uma "4K" de IA nao a tira): so recusa o que o automatico
+// nao pode tocar (excluida, aviso do addon, barrada pelas regras do dono) e a
+// regra do MP4 da LG na mesma resolucao, que e compatibilidade, nao gosto.
 int stream_grupo_sem_perda(int i) {
-  int a, gi, ga;
+  int a, gi;
   if (i < 0 || i >= n || automaticaExcluida(i) || ehInformativa(&lista[i])) return 0;
   gi = grupoDe(i);
   if (gi < 0) return 0;
   a = automaticoCom(1);
   if (a < 0 || a == i) return 1;
-  ga = grupoDe(a);
-  if (gi > ga) return 0;
-  if (lista[i].altura < lista[a].altura || lista[i].dolbyVision < lista[a].dolbyVision) return 0;
   if (lgMp4Primeiro() && lista[i].altura == lista[a].altura &&
       stream_e_mp4(&lista[a]) && !stream_e_mp4(&lista[i])) return 0;
   return 1;

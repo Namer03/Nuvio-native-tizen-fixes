@@ -44,7 +44,6 @@ static void uxListarDiferencas(void) {
 static int uxRequisito(int op) {
   switch (op) {
     case AJ_PROXIMO_CONTAGEM: return AJ_PROXIMO_AUTO;
-    case AJ_FONTE_REUSAR_PRAZO: return AJ_FONTE_REUSAR;
     case AJ_FONTE_GRUPO_SESSOES: return AJ_FONTE_GRUPO;
     case AJ_LINK_PRAZO: return AJ_LINK_REUSAR;
     case AJ_VIDRO_CONTORNO: case AJ_VIDRO_OPAC: case AJ_VIDRO_FOSCO: return AJ_VIDRO;

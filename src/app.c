@@ -2580,18 +2580,16 @@ static void atualizarMotivoInicio(void) {
     if (txt[0]) { printf("[fonte] ilha: %s (%u ms)\n", txt, (unsigned)sn.desdeMs); fflush(stdout); }
   }
 }
-// A FONTE DO AUTOMATICO TOCOU: guarda o bingeGroup dela (fontepref.h). So
-// depois de o video estar pronto e andando — uma fonte que foi escolhida e
-// falhou na conferencia, ou que o player nao abriu, nunca chega aqui. Serie
-// apenas (filme nao tem episodio seguinte). Uma vez por fonte/lista.
+// A FONTE DO AUTOMATICO TOCOU: vira a preferencia do titulo quando nao ha
+// escolha a mao em vigor (fontepref.h, a memoria do automatico). So depois de
+// o video estar pronto e andando — uma fonte que foi escolhida e falhou na
+// conferencia, ou que o player nao abriu, nunca chega aqui. Serie apenas
+// (filme: "Reusar o ultimo link"). Uma vez por fonte/lista.
 static void lembrarAutomatica(void) {
   static int ultAtual = -1;
   static unsigned ultGer;
   int t = 0, e = 0, at;
-  // Com "Reusar a ultima fonte" desligado a escolha manual nao conta, entao o
-  // grupo da fonte escolhida a mao tambem entra aqui: e o "Preferir o grupo da
-  // fonte" do app oficial, que vale para a fonte que tocou, venha de onde vier.
-  if ((!fonteVODAutomatica && ajustes_fonte_reusar()) || player_id_canal()[0] || !player_aberto() || player_quer_sair() ||
+  if (!fonteVODAutomatica || player_id_canal()[0] || !player_aberto() || player_quer_sair() ||
       aguardandoFonte != 0 || !video_pronto() || video_pos() < 3.0 ||
       video_falhou() || player_fonte_falhou()) return;
   at = stream_atual();
@@ -3725,8 +3723,9 @@ void app_atualizar(float dt, Uint32 agora) {
   anim_politica_reduzida = ajustes_animacoes_reduzidas();
   // Os quatro ajustes da memoria de fonte (Reproducao > Escolha da fonte),
   // tambem uma leitura por quadro: fontepref.h.
-  fontepref_configurar(ajustes_fonte_reusar(), ajustes_fonte_reusar_prazo_s(),
-                       ajustes_fonte_grupo(), ajustes_fonte_grupo_sessoes());
+  // "Preferir o mesmo grupo de fonte" governa as duas memorias: a escolha a
+  // mao (o titulo inteiro, 180 dias) e a do automatico.
+  fontepref_configurar(ajustes_fonte_grupo(), 0, ajustes_fonte_grupo(), ajustes_fonte_grupo_sessoes());
   fontevolta_configurar(ajustes_link_reusar(), ajustes_link_prazo_s());
   // Pausa entre quadros medida uma vez, antes de qualquer tela perguntar se o
   // OK segurado venceu (segurar.h, #387).

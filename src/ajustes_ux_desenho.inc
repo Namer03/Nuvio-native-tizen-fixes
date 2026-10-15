@@ -695,7 +695,6 @@ static void ajAjudaLinhaDesenhar(int op, float x, float y, float a) {
 static int uxPaiVisual(int op) {
   switch (op) {
     case AJ_FONTE_PRIORIDADE: case AJ_FONTE_PRAZO: return AJ_FONTE_MANUAL;
-    case AJ_FONTE_REUSAR_PRAZO: return AJ_FONTE_REUSAR;
     case AJ_FONTE_GRUPO_SESSOES: return AJ_FONTE_GRUPO;
     case AJ_LINK_PRAZO: return AJ_LINK_REUSAR;
     case AJ_FONTE_REGEX_PADRAO: case AJ_FONTE_REGEX_MODELO: return AJ_FONTE_REGEX;

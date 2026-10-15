@@ -277,5 +277,5 @@
   0, /* provider setup: shared legacy accounts; choice itself belongs to this profile */
   0, /* Mic button in search (.tpk): Automatico, local */
   0, /* second audio language: Da conta */
-  0, 4, 0, 0, /* source memory: remember the picked source Ligado, 180 days, prefer binge group Ligado, between sessions Ligado */
-  1, 5, /* reuse last link: Desligado (only the last one, in memory, 3 h), 24 h */
+  0, 0, /* prefer binge group (the hand pick for the whole show + the auto memory) Ligado, across sessions Ligado */
+  0, 5, /* reuse last link: Ligado (owner, 16/10), 24 h */

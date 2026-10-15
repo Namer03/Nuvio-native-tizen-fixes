@@ -565,14 +565,12 @@ typedef enum {
   // do app oficial; a mesma lista e a regra da legenda secundaria (audioescolha.h:
   // a ordem do audio automatico). No fim: posicionais.
   AJ_AUD_LINGUA2,
-  // MEMORIA DA FONTE (dono, 15/10/2026). Os quatro primeiros ligam/desligam o
-  // que fontepref.c ja fazia sempre (a escolha a mao e o prazo dela; Prefer
-  // Binge Group e Reuse Binge Group do app oficial, a memoria do automatico);
-  // padrao = o comportamento de antes: Ligado, 180 dias, Ligado, Ligado. Os
-  // dois ultimos sao o Reuse Last Link do oficial (fontevolta.h): Desligado
-  // (o de sempre: so a ultima, em memoria, 3 h) e 24 h. LOCAIS. No fim:
-  // posicionais.
-  AJ_FONTE_REUSAR, AJ_FONTE_REUSAR_PRAZO, AJ_FONTE_GRUPO, AJ_FONTE_GRUPO_SESSOES,
+  // MEMORIA DA FONTE (dono, 15-16/10/2026). Prefer Binge Group (a escolha a
+  // mao valendo para o titulo inteiro E a memoria do automatico, fontepref.h)
+  // e Reuse Binge Group (o mesmo entre sessoes): Ligado, Ligado, o
+  // comportamento de antes. Reuse Last Link (fontevolta.h): Ligado, 24 h
+  // (dono: ligado de fabrica). LOCAIS. No fim: posicionais.
+  AJ_FONTE_GRUPO, AJ_FONTE_GRUPO_SESSOES,
   AJ_LINK_REUSAR, AJ_LINK_PRAZO,
   AJ_N
 } OpcaoId;
@@ -832,11 +830,6 @@ static const char *V_CW_ORDEM[]  = { "Padrão", "Estilo streaming", "Separar fut
 static const char *V_ITENS_FIL[] = { "12", "18", "24" };
 static const char *V_GPU_EF[]    = { "Automático", "Completos", "Leves" };
 static const char *V_MIC_BUSCA[] = { "Automático", "Ligado", "Desligado" };
-// "Lembrar a fonte por": o indice e o gravado em fonteReusarPrazoLocal;
-// ajustes_fonte_reusar_prazo_s() devolve os segundos. 180 dias e o prazo de
-// sempre (FONTEPREF_VALIDADE_S).
-static const char *V_FONTE_REUSAR_PRAZO[] = { "1 dia", "7 dias", "30 dias", "90 dias", "180 dias" };
-static const int   FONTE_REUSAR_DIAS[]    = { 1, 7, 30, 90, 180 };
 // "Validade do ultimo link": as opcoes do oficial (1 h a 7 dias). O indice e o
 // gravado em linkPrazoLocal; ajustes_link_prazo_s() devolve os segundos.
 static const char *V_LINK_PRAZO[] = { "1 h", "2 h", "3 h", "6 h", "12 h", "24 h", "48 h", "72 h", "7 dias" };
@@ -1476,8 +1469,6 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Configuração dos provedores", V_PROVEDORES_ESCOPO, 2),
   ESC("Botão de microfone na busca", V_MIC_BUSCA, 3),   // local: micBuscaLocal (.tpk)
   ESC("Segundo idioma do áudio",         V_LINGUA, 2),
-  ESC("Lembrar a fonte que você escolhe", V_LIGA, 2),          // local: fonteReusarLocal
-  ESC("Lembrar a fonte por", V_FONTE_REUSAR_PRAZO, 5),        // local: fonteReusarPrazoLocal
   ESC("Preferir o mesmo grupo de fonte", V_LIGA, 2),          // local: fonteGrupoLocal
   ESC("Reusar o grupo entre sessões", V_LIGA, 2),             // local: fonteGrupoSessoesLocal
   ESC("Reusar o último link", V_LIGA, 2),                     // local: linkReusarLocal
@@ -1735,7 +1726,7 @@ static const char *CHAVE[] = {
   "-provedoresEscopo",
   "micBuscaLocal",
   "audioSecundarioIdioma",
-  "fonteReusarLocal", "fonteReusarPrazoLocal", "fonteGrupoLocal", "fonteGrupoSessoesLocal",
+  "fonteGrupoLocal", "fonteGrupoSessoesLocal",
   "linkReusarLocal", "linkPrazoLocal",
 };
 // QUATRO VETORES PARALELOS indexados pelo mesmo enum AJ_*: OPCOES, CHAVE,
@@ -2232,12 +2223,6 @@ int ajustes_fonte_tocar_conferindo(void) { return lig(AJ_FONTE_TOCAR_CONFERINDO)
 int ajustes_fonte_aquecer(void) { return lig(AJ_FONTE_AQUECER); }
 int ajustes_fonte_conferir_varias(void) { return lig(AJ_FONTE_CONFERIR_VARIAS); }
 int ajustes_fonte_preparar(void) { return lig(AJ_FONTE_PREPARAR); }
-int ajustes_fonte_reusar(void) { return lig(AJ_FONTE_REUSAR); }
-long long ajustes_fonte_reusar_prazo_s(void) {
-  int v = valor[AJ_FONTE_REUSAR_PRAZO], n = (int)(sizeof FONTE_REUSAR_DIAS / sizeof *FONTE_REUSAR_DIAS);
-  if (v < 0 || v >= n) v = n - 1;
-  return (long long)FONTE_REUSAR_DIAS[v] * 24LL * 3600LL;
-}
 int ajustes_fonte_grupo(void) { return lig(AJ_FONTE_GRUPO); }
 int ajustes_fonte_grupo_sessoes(void) { return lig(AJ_FONTE_GRUPO_SESSOES); }
 int ajustes_link_reusar(void) { return lig(AJ_LINK_REUSAR); }
@@ -4620,7 +4605,7 @@ static int somenteDesteAparelho(int op) {
     case AJ_FONTE_CONFERIR_VARIAS:
     case AJ_FONTE_PREPARAR:
     case AJ_FONTE_PRECARREGAR:
-    case AJ_FONTE_REUSAR: case AJ_FONTE_REUSAR_PRAZO: case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
+    case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO:
     case AJ_FONTE_TEXTO: case AJ_FONTE_ORDEM_ADDON:
     case AJ_SALVOS_DEST:
@@ -5632,7 +5617,6 @@ static int inativa(int op) {
     case AJ_CW_BLUR_PROX: return !ajustes_cw_ligado() || !ajustes_cw_thumb_episodio();
     case AJ_EXPANDIR_ATRASO: return !ajustes_expandir_poster();
     case AJ_SEEKR_FITA: case AJ_SEEKR_AJUSTE: return !lig(AJ_SEEKR_LIGADO);
-    case AJ_FONTE_REUSAR_PRAZO: return !lig(AJ_FONTE_REUSAR);
     case AJ_FONTE_GRUPO_SESSOES: return !lig(AJ_FONTE_GRUPO);
     case AJ_LINK_PRAZO: return !lig(AJ_LINK_REUSAR);
     // Remover so vale para o pacote escolhido que foi posto nesta TV.
@@ -5922,10 +5906,8 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_FONTE_AQUECER: return "Ao abrir a página de um título e quando as fontes chegam, abre antes a conexão com o debrid e com os hosts das primeiras fontes, para o Play não gastar esse tempo. Não resolve nenhum link e não cria arquivo no debrid.";
     case AJ_FONTE_CONFERIR_VARIAS: return "Confere até 3 fontes já prontas no debrid ao mesmo tempo, em vez de uma por vez, e toca a melhor que servir. Fontes que ainda não estão prontas seguem uma por vez, sem baixar nada a mais. Só vale com a Fonte automática em Melhor fonte.";
     case AJ_FONTE_PREPARAR: return "Escolhe e verifica a fonte automática ao abrir o título. Não carrega vídeo. Pode adicionar o arquivo ao painel do debrid mesmo sem assistir.";
-    case AJ_FONTE_REUSAR: return "Em qualquer episódio, tenta primeiro o lançamento que você escolheu à mão neste título: mesmo addon, grupo, resolução e origem. Sem ele, o mesmo binge group; sem nada parecido, o Nuvio escolhe sozinho.";
-    case AJ_FONTE_REUSAR_PRAZO: return "Depois desse tempo sem escolher de novo, a fonte lembrada deixa de valer e o Nuvio volta a escolher sozinho.";
-    case AJ_FONTE_GRUPO: return "Quando o Nuvio escolhe sozinho, o próximo episódio tenta primeiro a mesma fonte que tocou (o mesmo lançamento ou o binge group do addon), se não tiver qualidade menor.";
-    case AJ_FONTE_GRUPO_SESSOES: return "Lembra o grupo da última fonte mesmo depois de fechar o app. Desligado, só vale enquanto o app está aberto.";
+    case AJ_FONTE_GRUPO: return "Em qualquer episódio, tenta primeiro a mesma fonte: a que você escolheu à mão neste título ou a que tocou (mesmo lançamento ou binge group do addon). Sem nada parecido, o Nuvio escolhe sozinho.";
+    case AJ_FONTE_GRUPO_SESSOES: return "Lembra a fonte escolhida e o grupo mesmo depois de fechar o app. Desligado, só vale enquanto o app está aberto.";
     case AJ_LINK_REUSAR: return "Ao abrir de novo o mesmo filme ou episódio, toca direto o link que funcionou, sem buscar nos addons. Se ele não abrir, a busca normal assume. Os links ficam guardados nesta TV.";
     case AJ_LINK_PRAZO: return "Por quanto tempo o link guardado vale. Links de debrid podem expirar antes; nesse caso a busca normal assume.";
     case AJ_FONTE_PRECARREGAR: return "Carrega alguns segundos de vídeo ao abrir um título e prepara o próximo episódio perto dos créditos. O Play reaproveita o buffer. Usa mais dados e pode adicionar arquivos ao debrid mesmo sem assistir. Não marca episódios como vistos.";
@@ -8251,7 +8233,7 @@ static AjPreview familiaPreviaOpcao(int op) {
     case AJ_LEG_FORCADA:
     case AJ_AUD_LINGUA: case AJ_AUD_LINGUA2: case AJ_PAUSA_OVERLAY: case AJ_PLR_CLASSIF: case AJ_TELA_ABERTURA: case AJ_FONTE_MANUAL:
     case AJ_FONTE_AUTO: case AJ_FONTE_REPOR: case AJ_FONTE_TEXTO: case AJ_FONTE_ORDEM_ADDON: case AJ_SELOS_CORES: case AJ_FONTE_TOCAR_CONFERINDO: case AJ_FONTE_AQUECER: case AJ_FONTE_CONFERIR_VARIAS: case AJ_FONTE_PREPARAR: case AJ_FONTE_PRECARREGAR:
-    case AJ_FONTE_REUSAR: case AJ_FONTE_REUSAR_PRAZO: case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
+    case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO:
     case AJ_FONTE_PRIORIDADE: case AJ_FONTE_HDR:
     case AJ_SELOS_PACOTE:
