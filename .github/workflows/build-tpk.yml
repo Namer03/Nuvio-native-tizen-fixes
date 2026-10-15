@@ -82,13 +82,29 @@ jobs:
       - name: Use linux/arm instead of linux/arm/v5
         run: sed -i 's#linux/arm/v5#linux/arm#g' tools/tpk.sh
 
-      # The Dockerfile pulls Debian buster from archive.debian.org. Drop the
-      # -updates suite (missing or empty in the archive), accept the expired
-      # Release files, and stop hiding apt's real error behind -qq. Patched
-      # here so merges from upstream never conflict on tools/tpk/Dockerfile.
+      # The Dockerfile pulls Debian buster from archive.debian.org, which now
+      # lists armel packages (libc6-dev, libglvnd0, libsensors5, ...) it no
+      # longer serves (404). Point apt at snapshot.debian.org instead, which
+      # keeps every historical package. Patched here so merges from upstream
+      # never conflict on tools/tpk/Dockerfile.
       - name: Fix apt sources in the build Dockerfile
         run: |
-          sed -i "s#/security/d' /etc/apt/sources.list#/security/d; /-updates/d' /etc/apt/sources.list#; s#apt-get -qq update#apt-get -o Acquire::Check-Valid-Until=false update#; s#apt-get -qq install#apt-get install#" tools/tpk/Dockerfile
+          python3 - <<'PY'
+          p = "tools/tpk/Dockerfile"
+          s = open(p).read()
+          repl = [
+              ("sed -i 's#deb.debian.org#archive.debian.org#g; /security/d' /etc/apt/sources.list",
+               "echo 'deb http://snapshot.debian.org/archive/debian/20230301T000000Z/ buster main' > /etc/apt/sources.list"),
+              ("apt-get -qq update",
+               "apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update"),
+              ("apt-get -qq install",
+               "apt-get -o Acquire::Retries=5 install"),
+          ]
+          for old, new in repl:
+              assert old in s, "Dockerfile no longer contains: " + old
+              s = s.replace(old, new)
+          open(p, "w").write(s)
+          PY
           grep -n 'apt-get\|sources.list' tools/tpk/Dockerfile
 
       - name: Build the TPK
