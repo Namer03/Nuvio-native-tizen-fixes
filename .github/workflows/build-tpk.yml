@@ -115,6 +115,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Also surface the tail as a check annotation so it is readable from the
+      # API / checks view, not only from the step summary.
+      - name: Annotate build error
+        if: failure()
+        run: |
+          msg=$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=build.log tail::${msg}"
+
       - name: Upload TPK
         uses: actions/upload-artifact@v4
         with:
