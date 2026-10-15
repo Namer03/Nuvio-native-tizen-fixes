@@ -683,7 +683,27 @@ int main(void) {
   assert(!strcmp(OPCOES[AJ_MIC_BUSCA].valores[0], "Automático") && OPCOES[AJ_MIC_BUSCA].n == 3);
   assert(somenteDesteAparelho(AJ_MIC_BUSCA) && !dePerfil(AJ_MIC_BUSCA));
   // Segundo idioma do audio: depois do microfone.
-  assert(AJ_AUD_LINGUA2 == AJ_MIC_BUSCA + 1 && AJ_N == AJ_AUD_LINGUA2 + 1);
+  assert(AJ_AUD_LINGUA2 == AJ_MIC_BUSCA + 1);
+  // Memoria da fonte (15/10/2026): seis linhas no fim, locais, padrao = o
+  // comportamento de antes (lembrar a escolha 180 dias, grupo ligado entre
+  // sessoes; reusar o ultimo link desligado, 24 h), uma vez cada na tela.
+  assert(AJ_FONTE_REUSAR == AJ_AUD_LINGUA2 + 1 && AJ_LINK_PRAZO == AJ_FONTE_REUSAR + 5 && AJ_N == AJ_LINK_PRAZO + 1);
+  { static const char *CH[6] = { "fonteReusarLocal", "fonteReusarPrazoLocal", "fonteGrupoLocal",
+                                 "fonteGrupoSessoesLocal", "linkReusarLocal", "linkPrazoLocal" };
+    static const int PAD[6] = { 0, 4, 0, 0, 1, 5 }, NV[6] = { 2, 5, 2, 2, 2, 9 };
+    for (int o = 0; o < 6; o++) {
+      int op = AJ_FONTE_REUSAR + o, vz = 0;
+      assert(!strcmp(CHAVE[op], CH[o]) && valorPadrao[op] == PAD[o] && OPCOES[op].n == NV[o]);
+      assert(somenteDesteAparelho(op) && !dePerfil(op));
+      for (int k = 0; k < AJ_N_TELA; k++) if (TELA[k].tipo == IT_OPC && TELA[k].op == op) vz++;
+      assert(vz == 1);
+    }
+    assert(ajustes_fonte_reusar() && ajustes_fonte_reusar_prazo_s() == 180LL * 24 * 3600);
+    assert(ajustes_fonte_grupo() && ajustes_fonte_grupo_sessoes());
+    assert(!ajustes_link_reusar() && ajustes_link_prazo_s() == 24u * 3600u);
+    assert(inativa(AJ_LINK_PRAZO) && !inativa(AJ_FONTE_REUSAR_PRAZO) && !inativa(AJ_FONTE_GRUPO_SESSOES));
+    assert(indiceResultado(AJ_LINK_REUSAR, ajustes_buscar("reuse last link", resultados, AJ_N)) >= 0);
+    assert(indiceResultado(AJ_FONTE_GRUPO, ajustes_buscar("binge group", resultados, AJ_N)) >= 0); }
   assert(!strcmp(CHAVE[AJ_FONTE_ORDEM_ADDON], "fonteOrdemLocal"));
   assert(OPCOES[AJ_FONTE_ORDEM_ADDON].n == 2 && valorPadrao[AJ_FONTE_ORDEM_ADDON] == 0);
   assert(somenteDesteAparelho(AJ_FONTE_ORDEM_ADDON) && !dePerfil(AJ_FONTE_ORDEM_ADDON));
