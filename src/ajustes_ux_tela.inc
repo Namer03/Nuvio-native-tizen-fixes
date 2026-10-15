@@ -50,7 +50,7 @@ static const Item TELA[] = {
 
   SEC("Idiomas e legendas", "Idioma da interface, áudio, legenda e metadados", "aj_languages"),
     ROT("Idiomas"),
-      OPC(AJ_IDIOMA), OPC(AJ_AUD_LINGUA), OPC(AJ_LEG_LINGUA), OPC(AJ_LEG_FORCADA),
+      OPC(AJ_IDIOMA), OPC(AJ_AUD_LINGUA), OPC(AJ_AUD_LINGUA2), OPC(AJ_LEG_LINGUA), OPC(AJ_LEG_FORCADA),
       OPC(AJ_LEG_MOSTRAR), OPC(AJ_LEG_SYNC_AUTO),
 #ifdef NV_ANDROID
       // Sincronia pelo audio (F06): so o player do Android entrega o PCM. Na LG e
@@ -71,8 +71,8 @@ static const Item TELA[] = {
       OPC(AJ_ADDONS), OPC(AJ_PLUGINS), OPC(AJ_ADDONS_PRINCIPAL), OPC(AJ_BUSCA_CINEMETA),
       OPC(AJ_BUSCA_NUVIO), OPC(AJ_BUSCA_ORIGEM),   // #311
     ROT("Falha na reprodução"),
+      OPC(AJ_FILTROS_FONTES),
       OPC(AJ_FALHA_PROVEDORES), OPC(AJ_FALHA_PROVEDOR_ORDEM),
-      OPC(AJ_FALHA_RD_LIMITE), OPC(AJ_FALHA_TB_LIMITE), OPC(AJ_FALHA_PM_LIMITE), OPC(AJ_FALHA_AD_LIMITE),
       OPC(AJ_FALHA_ADDONS), OPC(AJ_FALHA_ADDON_ORDEM), OPC(AJ_FALHA_ADDON_LIMITE),
     ROT("Debrid"),
       OPC(AJ_PROVEDORES_ESCOPO), OPC(AJ_DEBRID_RD), OPC(AJ_DEBRID_TB), OPC(AJ_DEBRID_PM), OPC(AJ_DEBRID_AD),
