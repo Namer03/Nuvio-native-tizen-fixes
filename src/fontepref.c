@@ -1280,6 +1280,70 @@ int fontepref_escolher_lista_next(const char *id, const Stream *fontes, int tota
   return fontepref_escolher_lista(id, fontes, total, semPerda, ctx);
 }
 
+// [fonte-diag]: TUDO o que pesou numa escolha, para a pagina de registro na
+// rede (logrede.h). Uma vez por decisao. Sem URL: rotulo, provedor, etiquetas.
+static void diagFonte(const char *pre, int i, const Stream *s, int pts, const char *como, int pode) {
+  char lanc[FONTEPREF_LANC], nv[FONTEPREF_NIVEL];
+  fontepref_lancamento(s, lanc, sizeof lanc);
+  fontepref_nivel(s, nv, sizeof nv);
+  printf("[fonte-diag] %s #%d pts=%d por=%s pode=%s | %s | %dp | binge=%s | lanc=%s | nivel=%s | %s\n",
+         pre, i, pts, como && como[0] ? como : "-", pode < 0 ? "-" : pode ? "sim" : "NAO",
+         s->provedor[0] ? s->provedor : "-", s->altura, s->bingeGroup[0] ? s->bingeGroup : "-",
+         lanc[0] ? lanc : "-", nv[0] ? nv : "-", s->rotulo);
+}
+
+void fontepref_diagnostico(const char *id, int next, int escolhida) {
+  char base[24], prov[96], binge[FONTEPREF_BINGE];
+  const FontePref *m;
+  int total = stream_n(), i, k, q, manual;
+  enum { TOP = 8 };
+  int topI[TOP], topP[TOP], nTop = 0;
+  if (!id || !id[0]) return;
+  if (!carregado) fontepref_iniciar();
+  fontepref_id_base(id, base, sizeof base);
+  printf("[fonte-diag] ===== escolha para %s: %d fonte(s) na lista, %s, escolhida #%d =====\n",
+         id, total, next ? "Next" : "abrir/episodio da lista", escolhida);
+  if (fontepref_tocando_de(id, prov, sizeof prov, binge, sizeof binge)) {
+    int iguais = 0;
+    printf("[fonte-diag] fonte que tocava: %s | binge=%s%s\n", prov, binge, next ? "" : " (nao usada: nao e Next)");
+    for (i = 0; i < total; i++) {
+      const Stream *s = stream_item(i);
+      if (s && s->bingeGroup[0] && !strcmp(s->bingeGroup, binge)) {
+        iguais++;
+        diagFonte("mesmo binge da que tocava", i, s, -1, "bingeGroup", stream_grupo_sem_perda(i, 1));
+      }
+    }
+    if (!iguais) printf("[fonte-diag] nenhuma fonte de hoje tem o binge da que tocava\n");
+  } else printf("[fonte-diag] fonte que tocava: nenhuma com bingeGroup para este titulo\n");
+  m = fontepref_do_titulo(id);
+  manual = m != NULL;
+  if (!m) { k = autoAchar(base); m = autoUsavel(k) ? &tabAuto[k].p : NULL; }
+  if (!m) { printf("[fonte-diag] memoria do titulo: nenhuma (vai o automatico)\n"); fflush(stdout); return; }
+  printf("[fonte-diag] memoria do titulo (%s): %s | %dp | binge=%s | lanc=%s | nivel=%s | audio=%s | %s\n",
+         manual ? "escolha a mao" : "a que o automatico tocou", m->provedor, m->altura,
+         m->bingeGroup[0] ? m->bingeGroup : "-", m->lancamento[0] ? m->lancamento : "-",
+         m->nivel[0] ? m->nivel : "-", m->trilha[0] ? m->trilha : "-", m->rotulo);
+  for (i = 0; i < total; i++) {
+    const char *ci;
+    int pts = casar(m, stream_item(i), &ci);
+    if (pts < 0 || (nTop == TOP && pts <= topP[TOP - 1])) continue;
+    q = nTop < TOP ? nTop : TOP - 1;
+    while (q > 0 && topP[q - 1] < pts) { topP[q] = topP[q - 1]; topI[q] = topI[q - 1]; q--; }
+    topP[q] = pts; topI[q] = i;
+    if (nTop < TOP) nTop++;
+  }
+  if (!nTop) printf("[fonte-diag] nenhuma fonte de hoje casa com a memoria\n");
+  for (q = 0; q < nTop; q++) {
+    const char *ci = "";
+    const Stream *s = stream_item(topI[q]);
+    int forte;
+    casar(m, s, &ci); forte = casouBinge;
+    diagFonte(q == 0 ? "melhor pela memoria" : "seguinte pela memoria", topI[q], s, topP[q], ci,
+              manual ? -1 : stream_grupo_sem_perda(topI[q], forte));
+  }
+  fflush(stdout);
+}
+
 static int escolherManual(const FontePref *p) {
   const char *como = "";
   // UMA passada pela lista inteira, por pontos (fontepref.h). Nao casou nada:

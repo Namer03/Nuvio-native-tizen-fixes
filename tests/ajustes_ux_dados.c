@@ -684,7 +684,7 @@ int main(void) {
   // Memoria da fonte (15-16/10/2026): quatro linhas no fim (depois dos filtros), locais. Preferir o
   // grupo e entre sessoes ligados (o comportamento de antes); reusar o ultimo
   // link ligado de fabrica (dono), 24 h. Uma vez cada na tela.
-  assert(AJ_FONTE_GRUPO == AJ_FILTRO_GRUPOS + 1 && AJ_LINK_PRAZO == AJ_FONTE_GRUPO + 3 && AJ_N == AJ_LINK_PRAZO + 1);
+  assert(AJ_FONTE_GRUPO == AJ_FILTRO_GRUPOS + 1 && AJ_LINK_PRAZO == AJ_FONTE_GRUPO + 3 && AJ_LOG_REDE == AJ_LINK_PRAZO + 1);
   { static const char *CH[4] = { "fonteGrupoLocal", "fonteGrupoSessoesLocal", "linkReusarLocal", "linkPrazoLocal" };
     static const int PAD[4] = { 0, 0, 0, 5 }, NV[4] = { 2, 2, 2, 9 };
     for (int o = 0; o < 4; o++) {
@@ -700,6 +700,13 @@ int main(void) {
     assert(indiceResultado(AJ_LINK_REUSAR, ajustes_buscar("reuse last link", resultados, AJ_N)) >= 0);
     assert(indiceResultado(AJ_FONTE_GRUPO, ajustes_buscar("binge group", resultados, AJ_N)) >= 0);
     assert(indiceResultado(AJ_FONTE_GRUPO, ajustes_buscar("remember picked source", resultados, AJ_N)) >= 0); }
+  // Registro na rede local (logrede.h, 16/10/2026): a ultima linha, local, desligada.
+  assert(AJ_N == AJ_LOG_REDE + 1 && !strcmp(CHAVE[AJ_LOG_REDE], "logRedeLocal"));
+  assert(valorPadrao[AJ_LOG_REDE] == 1 && OPCOES[AJ_LOG_REDE].n == 2 && !ajustes_log_rede());
+  assert(somenteDesteAparelho(AJ_LOG_REDE) && !dePerfil(AJ_LOG_REDE));
+  { int vz = 0; for (int k = 0; k < AJ_N_TELA; k++) if (TELA[k].tipo == IT_OPC && TELA[k].op == AJ_LOG_REDE) vz++;
+    assert(vz == 1); }
+  assert(indiceResultado(AJ_LOG_REDE, ajustes_buscar("local network log", resultados, AJ_N)) >= 0);
   assert(!strcmp(CHAVE[AJ_FONTE_ORDEM_ADDON], "fonteOrdemLocal"));
   assert(OPCOES[AJ_FONTE_ORDEM_ADDON].n == 2 && valorPadrao[AJ_FONTE_ORDEM_ADDON] == 0);
   assert(somenteDesteAparelho(AJ_FONTE_ORDEM_ADDON) && !dePerfil(AJ_FONTE_ORDEM_ADDON));
