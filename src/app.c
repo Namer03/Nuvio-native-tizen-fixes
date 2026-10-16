@@ -214,6 +214,8 @@ static int autoParcialPronto(void) {
   if (stream_n() < 1 || stream_n() <= autoEsperaN) return 0;
   if (stream_n_candidatas() < 1) return 0;
   idBaseDoTitulo(base, sizeof base);
+  // 0 = Instantaneo, -1 = todos os addons (#202).
+  prazo = ajustes_fonte_prazo_ms();
   // A MEMORIA EM VIGOR, a mao ou a do automatico (dono, 16/10): o add-on dela e
   // esperado antes de decidir, para um add-on lento nao fazer a escolha sair
   // sem ela. Com "escolher a fonte ao reproduzir" so a escolha a mao conta.
@@ -225,16 +227,17 @@ static int autoParcialPronto(void) {
       ultLembrada = fontepref_escolher(base);
     }
     lembrada = ultLembrada;
-    // So vale esperar se o add-on dela pode dar fonte ao automatico.
-    prefPendente = lembrada < 0 && addons_pendente_nome(fp->provedor) && stream_addon_no_escopo(fp->provedor);
+    // So vale esperar se o add-on dela pode dar fonte ao automatico. O prazo
+    // da pessoa manda (dono, 16/10): Instantaneo nao espera, 3-30 s esperam
+    // so ate o prazo, "todos os add-ons" espera ate o add-on responder.
+    prefPendente = prazo != 0 && !(prazo > 0 && addons_busca_ms() >= (unsigned)prazo) &&
+                   lembrada < 0 && addons_pendente_nome(fp->provedor) && stream_addon_no_escopo(fp->provedor);
   }
   // Escolher a mao: a folha abre com o que ja chegou e continua enchendo.
   if (ajustes_fonte_manual() && lembrada < 0) {
     if (!prefPendente) autoMotivo = "escolha manual: a folha abre com o que chegou";
     return !prefPendente;
   }
-  // 0 = Instantaneo, -1 = todos os addons (#202).
-  prazo = ajustes_fonte_prazo_ms();
   // O prazo da pessoa e o limite do "lento": quem passa dele quase sempre nesta
   // TV, ou ficou mudo nas ultimas buscas, deixa de segurar a decisao. -1 ("todos
   // os add-ons") e a pessoa pedindo para esperar: ninguem sai.

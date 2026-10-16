@@ -757,7 +757,7 @@
   T("As falas que ficaram, vindas do Wikiquote. Título sem página não mostra a seção.", "Wikiquote から、印象に残ったセリフ。ページのない作品ではこのセクションは表示されません。"),
   T("As fileiras aparecem aqui depois que o app lê os catálogos dos seus addons. Abra a Home, espere o catálogo carregar e volte a esta tela.", "アプリがアドオンのカタログを読み込むと、行がここに表示されます。ホームを開き、カタログの読み込みを待ってから、この画面に戻ってください。"),
   T("As fileiras ligadas, na ordem em que a Home monta. As que passam do limite esperam na fila.", "オンの列をホームが組む順に表示。上限を超えた列は待機します。"),
-  T("As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Com uma fonte escolhida antes neste título, o add-on dela é sempre esperado.", "各アドオンが応答するとすぐにソースがリストに表示されます。自動選択は最も遅いアドオンを待ちません。良いソースが見つかった時点か、この時間が過ぎた時点で決まります。このタイトルで以前ソースを選んでいた場合は、そのアドオンを常に待ちます。"),
+  T("As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Dentro deste tempo, o add-on da fonte que você usou antes neste título é esperado; com Todos os add-ons, sempre.", "各アドオンが応答するとすぐにソースがリストに表示されます。自動選択は最も遅いアドオンを待ちません。良いソースが見つかった時点か、この時間が過ぎた時点で決まります。この時間内は、このタイトルで以前使ったソースのアドオンを待ちます。「すべてのアドオン」では常に待ちます。"),
   T("As fontes desta lista são P2P (torrent)", "この一覧のソースは P2P（トレント）です"),
   T("As fontes e o carrossel param de voltar para o episódio anterior.", "ソースとカルーセルが前のエピソードに戻らなくなりました。"),
   T("As fontes responderam com vídeo de aviso.", "ソースが警告動画を返しました。"),

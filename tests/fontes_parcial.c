@@ -168,9 +168,10 @@ int main(int argc, char **argv) {
   // Escolha automatica com so 1080p: nao e "boa" (teto automatico = 4K).
   assert(!stream_auto_pode_decidir(-1, 0, 0, 0));
   assert(stream_auto_pode_decidir(-1, 0, 1, 0));          // o prazo libera
-  assert(!stream_auto_pode_decidir(-1, 1, 1, 0));         // lembrada pendente segura
+  assert(!stream_auto_pode_decidir(-1, 1, 0, 0));         // lembrada pendente segura...
+  assert(stream_auto_pode_decidir(-1, 1, 1, 0));          // ...so ate o prazo
   assert(stream_auto_pode_decidir(1, 1, 0, 0));           // lembrada presente vai
-  puts("ok  com so as 1080p: espera o prazo; a lembrada pendente segura; a presente vai");
+  puts("ok  com so as 1080p: espera o prazo; a lembrada pendente segura ate o prazo; a presente vai");
 
   // A pessoa desce ate a SEGUNDA linha antes de o Lento chegar. A folha abre
   // com o foco na linha 0, que e a "Melhor para esta TV": entre as duas 1080p

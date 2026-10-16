@@ -757,7 +757,7 @@
   T("As falas que ficaram, vindas do Wikiquote. Título sem página não mostra a seção.", "來自 Wikiquote 的經典台詞。沒有對應頁面的作品不會顯示此區段。"),
   T("As fileiras aparecem aqui depois que o app lê os catálogos dos seus addons. Abra a Home, espere o catálogo carregar e volte a esta tela.", "應用程式讀取你附加元件的片庫後，各列會顯示在這裡。請開啟首頁，等待片庫載入完成，再回到此畫面。"),
   T("As fileiras ligadas, na ordem em que a Home monta. As que passam do limite esperam na fila.", "已開啟的列，依首頁組裝的順序。超出上限的在佇列中等待。"),
-  T("As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Com uma fonte escolhida antes neste título, o add-on dela é sempre esperado.", "每個附加元件一回應，其來源就會出現在清單中。自動選擇不會等待最慢的元件：已有好的來源或超過此時間後即進行選擇。如果你之前為這部作品選過來源，總會等待它的附加元件。"),
+  T("As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Dentro deste tempo, o add-on da fonte que você usou antes neste título é esperado; com Todos os add-ons, sempre.", "每個附加元件一回應，其來源就會出現在清單中。自動選擇不會等待最慢的元件：已有好的來源或超過此時間後即進行選擇。在此時間內，會等待你之前為這部作品使用過的來源的附加元件；選擇「所有附加元件」時一律等待。"),
   T("As fontes desta lista são P2P (torrent)", "此清單中的片源為 P2P（種子）"),
   T("As fontes e o carrossel param de voltar para o episódio anterior.", "片源和輪播不再跳回上一集。"),
   T("As fontes responderam com vídeo de aviso.", "片源回傳了警告影片。"),
