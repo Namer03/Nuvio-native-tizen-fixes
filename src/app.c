@@ -2514,6 +2514,10 @@ static void sondarAposRecusa(void) {
   else free(p);
 #endif
 }
+// [fonte-diag] a ultima escolha da folha: para dizer, se ela falhar, que a mesma
+// fonte estava tocando antes de a folha reabri-la.
+static int folhaDiagIdx = -1, folhaDiagMesma;
+static double folhaDiagPos;
 // ESCOLHA MANUAL QUE NAO ABRE: prazo ate o primeiro quadro (fontevolta.h).
 // Vence -> o erro de fonte do player, com "A fonte nao respondeu" e as saidas
 // de sempre. O automatico ja tem o proprio prazo (tentarProximaFonteVOD).
@@ -2543,6 +2547,15 @@ static void vigiarAberturaManual(void) {
   // tela ficava em "Abrindo fonte" ate o prazo, ou para sempre.
   if (g.falhou) {
     printf("[fonte] escolha manual: erro do player em %u ms (%s)\n", (unsigned)desde, video_erro_texto());
+    printf("[fonte-diag] hand-picked source #%d failed %u ms after opening: %s | position %.1f s | %s"
+           " | next: marked failed (%s), error card on screen, no other source tried because it was picked by hand\n",
+           stream_atual(), (unsigned)desde, video_erro_texto()[0] ? video_erro_texto() : "no error code", video_pos(),
+           folhaDiagIdx == stream_atual() && folhaDiagMesma
+             ? "this same source was playing fine before the sheet pick reopened it" : "it had not played in this session",
+           fonteProvouTocar() ? "skipped by auto-play for this search" : "auto-play skips it for 6 h");
+    if (folhaDiagIdx == stream_atual() && folhaDiagMesma)
+      printf("[fonte-diag] it played until %.0f s before the reopen, so the link itself worked; the [host] / [video]"
+             " lines just above say what the player refused on the second open\n", folhaDiagPos);
     fflush(stdout);
     sondarAposRecusa();
     fonteManualDesde = 0;
@@ -5430,6 +5443,9 @@ void app_atualizar(float dt, Uint32 agora) {
   int fonte;
   if (aguardandoFonte != 2 && stream_folha_escolheu(&fonte)) {
     const Stream *s = stream_item(fonte);
+    int antesIdx = stream_atual();
+    double antesPos = player_aberto() ? video_pos() : 0.0;
+    int antesTocava = player_aberto() && video_pronto() && !video_falhou() && !player_fonte_falhou() && antesPos > 0.5;
     folhaParaTocar = 0;
     printf("fonte escolhida: %s\n", s ? s->rotulo : "?");
     // GUARDAR A ESCOLHA, e SO a manual. O que o automatico escolhe nao vira
@@ -5507,10 +5523,30 @@ void app_atualizar(float dt, Uint32 agora) {
       // Escolha manual num canal tambem entra no watchdog: fonte viva escolhida
       // a dedo pode morrer igual.
       if (player_id_canal()[0]) { canalFonteIdx = fonte; canalFonteDesde = SDL_GetTicks(); canalViaProxy = 0; }
+      // [fonte-diag] A escolha na folha, e o caminho que ela tomou: so a
+      // escolha a mao (fonteManualDesde) nao cai para outra fonte se falhar.
+      { char lanc[FONTEPREF_LANC] = "";
+        fontepref_lancamento(s, lanc, sizeof lanc);
+        folhaDiagIdx = fonte; folhaDiagMesma = fonte == antesIdx && antesTocava; folhaDiagPos = antesPos;
+        printf("[fonte-diag] picked in the sheet: #%d | %s | %dp | release=%s | binge=%s | %s | before: #%d %s at %.0f s%s"
+               " | path=%s\n",
+               fonte, s->provedor[0] ? s->provedor : "-", s->altura, lanc[0] ? lanc : "-",
+               s->bingeGroup[0] ? s->bingeGroup : "-", s->rotulo, antesIdx,
+               antesTocava ? "playing" : "not playing", antesPos,
+               folhaDiagMesma ? " (SAME source: the player closes it and opens it again)" : "",
+               aguardandoFonte == 2 ? "provider failover policy (tries the next source if it fails)"
+               : fonteVODAutomatica ? "remembered row: falls to the next source if it fails"
+               : fonteManualDesde ? "hand pick: if it fails there is NO fallback (error card, marked failed)"
+               : "torrent / debrid resolve first");
+        fflush(stdout); }
     }
   }
   if (aguardandoFonte != 2 && player_pediu_fontes()) {
     char base[24];
+    printf("[fonte-diag] sources sheet opened by: %s | playing #%d at %.0f s | player %s\n",
+           player_pediu_fontes_de()[0] ? player_pediu_fontes_de() : "?", stream_atual(), video_pos(),
+           video_falhou() || player_fonte_falhou() ? "in error" : video_pronto() ? "playing" : "still opening");
+    fflush(stdout);
     stream_folha_contexto(player_linha_episodio());
     idBaseDoTitulo(base, sizeof base);
     stream_preferir(base[0] ? fontepref_escolher_manual(base) : -1);

@@ -103,6 +103,10 @@ static unsigned sessao;
 // for the source failure screen without guessing a codec or network cause.
 static atomic_uint erroDetalhe;
 static atomic_int temErroDetalhe;
+// O nome do erro que o host escreveu ("erro ConnectionFailed"): vai junto do
+// codigo em video_erro_texto, para o registro dizer o que o 0xfe6c.... e.
+static char hostErroNome[48];
+
 // DEFERRED SELECTION (see escolhasPendentes). The track choice is born too
 // soon after open and the write is swallowed: measured on the TV, the subtitle
 // write at 0.00 s of the first tick was accepted by the player's bookkeeping
@@ -443,6 +447,7 @@ static int abrirSessao(void) {
   // e nenhuma linha "e texto simples"). Ligada a cada sessao, antes de o app
   // escolher qualquer faixa.
   mkvass_aceitar_texto(1);
+  hostErroNome[0] = 0;
   atomic_store(&temErroDetalhe, 0);
   vigiaAtiva = pausaPedida = 0;
   atomic_store(&vigiaReiniciar, 1);
@@ -1534,6 +1539,7 @@ int  video_conflito_recurso(void) { return conflito; }
 static volatile int janelaVisivel = 1;
 void video_tpk_log_host(const char *linha) {
   if (!linha) return;
+  if (!strncmp(linha, "erro ", 5)) snprintf(hostErroNome, sizeof hostErroNome, "%.47s", linha + 5);
   // "erro ConnectionFailed" vem logo antes do evento 5 (Video.cs).
   if (!strncmp(linha, "erro ", 5) && nv_recon_rede_tpk(0, linha)) reconLinhaRede = 1;
   // O player acusa o codec sem lista vazia: mesmo aviso, com a linha de prova.
@@ -1639,10 +1645,10 @@ const char *video_hdr(void) { return "none"; }
 // Numeric host error is useful evidence even when no textual cause is exposed.
 // Formatting happens on the app thread; the callback only publishes atomics.
 const char *video_erro_texto(void) {
-  static char texto[64];
+  static char texto[128];
   if (!atomic_load(&temErroDetalhe)) return "";
-  snprintf(texto, sizeof texto, "Samsung player error 0x%08x",
-           atomic_load(&erroDetalhe));
+  snprintf(texto, sizeof texto, "Samsung player error 0x%08x%s%s%s",
+           atomic_load(&erroDetalhe), hostErroNome[0] ? " (" : "", hostErroNome, hostErroNome[0] ? ")" : "");
   return texto;
 }
 int video_decoder_anunciou(void) { return 1; }

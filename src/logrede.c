@@ -125,7 +125,11 @@ const char *logrede_url(void) { return ""; }
 static const char *const FILTRO[] = {
   "[fonte", "[voltafonte", "[addons", "[addon]", "[preparo", "[proximo", "[debrid", "[verif",
   "[next", "abrir:", "proximo episodio", "buscando fontes", "automatico", "auto-play", "auto pick",
-  "bingegroup", "fonte escolhida", "nenhuma fonte", "[player] erro", "[video] erro", "[logrede]", NULL
+  "bingegroup", "fonte escolhida", "nenhuma fonte", "[logrede]",
+  // O PLAYER (dono, 16/10): a fonte que tocava e o player recusou na reabertura,
+  // e a linha que dizia por que ("[host] erro ...") ficava de fora do filtro.
+  // As mesmas etiquetas do painel de 8099 da etapa de DTS; FPS= continua fora.
+  "[host]", "[video]", "[player]", "[dts-tpk]", "[dts-range]", "[dts]", "[audio]", "[mkv]", "[tv] ", NULL
 };
 // A lista acima e minuscula; a linha e baixada para minuscula numa copia (ate
 // 1 KB, onde ficam as etiquetas) e cada termo vira um strstr — 8 MB em poucos
@@ -217,7 +221,7 @@ static const char PAGINA[] =
 "#log{padding:8px 12px 40px;white-space:pre-wrap;word-break:break-word}"
 ".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.h{color:#fff;font-weight:700;margin-top:10px;border-top:1px solid #333}.x{display:none}"
 "</style></head><body><header><b>Nuvio log</b>"
-"<button id=bf class=on>Source picking</button><button id=bt>Everything</button>"
+"<button id=bf class=on>Source &amp; player</button><button id=bt>Everything</button>"
 "<input id=q placeholder='Search (e.g. T7, queue 1, why=)'>"
 "<button id=ba class=on>Auto-scroll</button><button id=bc>Clear</button>"
 "<a class=b id=dl href='/fonte.txt?baixar=1'>Download</a><span id=st></span></header>"

@@ -41,6 +41,7 @@ void player_aprender_creditos(void);
 int player_indice(void);
 const char *player_linha_episodio(void);
 int player_pediu_fontes(void);
+const char *player_pediu_fontes_de(void);   // [fonte-diag]: o que abriu a folha
 // Troca pelo caminho VOD existente: 1 = OK no aviso, 2 = salto automatico.
 int player_pediu_proxima_fonte(void);
 // A explicacao da espera na ilha do player (inicio.h, #202): texto ja traduzido

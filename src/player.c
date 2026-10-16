@@ -74,6 +74,7 @@ static void avisarCascaAberto(int v) { (void)v; }
 #include "plrguia.h"
 #include "episodios.h"
 #include "streams.h"
+#include "fontepref.h"
 #include "badges.h"
 #include "legenda.h"
 #include "assrender.h"
@@ -693,6 +694,9 @@ void player_definir_motivo_inicio(const char *texto) {
 int player_pediu_ajustes_fonte(void) { int v = pedAjFonte; pedAjFonte = 0; return v; }
 Uint32 player_aberto_ha_ms(void) { return aberto && abertoEm ? SDL_GetTicks() - abertoEm : 0; }
 int player_pediu_fontes(void) { int p = pedFontes; pedFontes = 0; return p; }
+// [fonte-diag] Quem abriu a folha de fontes dentro do player (registro na rede).
+static const char *pedFontesDe = "";
+const char *player_pediu_fontes_de(void) { return pedFontesDe; }
 int player_pediu_proximo(int *t,int *e) {
   if(!pedProxT||!pedProxE)return 0;
   if(t)*t=pedProxT;if(e)*e=pedProxE;pedProxT=pedProxE=0;return 1;
@@ -762,9 +766,9 @@ static int erroBotao;
 static void erroEscolher(int i) {
 #ifdef NV_ANDROID
   (void)i;
-  player_voltar_a_esperar(); pedFontes = 1; // Abrir Fontes e Voltar dispensam o erro (#409)
+  player_voltar_a_esperar(); pedFontes = 1; pedFontesDe = "error card"; // Abrir Fontes e Voltar dispensam o erro (#409)
 #else
-  if (i == 0) pedFontes = 1;
+  if (i == 0) { pedFontes = 1; pedFontesDe = "Open Sources on the error card"; }
   else { saindo = 1; pediuSair = 1; }
 #endif
 }
@@ -1745,6 +1749,15 @@ static int preTituloLegendaUsar(const char *url) {
 
 static void tocarFonte(const char *url) {
   marco("abrir: url ao pipeline");
+  // [fonte-diag] Qual fonte foi para o pipeline (sem URL): cada reabertura
+  // aparece no registro na rede com o indice e o lancamento.
+  { const Stream *s = stream_item(stream_atual());
+    char lanc[FONTEPREF_LANC] = "";
+    if (s) fontepref_lancamento(s, lanc, sizeof lanc);
+    printf("[fonte-diag] pipeline open: source #%d | %s | %dp | release=%s | binge=%s | %s\n", stream_atual(),
+           s && s->provedor[0] ? s->provedor : "-", s ? s->altura : 0, lanc[0] ? lanc : "-",
+           s && s->bingeGroup[0] ? s->bingeGroup : "-", s ? s->rotulo : "(saved link or channel)");
+    fflush(stdout); }
   loadEm = SDL_GetTicks();   // #202: do pipeline ao primeiro quadro ("[player] load->1o quadro")
   video_definir_reconexao(!ehCanal());
   video_definir_modo_live(ehCanal() ? ajustes_livetv_modo() : 0);
@@ -3114,7 +3127,7 @@ static void avAtivar(int b) {
     case AV_B_LEGENDA: pedFaixas = 2; break;
     case AV_B_INFO: infoAV = !infoAV; break;
     case AV_B_RECARREGAR: pedRecarregar = 1; break;
-    case AV_B_FONTE: pedFontes = 1; break;
+    case AV_B_FONTE: pedFontes = 1; pedFontesDe = "Source button (live TV bar)"; break;
   }
 }
 
@@ -3357,7 +3370,7 @@ static int ativarBotao(int i, int repetiu) {
     case PLR_ASPECTO: player_aspecto_ciclar(); break;
     case PLR_CC: pedFaixas = 2; break;
     case PLR_AUDIO: pedFaixas = 1; break;
-    case PLR_FONTES: pedFontes = 1; break;
+    case PLR_FONTES: pedFontes = 1; pedFontesDe = "Sources button in the player"; break;
     case PLR_EPISODIOS:
       if (ehCanal()) pedGuia = 1;
       else if (epT > 0) episodios_abrir(idxAtual(), epT, epE);
@@ -3410,7 +3423,7 @@ void player_evento(const SDL_Event *e) {
       k == SDLK_DELETE) {
 #ifdef NV_ANDROID
     if (erroFonte && !ehCanal()) {
-      player_voltar_a_esperar(); pedFontes = 1;
+      player_voltar_a_esperar(); pedFontes = 1; pedFontesDe = "Back on the error card";
       return;
     }
 #endif
