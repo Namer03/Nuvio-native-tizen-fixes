@@ -129,6 +129,16 @@
 // for every release of that show; this is what tells two releases apart.
 #define FONTEPREF_LANC 96
 
+// THE TIER of a source (fontepref_nivel): SeaDex best/alternative, or the
+// release tier an AIOStreams formatter writes ("Remux T1", "BD T2", "Web T1",
+// "Tier 01"...), as one label: "seadex-best", "seadex-alt", "remux-t1",
+// "uhd-bluray-t2", "web-scene". Read from the name and the description (file
+// names never carry it), after folding styled Unicode (math bold, small caps,
+// sub/superscript digits, fullwidth, enclosed letters) back to ASCII. A tier
+// only counts right after a source word, so "Terminator 2" or "S01" never do;
+// a bare "SeaDex" never counts either ("SeaDex Muxers" is a tier name).
+#define FONTEPREF_NIVEL 32
+
 // VALIDADE DA PREFERENCIA — 180 dias.
 //
 // O app web tambem expira a dele, e a comparacao importa porque os dois
@@ -167,6 +177,7 @@ typedef struct {
   char rotulo[192];                 // desempate e log
   char arquivo[FONTEPREF_ARQUIVO];  // fileKey(): release name, no episode marker
   char lancamento[FONTEPREF_LANC];  // fontepref_lancamento(): the release itself
+  char nivel[FONTEPREF_NIVEL];      // fontepref_nivel(): SeaDex / tier label
   int  altura;
   long long quandoS;                // time(NULL) da escolha
 } FontePref;
@@ -252,12 +263,15 @@ void fontepref_trilha(const Stream *s, char *dst, unsigned tam);
 //   1000  same addon AND same fingerprint with a release group: the release
 //         you picked, in this episode;
 //    500  same bingeGroup (the addon's own "same source" label);
+//    400  same addon, same resolution AND same tier (SeaDex best/alt, Remux
+//         T1...): the release is missing, an equally ranked one is here;
 //    300  same addon AND same fingerprint without a group;
 //    200  same addon AND same audio tags (provedor + trilha, strict);
 //    100  same addon, today's tags contain the remembered ones.
 // Points add up, so a source that is the same release AND the same bingeGroup
 // beats one that is only either; nota() breaks ties.
 void fontepref_lancamento(const Stream *s, char *dst, unsigned tam);
+void fontepref_nivel(const Stream *s, char *dst, unsigned tam);
 
 // Guarda a escolha e GRAVA. `id` pode vir com episodio; e cortado aqui.
 // Devolve 1 quando a tabela mudou. Fonte sem provedor nao entra.
