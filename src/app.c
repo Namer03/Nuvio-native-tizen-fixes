@@ -144,6 +144,7 @@
 #include <unistd.h>
 #include "ondever.h"
 #include "fontepref.h"
+#include "logrede.h"
 #include "fontesmortas.h"
 #include "video.h"
 #include "addons.h"
@@ -238,6 +239,13 @@ static int autoParcialPronto(void) {
       }
       if (prazo != 0 && !(prazo > 0 && addons_busca_ms() >= (unsigned)prazo) &&
           addons_pendente_nome(provNext) && stream_addon_no_escopo(provNext)) {
+        static unsigned ultAvisoGer;
+        if (ultAvisoGer != stream_lista_geracao()) {
+          ultAvisoGer = stream_lista_geracao();
+          printf("[fonte-diag] next: sem o binge da que tocava ainda; esperando o add-on dela (%s), %u ms de busca\n",
+                 provNext, (unsigned)addons_busca_ms());
+          fflush(stdout);
+        }
         addons_definir_espera_decisao(prazo > 0 ? prazo : 0);
         return 0;
       }
@@ -2692,7 +2700,12 @@ static void lembrarTocando(void) {
   ultS = s; ultGer = stream_lista_geracao();
   snprintf(ultAlvo, sizeof ultAlvo, "%s", alvo);
   idBaseDoTitulo(base, sizeof base);
-  if (base[0]) fontepref_tocando(base, s);
+  if (base[0]) {
+    fontepref_tocando(base, s);
+    printf("[fonte] tocando agora (referencia do Next): %s | %dp | binge=%s | %s\n",
+           s->provedor[0] ? s->provedor : "-", s->altura, s->bingeGroup[0] ? s->bingeGroup : "-", s->rotulo);
+    fflush(stdout);
+  }
 }
 static void guardarPosicaoFonteFalha(void) {
   if (fonteFalha && player_aberto() && !player_quer_sair() &&
@@ -3833,6 +3846,7 @@ void app_atualizar(float dt, Uint32 agora) {
   // "Preferir o mesmo grupo de fonte" governa as duas memorias: a escolha a
   // mao (o titulo inteiro, 180 dias) e a do automatico.
   fontepref_configurar(ajustes_fonte_grupo(), 0, ajustes_fonte_grupo(), ajustes_fonte_grupo_sessoes());
+  logrede_configurar(ajustes_log_rede(), registro_arquivo());
   fontevolta_configurar(ajustes_link_reusar(), ajustes_link_prazo_s());
   // Pausa entre quadros medida uma vez, antes de qualquer tela perguntar se o
   // OK segurado venceu (segurar.h, #387).
@@ -4940,6 +4954,11 @@ void app_atualizar(float dt, Uint32 agora) {
         lembrada = base[0] ? (ajustes_fonte_manual() ? fontepref_escolher_manual(base)
                                                      : fontepref_escolher(base)) : -1;
       stream_preferir(lembrada);
+      // Tudo o que pesou nesta escolha, para a pagina de registro na rede.
+      { char alvoD[64]; alvoPlayer(alvoD, sizeof alvoD);
+        fontepref_diagnostico(alvoD[0] ? alvoD : base, escolhaDoNext(base, NULL, 0), lembrada);
+        printf("[fonte-diag] motivo da hora da escolha: %s\n",
+               addons_busca_parcial() ? autoMotivo : "todos os add-ons responderam"); fflush(stdout); }
       // QUEM ESCOLHE E A PESSOA, quando ela pediu isso em Ajustes.
       //
       // A folha abre AQUI e nao no botao pelo mesmo motivo que a fonte

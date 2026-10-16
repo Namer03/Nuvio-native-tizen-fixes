@@ -202,6 +202,7 @@ static const char *uxSinonimos(int op) {
     case AJ_PROXIMO_AUTO: case AJ_PROXIMO_CONTAGEM: return "proximo episodio automatico autoplay creditos contagem netflix sozinho next episode auto play countdown";
     case AJ_CW_MINIMO: return "minimo continuar assistindo porcentagem percentual entrar fileira retomada progresso quanto assistir comecou piso minimum percent continue watching threshold row";
     case AJ_FONTE_PREPARAR: return "preparar fonte ao abrir titulo antecipar resolver antecipado play instantaneo inicio rapido debrid painel arquivo prepare source ahead instant start";
+    case AJ_LOG_REDE: return "registro rede local pagina log ip navegador local network log page browser";
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO: return "reusar ultimo link sem busca retomar validade cache horas reuse last link cache duration";
     case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES: return "grupo bingegroup binge proximo episodio mesma fonte lembrar fonte escolhida lancamento release sessoes reusar prefer binge group remember picked source same release next episode reuse sessions";
     case AJ_FONTE_PRECARREGAR: return "precarregar video buffer episodio proximo creditos preload video next episode";
