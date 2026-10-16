@@ -128,19 +128,19 @@ const char *logrede_url(void) { return ""; }
 static const char *const F_FONTE[] = {
   "[fonte", "[voltafonte", "[addons", "[addon]", "[preparo", "[proximo", "[debrid", "[verif",
   "[next", "proximo episodio", "buscando fontes", "automatico", "auto-play", "auto pick",
-  "bingegroup", "fonte escolhida", "nenhuma fonte", "[logrede]", NULL
+  "bingegroup", "fonte escolhida", "nenhuma fonte", "[partes]", "[logrede]", NULL
 };
 static const char *const F_ABRIR[] = {
   "[abrir-diag]", "abrir:", "pipeline open", "picked in the sheet", "sheet opened", "hand-picked",
   "escolha manual", "erro do player", "sonda apos recusa", "nao abriu", "sem sinal de abertura",
   "fonte escolhida", "automatico (verificado)", "tocando enquanto confere", "[voltafonte]", "failover",
   "[host] erro", "[host] abrir", "[host] interrompido", "[host] cabecalho", "[mkv]", "[dts-tpk]",
-  "[video] tpk", "[fonte-cdn]", "duration", "[logrede]", NULL
+  "[video] tpk", "[fonte-cdn]", "duration", "[partes]", "[logrede]", NULL
 };
 static const char *const F_TOCAR[] = {
   "[tocar-diag]", "[host] erro", "[host] interrompido", "[video]", "[player]", "[dts-tpk]", "[dts-range]",
   "[dts]", "[audio]", "[mkv]", "[tv] ", "reconex", "reconect", "failover", "escolha manual",
-  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[logrede]", NULL
+  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[partes]", "[logrede]", NULL
 };
 static const char *const *const FILTROS[4] = { NULL, F_FONTE, F_ABRIR, F_TOCAR };
 static const char *const NOMES_ARQ[4] = { "nuvio-log.txt", "nuvio-source-picking.txt", "nuvio-wont-open.txt",
