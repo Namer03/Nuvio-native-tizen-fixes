@@ -240,6 +240,7 @@ void nv_tpk_video_registrar_aspecto(FnAspecto janela) { hAspecto = janela; }
 void video_escolher_audio(int i);
 
 static int convPossivel(void);
+static int faixasDaTv(void);
 // A ORDEM DO AUDIO (audioescolha.h) sobre a lista do menu: as faixas que a TV
 // toca e as DTS/TrueHD do arquivo que o menu acrescenta (acrescentarRecusadas;
 // escolhida, converte). Sem escolha da regra, fica a do arquivo.
@@ -255,6 +256,13 @@ static void escolherAudioPreferido(void) {
     c[i].pode = f->numero >= 0 || convPossivel();
   }
   k = audioesc_escolher(c, nAudio, &o);
+  if (k >= 0 && k == audioAtual) {
+    // A prova de que a ordem rodou mesmo quando nada muda (BD T3: a TV esconde
+    // o DTS japones e a faixa 0 dela ja e o FLAC ingles).
+    printf("[video] audio pela ordem (%s): fica %s (faixa %d de %d; a TV listou %d)\n", audioesc_origem_nome(o),
+           faixaAudio[k].rotulo, k + 1, nAudio, faixasDaTv());
+    fflush(stdout);
+  }
   if (k < 0 || k == audioAtual) return;
   printf("[video] audio pela ordem (%s): %s (faixa %d de %d)%s\n", audioesc_origem_nome(o), faixaAudio[k].rotulo,
          k + 1, nAudio, faixaAudio[k].numero < 0 ? ", DTS/TrueHD: converte" : "");

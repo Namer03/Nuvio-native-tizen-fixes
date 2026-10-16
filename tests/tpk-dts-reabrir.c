@@ -331,6 +331,33 @@ int main(void) {
   video_tocar("http://h/g.mkv");
   ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl), "H.264 video, only DTS: converts");
   video_parar();
+  // KAGUYA BD T3 SHAPE (16/10): Japanese DTS-HD MA first and default, English
+  // FLAC second. The TV hides the DTS, so its one audio track (A0) is the FLAC
+  // and the file-to-player match is "none". English preferred: the FLAC plays,
+  // nothing converts. Japanese preferred: the Japanese DTS converts.
+  { unsigned char t[512]; long n = 0;
+    n += faixa(t + n, 1, 1, "V_MPEG4/ISO/AVC", "eng", 0);
+    n += faixa(t + n, 2, 2, "A_DTS", "jpn", 6);
+    n += faixa(t + n, 3, 2, "A_FLAC", "eng", 2);
+    n += faixa(t + n, 4, 17, "S_TEXT/ASS", "eng", 0);
+    cabN = 0; cab[cabN++] = 0x1A; cab[cabN++] = 0x45; cab[cabN++] = 0xDF; cab[cabN++] = 0xA3; cab[cabN++] = 0x80;
+    cabN += el(cab + cabN, 0x1654AE6B, 4, t, n);
+    { unsigned char z[64] = {0}; cabN += el(cab + cabN, 0xEC, 1, z, sizeof z); } }
+  cabPronto = 1; abriuConversor = 0; pref = "eng"; pref2 = ""; orig = ""; tvLang = "eng";
+  video_tocar("http://h/t3.mkv");
+  ok(!abriuConversor && !dts_tpk_e_url(ultUrl), "BD T3 shape, English preferred: the original opens (English FLAC playable)");
+  inicioStream = -1; posMs = 2000;
+  playerPronto(); bombear(20);
+  ok(!abriuConversor && video_audio_atual() >= 0 && video_audio(video_audio_atual()) &&
+     !strcmp(video_audio(video_audio_atual())->idioma, "eng") && video_audio(video_audio_atual())->numero >= 0,
+     "BD T3 shape, English preferred: plays the TV's English track (the FLAC), no conversion");
+  video_parar();
+  abriuConversor = 0; pref = "jpn"; tvLang = "eng";
+  video_tocar("http://h/t3b.mkv");
+  ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl), "BD T3 shape, Japanese preferred: converts the Japanese DTS");
+  video_parar();
+  pref = "";
+
   // THE CONVERTER RESCUES A DTS-ONLY FILE THE TV REFUSES (16/10, TTGA): the
   // header is not known at open, the TV says AudioCodecNotSupported. That is
   // not a failed source: no `falhou`, the Prepare error after it is ignored,
