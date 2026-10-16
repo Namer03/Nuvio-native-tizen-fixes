@@ -97,6 +97,7 @@ const char *logrede_url(void) { return ""; }
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -113,6 +114,30 @@ const char *logrede_url(void) { return ""; }
 #define LR_INICIO    (512 * 1024)        // primeira carga: o fim do arquivo
 #define LR_PASSO     (1024 * 1024)       // no maximo por pedido incremental
 #define LR_BAIXAR    (4 * 1024 * 1024)   // "Baixar": o fim do arquivo, ate 4 MB
+#define LR_FILTRO_LER (8 * 1024 * 1024)  // filtro "escolha da fonte": varre ate 8 MB do fim
+#define LR_FILTRO_MAX (1024 * 1024)      // e devolve no maximo o ultimo 1 MB do que casou
+
+// AS LINHAS DA ESCOLHA DA FONTE. O filtro roda AQUI, no servidor: o log tem uma
+// linha de FPS por segundo, e um filtro so no navegador sobre os ultimos 512 KB
+// deixava a pagina quase vazia — o bloco [fonte-diag] de dez minutos atras ja
+// tinha saido da janela (o painel de 8099 da etapa de DTS varria 8 MB, por isso
+// funcionava). A mesma lista colore as linhas na pagina.
+static const char *const FILTRO[] = {
+  "[fonte", "[voltafonte", "[addons", "[addon]", "[preparo", "[proximo", "[debrid", "[verif",
+  "[next", "abrir:", "proximo episodio", "buscando fontes", "automatico", "auto-play", "auto pick",
+  "bingegroup", "fonte escolhida", "nenhuma fonte", "[player] erro", "[video] erro", "[logrede]", NULL
+};
+// A lista acima e minuscula; a linha e baixada para minuscula numa copia (ate
+// 1 KB, onde ficam as etiquetas) e cada termo vira um strstr — 8 MB em poucos
+// centesimos de segundo no ARM da TV.
+static int linhaDaFonte(const char *l) {
+  char b[1024];
+  size_t i;
+  for (i = 0; i + 1 < sizeof b && l[i]; i++) b[i] = (char)tolower((unsigned char)l[i]);
+  b[i] = 0;
+  for (int k = 0; FILTRO[k]; k++) if (strstr(b, FILTRO[k])) return 1;
+  return 0;
+}
 
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t fio;
@@ -122,7 +147,10 @@ static time_t proximaTentativa, ipQuando;
 
 static int privado(in_addr_t a) {
   unsigned h = ntohl(a);
-  return (h >> 24) == 10 || (h >> 20) == 0xAC1 || (h >> 16) == 0xC0A8 || (h >> 24) == 127;
+  // 10/8, 172.16/12, 192.168/16, 127/8, e tambem 100.64/10 (CGNAT de mesh e
+  // de operadora) e 169.254/16 (link-local): redes de casa que nao sao RFC 1918.
+  return (h >> 24) == 10 || (h >> 20) == 0xAC1 || (h >> 16) == 0xC0A8 || (h >> 24) == 127 ||
+         (h >> 22) == (0x64400000u >> 22) || (h >> 16) == 0xA9FE;
 }
 
 // O IP da TV na rede de casa (a mesma conta de celular.c).
@@ -183,37 +211,37 @@ static const char PAGINA[] =
 "body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 ui-monospace,Menlo,Consolas,monospace}"
 "header{position:sticky;top:0;background:#151a21;padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid #222a35}"
 "header b{font:600 14px system-ui,sans-serif;margin-right:6px}"
-"button,input{background:#1f2630;color:var(--fg);border:1px solid #2d3745;border-radius:6px;padding:5px 9px;font:12px system-ui,sans-serif}"
+"button,input,a.b{background:#1f2630;color:var(--fg);border:1px solid #2d3745;border-radius:6px;padding:5px 9px;font:12px system-ui,sans-serif;text-decoration:none}"
 "button.on{background:#2b5b3f;border-color:#3f8a5e}input{min-width:160px;flex:1;max-width:320px}"
 "#st{color:var(--dim);font:12px system-ui,sans-serif}"
 "#log{padding:8px 12px 40px;white-space:pre-wrap;word-break:break-word}"
-".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.x{display:none}"
+".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.h{color:#fff;font-weight:700;margin-top:10px;border-top:1px solid #333}.x{display:none}"
 "</style></head><body><header><b>Nuvio log</b>"
 "<button id=bf class=on>Source picking</button><button id=bt>Everything</button>"
-"<input id=q placeholder='Search (e.g. T7, bingeGroup)'>"
+"<input id=q placeholder='Search (e.g. T7, queue 1, why=)'>"
 "<button id=ba class=on>Auto-scroll</button><button id=bc>Clear</button>"
-"<a href='/log.txt?baixar=1'><button>Download</button></a><span id=st></span></header>"
+"<a class=b id=dl href='/fonte.txt?baixar=1'>Download</a><span id=st></span></header>"
 "<div id=log></div><script>"
-"var de=-1,so=1,auto=1,q='',L=document.getElementById('log'),S=document.getElementById('st');"
-"var RF=/\\[(fonte|fonte-diag|voltafonte|addons|preparo|proximo|debrid|fontefalha|verif)|abrir:|proximo episodio|buscando fontes|escolha|auto-play|bingeGroup/i;"
-"function cls(t){return /\\[fonte-diag\\]/.test(t)?'d':/next/i.test(t)?'n':/(falh|erro|error|fail)/i.test(t)?'e':RF.test(t)?'f':''}"
-"function vis(d){var t=d.textContent;return (!so||RF.test(t))&&(!q||t.toLowerCase().indexOf(q)>=0)}"
-"function add(txt){var f=document.createDocumentFragment();txt.split('\\n').forEach(function(t){if(!t)return;"
-"var d=document.createElement('div');d.className='l '+cls(t);d.textContent=t;if(!vis(d))d.classList.add('x');f.appendChild(d)});"
-"L.appendChild(f);while(L.childNodes.length>20000)L.removeChild(L.firstChild);if(auto)window.scrollTo(0,document.body.scrollHeight)}"
+"var de=-1,f=1,auto=1,q='',gen=0,L=document.getElementById('log'),S=document.getElementById('st');"
+"function cls(t){return /=====/.test(t)?'h':/\\[fonte-diag\\]/.test(t)?'d':/next/i.test(t)?'n':/(falh|erro|error|fail|refused|NAO)/.test(t)?'e':/\\[fonte/.test(t)?'f':''}"
+"function vis(d){return !q||d.textContent.toLowerCase().indexOf(q)>=0}"
+"function add(txt){var fr=document.createDocumentFragment();txt.split('\\n').forEach(function(t){if(!t)return;"
+"var d=document.createElement('div');d.className='l '+cls(t);d.textContent=t;if(!vis(d))d.classList.add('x');fr.appendChild(d)});"
+"L.appendChild(fr);while(L.childNodes.length>20000)L.removeChild(L.firstChild);if(auto)window.scrollTo(0,document.body.scrollHeight)}"
 "function filtrar(){for(var i=0;i<L.childNodes.length;i++){var d=L.childNodes[i];d.classList.toggle('x',!vis(d))}if(auto)window.scrollTo(0,document.body.scrollHeight)}"
-"function puxar(){fetch('/log.txt?de='+de,{cache:'no-store'}).then(function(r){var f=r.headers.get('X-Fim');"
-"if(r.headers.get('X-Novo')==='1')L.textContent='';if(f!==null)de=+f;return r.text()}).then(function(t){if(t)add(t);"
-"S.textContent='live \\u2022 '+new Date().toLocaleTimeString()}).catch(function(){S.textContent='TV not answering, retrying\\u2026'})"
-".then(function(){setTimeout(puxar,1500)})}"
-"function tg(b,v){b.classList.toggle('on',v)}"
-"bf.onclick=function(){so=1;tg(bf,1);tg(bt,0);filtrar()};bt.onclick=function(){so=0;tg(bf,0);tg(bt,1);filtrar()};"
-"ba.onclick=function(){auto=!auto;tg(ba,auto)};bc.onclick=function(){L.textContent=''};"
+"function puxar(){var g=gen;fetch('/log.txt?f='+f+'&de='+de,{cache:'no-store'}).then(function(r){if(g!==gen)return '';var x=r.headers.get('X-Fim');"
+"if(r.headers.get('X-Novo')==='1')L.textContent='';if(x!==null)de=+x;return r.text()}).then(function(t){if(g!==gen)return;if(t)add(t);"
+"S.textContent=(L.childNodes.length?L.childNodes.length+' lines':'no lines yet')+' • live • '+new Date().toLocaleTimeString()})"
+".catch(function(){S.textContent='TV not answering, retrying…'}).then(function(){if(g===gen)setTimeout(puxar,1500)})}"
+"function modo(v){f=v;bf.classList.toggle('on',v===1);bt.classList.toggle('on',v===0);"
+"dl.href=v?'/fonte.txt?baixar=1':'/log.txt?baixar=1';gen++;de=-1;L.textContent='';S.textContent='loading…';puxar()}"
+"bf.onclick=function(){modo(1)};bt.onclick=function(){modo(0)};"
+"ba.onclick=function(){auto=!auto;ba.classList.toggle('on',auto)};bc.onclick=function(){L.textContent=''};"
 "document.getElementById('q').oninput=function(e){q=e.target.value.toLowerCase();filtrar()};puxar();"
 "</script></body></html>";
 
 // Le [ini, ini+max) do arquivo, so linhas inteiras, limpas. *fim = onde parou.
-static char *lerTrecho(const char *arq, long de, long max, long *fim, int *novo, size_t *n) {
+static char *lerTrecho(const char *arq, long de, long max, int filtrar, long *fim, int *novo, size_t *n) {
   FILE *f = fopen(arq, "rb");
   struct stat st;
   long tam, ini;
@@ -248,14 +276,23 @@ static char *lerTrecho(const char *arq, long de, long max, long *fim, int *novo,
     char *nl = strchr(p, '\n'), *ln = p;
     size_t k;
     if (nl) *nl = 0;
-    logrede_limpar(ln);
-    k = strlen(ln);
-    memcpy(o, ln, k); o += k; *o++ = '\n';
+    if (!filtrar || linhaDaFonte(ln)) {
+      logrede_limpar(ln);
+      k = strlen(ln);
+      memcpy(o, ln, k); o += k; *o++ = '\n';
+    }
     if (!nl) break;
     p = nl + 1;
   }
   *o = 0;
   *n = (size_t)(o - saida);
+  // Filtrado: so o fim do que casou, comecando numa linha inteira.
+  if (filtrar && *n > LR_FILTRO_MAX) {
+    char *c = saida + *n - LR_FILTRO_MAX, *nl = strchr(c, '\n');
+    c = nl ? nl + 1 : c;
+    *n = (size_t)(o - c);
+    memmove(saida, c, *n + 1);
+  }
   free(bruto);
   return saida;
 }
@@ -273,7 +310,14 @@ static void atender(int c) {
 #endif
   if (getpeername(c, (struct sockaddr *)&par, &tp) != 0 || par.sin_family != AF_INET ||
       !privado(par.sin_addr.s_addr)) {
-    responderTexto(c, 403, "text/plain", NULL, "", 0);
+    // Com o motivo na tela: uma pagina em branco parecia "quebrado".
+    char msg[160], ip[48] = "?";
+    int k;
+    if (par.sin_family == AF_INET) inet_ntop(AF_INET, &par.sin_addr, ip, sizeof ip);
+    k = snprintf(msg, sizeof msg, "Nuvio log: this page only answers devices on the home network (your address: %s).\n", ip);
+    printf("[logrede] refused %s (not a home-network address)\n", ip);
+    fflush(stdout);
+    responderTexto(c, 403, "text/plain; charset=utf-8", NULL, msg, (size_t)k);
     return;
   }
   while (k < LR_CAB_MAX) {
@@ -294,22 +338,24 @@ static void atender(int c) {
     responderTexto(c, 200, "text/html; charset=utf-8", NULL, PAGINA, sizeof PAGINA - 1);
     return;
   }
-  if (!strncmp(caminho, "/log.txt", 8)) {
+  if (!strncmp(caminho, "/log.txt", 8) || !strncmp(caminho, "/fonte.txt", 10)) {
     const char *qs = strchr(caminho, '?'), *v;
     long de = -1, fim = 0, max = LR_PASSO;
-    int novo = 0, baixar = 0;
+    int novo = 0, baixar = 0, filtrar = !strncmp(caminho, "/fonte.txt", 10);
     size_t n = 0;
     char *txt, extra[160];
     if (qs && (v = strstr(qs, "de="))) de = strtol(v + 3, NULL, 10);
-    if (qs && strstr(qs, "baixar=1")) { baixar = 1; de = -1; max = LR_BAIXAR; }
-    else if (de < 0) max = LR_INICIO;
-    if (!arq[0] || !(txt = lerTrecho(arq, de, max, &fim, &novo, &n))) {
+    if (qs && strstr(qs, "f=1")) filtrar = 1;
+    if (qs && strstr(qs, "baixar=1")) { baixar = 1; de = -1; max = filtrar ? LR_FILTRO_LER : LR_BAIXAR; }
+    else if (de < 0) max = filtrar ? LR_FILTRO_LER : LR_INICIO;
+    if (!arq[0] || !(txt = lerTrecho(arq, de, max, filtrar, &fim, &novo, &n))) {
       static const char sem[] = "[logrede] no log file on this build yet\n";
       responderTexto(c, 200, "text/plain; charset=utf-8", "X-Fim: 0\r\n", de < 0 ? sem : "", de < 0 ? sizeof sem - 1 : 0);
       return;
     }
     snprintf(extra, sizeof extra, "X-Fim: %ld\r\nX-Novo: %d\r\n%s", fim, novo,
-             baixar ? "Content-Disposition: attachment; filename=\"nuvio-log.txt\"\r\n" : "");
+             !baixar ? "" : filtrar ? "Content-Disposition: attachment; filename=\"nuvio-source-picking.txt\"\r\n"
+                    : "Content-Disposition: attachment; filename=\"nuvio-log.txt\"\r\n");
     responderTexto(c, 200, "text/plain; charset=utf-8", extra, txt, n);
     free(txt);
     return;
@@ -317,11 +363,30 @@ static void atender(int c) {
   responderTexto(c, 404, "text/plain", NULL, "", 0);
 }
 
+// UM FIO POR CONEXAO, no maximo LR_CONEXOES ao mesmo tempo. Com um fio so, a
+// conexao que o Chrome abre adiantada e nao usa (preconnect) segurava o
+// atendimento ate o tempo de leitura acabar, e as seguintes ficavam na fila:
+// a pagina "carregava sem nunca abrir". O painel de 8099 da etapa de DTS, que
+// funcionava nesta TV, tambem atendia em fios proprios.
+#define LR_CONEXOES 6
+static pthread_mutex_t contTrava = PTHREAD_MUTEX_INITIALIZER;
+static int emAtendimento;
+static void *atenderFio(void *u) {
+  int c = (int)(intptr_t)u;
+  atender(c);
+  shutdown(c, SHUT_WR);
+  close(c);
+  pthread_mutex_lock(&contTrava); emAtendimento--; pthread_mutex_unlock(&contTrava);
+  return NULL;
+}
+
 static void *servir(void *u) {
   (void)u;
   for (;;) {
     struct pollfd p[2];
-    int c;
+    int c, cheio;
+    pthread_t t;
+    pthread_attr_t at;
     p[0].fd = ouvir; p[0].events = POLLIN; p[0].revents = 0;
     p[1].fd = acorda[0]; p[1].events = POLLIN; p[1].revents = 0;
     if (poll(p, 2, 1000) < 0) { if (errno == EINTR) continue; break; }
@@ -329,9 +394,19 @@ static void *servir(void *u) {
     if (!(p[0].revents & POLLIN)) continue;
     c = accept(ouvir, NULL, NULL);
     if (c < 0) continue;
-    atender(c);
-    shutdown(c, SHUT_WR);
-    close(c);
+    fcntl(c, F_SETFD, FD_CLOEXEC);
+    pthread_mutex_lock(&contTrava);
+    cheio = emAtendimento >= LR_CONEXOES;
+    if (!cheio) emAtendimento++;
+    pthread_mutex_unlock(&contTrava);
+    if (cheio) { close(c); continue; }
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &at, atenderFio, (void *)(intptr_t)c) != 0) {
+      close(c);
+      pthread_mutex_lock(&contTrava); emAtendimento--; pthread_mutex_unlock(&contTrava);
+    }
+    pthread_attr_destroy(&at);
   }
   return NULL;
 }
@@ -343,21 +418,27 @@ static void atualizarUrl(void) {
   ipQuando = time(NULL);
 }
 
+// PORTA 8099 PRIMEIRO: e a do painel de registro da etapa de DTS (b1574f7a),
+// a que o dono abriu nesta TV. A 8090 de antes nao abria no S95C (a pagina
+// ficava carregando). Ocupada: o sistema escolhe uma livre, como o
+// "Digitar pelo celular" (celular.c) — o endereco certo aparece no Ajuste.
 static int subir(void) {
   struct sockaddr_in a;
-  int s, um = 1, p;
+  socklen_t al = sizeof a;
+  int s, um = 1;
   s = socket(AF_INET, SOCK_STREAM, 0);
   if (s < 0) return 0;
   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &um, sizeof um);
   fcntl(s, F_SETFD, FD_CLOEXEC);
-  for (p = LOGREDE_PORTA; p < LOGREDE_PORTA + 10; p++) {
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons((unsigned short)p);
-    if (!bind(s, (struct sockaddr *)&a, sizeof a)) break;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons(LOGREDE_PORTA);
+  if (bind(s, (struct sockaddr *)&a, sizeof a) != 0) {
+    a.sin_port = 0;
+    if (bind(s, (struct sockaddr *)&a, sizeof a) != 0) { close(s); return 0; }
   }
-  if (p >= LOGREDE_PORTA + 10 || listen(s, 4) != 0) { close(s); return 0; }
+  if (listen(s, 16) != 0 || getsockname(s, (struct sockaddr *)&a, &al) != 0) { close(s); return 0; }
   if (pipe(acorda) != 0) { close(s); acorda[0] = acorda[1] = -1; return 0; }
-  ouvir = s; porta = p;
+  ouvir = s; porta = ntohs(a.sin_port);
   if (pthread_create(&fio, NULL, servir, NULL) != 0) {
     close(ouvir); ouvir = -1; close(acorda[0]); close(acorda[1]); acorda[0] = acorda[1] = -1;
     return 0;

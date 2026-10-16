@@ -288,6 +288,19 @@ static int autoParcialPronto(void) {
                  : addons_faltam(NULL, 0) > addons_faltam_decisivos()
                      ? "so faltam add-ons mudos ou lentos nesta TV"
                      : "fonte boa o bastante";
+    // [fonte-diag] Por que ainda nao decidiu: uma linha por lista nova.
+    else { static unsigned ultEsperaGer; static int ultEsperaN = -1;
+      if (ultEsperaGer != stream_lista_geracao() || ultEsperaN != stream_n()) {
+        char faltam[200] = "";
+        int nFaltam = addons_faltam(faltam, sizeof faltam);
+        ultEsperaGer = stream_lista_geracao(); ultEsperaN = stream_n();
+        printf("[fonte-diag] waiting to pick: %d source(s) so far, %d add-on(s) still answering [%s] (%d can hold the pick),"
+               " %u ms, wait=%d ms, remembered=#%d%s%s\n",
+               stream_n(), nFaltam, faltam, addons_faltam_decisivos(), (unsigned)addons_busca_ms(), prazo,
+               lembrada, prefPendente ? ", waiting for the remembered add-on " : "",
+               prefPendente && fp ? fp->provedor : "");
+        fflush(stdout);
+      } }
     return r; }
 }
 // Episodio que o card de "Continuar assistindo" ANUNCIAVA quando o OK pediu
@@ -2296,6 +2309,12 @@ static void abrirProximoEpisodio(int t, int e, int apontar) {
     if (fonteEscolhida == -2 && fonteFalha &&
         pedirFonteJob(FJOB_FALHA, fontePedidoGeracao, NULL, 0) < 0) fonteEscolhida = -1;
     nv_perfil_sessao_destravar();
+    // [fonte-diag] O Next preparado nao passa pelo bloco da escolha: o mesmo
+    // retrato aqui, com a lista que ele trouxe (pagina de registro na rede).
+    printf("[fonte-diag] ===== Next prepared in advance for %s: picked #%d (-2 = the provider policy picks while it plays) =====\n",
+           alvo, preparada.indiceFonte);
+    fontepref_diagnostico(alvo, 1, preparada.indiceFonte);
+    stream_diag_fila("Next prepared in advance", -1);
     const CatItem *ci = cat_item(titulo);
     if (ci) addons_buscar_legendas(alvo, ci->tipo);
     proximopreparo_liberar_resultado(&preparada);
@@ -4956,9 +4975,16 @@ void app_atualizar(float dt, Uint32 agora) {
       stream_preferir(lembrada);
       // Tudo o que pesou nesta escolha, para a pagina de registro na rede.
       { char alvoD[64]; alvoPlayer(alvoD, sizeof alvoD);
-        fontepref_diagnostico(alvoD[0] ? alvoD : base, escolhaDoNext(base, NULL, 0), lembrada);
-        printf("[fonte-diag] motivo da hora da escolha: %s\n",
-               addons_busca_parcial() ? autoMotivo : "todos os add-ons responderam"); fflush(stdout); }
+        int ehNext = escolhaDoNext(base, NULL, 0);
+        fontepref_diagnostico(alvoD[0] ? alvoD : base, ehNext, lembrada);
+        printf("[fonte-diag] motivo da hora da escolha: %s | add-ons: %s, busca %u ms | wait=%d ms (-1 all add-ons, 0 instant)"
+               " | prefer-binge=%s across-sessions=%s pick-by-hand=%s first-in-list=%s\n",
+               addons_busca_parcial() ? autoMotivo : "todos os add-ons responderam",
+               addons_busca_parcial() ? "some still answering" : "all answered", (unsigned)addons_busca_ms(),
+               ajustes_fonte_prazo_ms(), ajustes_fonte_grupo() ? "on" : "off",
+               ajustes_fonte_grupo_sessoes() ? "on" : "off", ajustes_fonte_manual() ? "on" : "off",
+               ajustes_fonte_primeira() ? "on" : "off");
+        stream_diag_fila(ehNext ? "Next episode" : "open / episode list", lembrada); fflush(stdout); }
       // QUEM ESCOLHE E A PESSOA, quando ela pediu isso em Ajustes.
       //
       // A folha abre AQUI e nao no botao pelo mesmo motivo que a fonte

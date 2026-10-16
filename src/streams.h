@@ -165,6 +165,10 @@ int  stream_addon_no_escopo(const char *nome);
 // 0..3 = ordem) e se a ultima escolha so falhou por causa delas.
 int  stream_grupo_regra(int i);
 int  stream_regra_bloqueou(void);
+// [fonte-diag] a fila inteira do auto-play e por que cada fonte ficou fora
+// (pagina de registro na rede, logrede.h). So le; nunca muda a escolha.
+// `pref` = a lembrada que entra na frente (-1 nenhuma).
+void stream_diag_fila(const char *onde, int pref);
 // Candidatas que o automatico ainda pode tentar nesta lista (nao excluidas).
 int  stream_n_candidatas(void);
 

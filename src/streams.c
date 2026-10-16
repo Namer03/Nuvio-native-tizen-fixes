@@ -2365,6 +2365,147 @@ int stream_primeira_boa_sessao(int tentativas, uint64_t sessao) {
   return escolhida;
 }
 
+// [fonte-diag] A FILA DO AUTO-PLAY INTEIRA, para a pagina de registro na rede
+// (logrede.h, dono 16/10): na mesma conta de stream_primeira_boa_sessao (pontos,
+// teto, exclusoes, grupos das regras, ordem dos add-ons, MP4 da LG), em que
+// ordem o automatico tentaria cada fonte, e por que cada uma das outras ficou
+// de fora. So le a lista; nunca muda a escolha. Sem URL nem chave: addon,
+// resolucao, etiquetas e o rotulo, como as outras linhas [fonte].
+static void diagMultas(const Stream *s, char *dst, size_t tam) {
+  size_t o = 0;
+  dst[0] = 0;
+#define DM(cond, txt) do { if ((cond) && o < tam) o += (size_t)snprintf(dst + o, tam - o, "%s" txt, o ? "," : ""); } while (0)
+#ifdef NV_TPK
+  DM(penalAudioTv(s), "audio-dts/truehd-20000");
+#endif
+  DM(s->altura <= 0, "no-res-60000");
+  DM(!cabeNaAltura(s), "over-quality-cap");
+  DM(foraDaFaixaTamanho(s) == 1, "over-max-size");
+  DM(foraDaFaixaTamanho(s) == 2, "under-min-size");
+  DM(s->foraCache, "uncached-500000");
+  DM(soP2P(s), "p2p-600000");
+  DM(ehPlugin(s), "plugin-200000");
+  DM(!ehPlugin(s) && ajustes_fonte_prioridade() != 1 && fitPesadaAutoAlvo(s, NULL), "too-heavy-for-network-140000");
+#undef DM
+  if (o >= tam && tam > 4) memcpy(dst + tam - 4, "...", 4);
+  if (!dst[0]) snprintf(dst, tam, "none");
+}
+static const char *diagPorqueFora(int i, const FonteFiltroConfig *filtro, long *idade) {
+  const Stream *s = &lista[i];
+  *idade = -1;
+  if (automaticaExcluida(i)) return "already failed in this search";
+  if (!canalFolha && !fontefiltro_permite(filtro, &s->filtro)) return "blocked by source filters";
+  if (s->foraCache) return "not cached in debrid";
+  if (ehInformativa(s)) return "addon notice / not a video";
+  if (excedeDecoder(s)) return "TV decoder refused this codec/profile";
+  if ((*idade = fontesmortas_idade(s)) >= 0) return "failed recently (dead-link memory)";
+  return NULL;
+}
+static void diagLinha(const char *pre, int i, long pts, const char *extra) {
+  const Stream *s = &lista[i];
+  char lanc[FONTEPREF_LANC], nv[FONTEPREF_NIVEL], fx[96], mu[160];
+  fontepref_lancamento(s, lanc, sizeof lanc);
+  fontepref_nivel(s, nv, sizeof nv);
+  faixaPontos(s, fx, sizeof fx);
+  diagMultas(s, mu, sizeof mu);
+  printf("[fonte-diag] %s #%d pts=%ld %s| %s | %s | penalties=%s | tier=%s | release=%s | binge=%s | %.120s\n",
+         pre, i, pts, extra ? extra : "", s->provedor[0] ? s->provedor : "-", fx, mu, nv[0] ? nv : "-",
+         lanc[0] ? lanc : "-", s->bingeGroup[0] ? s->bingeGroup : "-", s->rotulo);
+}
+void stream_diag_fila(const char *onde, int pref) {
+  enum { MOSTRA_FILA = 15, MOSTRA_FORA = 25 };
+  static const char *const GR[4] = { "allowed", "allowed-missing-regex", "other", "other-missing-regex" };
+  int total, q, nf = 0, posPref = -1, foraN = 0, regraN = 0, mostrados = 0;
+  int *ordem = NULL, *fila = NULL, *rk = NULL;
+  long *pts = NULL;
+  unsigned char *acima = NULL, *excl = NULL, *naFilaQ = NULL;
+  signed char *grp = NULL;
+  FonteFiltroConfig filtro;
+  FonteRegraCfg rc = regraCfg();
+  int modo = ajustes_fonte_primeira() ? FONTEAUTO_PRIMEIRA : FONTEAUTO_MELHOR, ordemUso = ajustes_fonte_ordem_uso();
+  fontefalha_filtro(&filtro);
+  pthread_mutex_lock(&verTrava);
+  total = n;
+  if (total < 1) {
+    pthread_mutex_unlock(&verTrava);
+    printf("[fonte-diag] auto-play queue (%s): the list is empty\n", onde ? onde : "-");
+    fflush(stdout);
+    return;
+  }
+  ordem = malloc(sizeof *ordem * (size_t)total); fila = malloc(sizeof *fila * (size_t)total);
+  rk = calloc((size_t)total, sizeof *rk); pts = malloc(sizeof *pts * (size_t)total);
+  acima = calloc((size_t)total, 1); excl = calloc((size_t)total, 1); naFilaQ = calloc((size_t)total, 1);
+  grp = calloc((size_t)total, 1);
+  if (!ordem || !fila || !rk || !pts || !acima || !excl || !naFilaQ || !grp) goto fim;
+  for (q = 0; q < total; q++) {
+    int i = ORD(q);
+    ordem[q] = i;
+    if (i == pref && fonteregra_no_escopo(&rc, ehPlugin(&lista[i]))) posPref = q;
+    pts[q] = pontos(&lista[i]);
+    acima[q] = (unsigned char)!cabeNoTeto(&lista[i]);
+    excl[q] = (unsigned char)foraDoAutoComFiltro(i, &filtro);
+    grp[q] = (signed char)grupoDe(i);
+    rk[q] = fonteregra_ordem_rank(lista[i].provedor);
+  }
+  if (lgMp4Primeiro()) mp4PrimeiroNaFaixa(ordem, pts, grp, excl, total);
+  nf = fonteauto_fila_o(modo, total, posPref, pts, acima, excl, grp, rk, ordemUso, total, fila);
+  for (q = 0; q < nf; q++) naFilaQ[fila[q]] = 1;
+  for (q = 0; q < total; q++) if (!naFilaQ[q]) { if (excl[q]) foraN++; else regraN++; }
+  { static const char *const ESC_[3] = { "all", "addons-only", "plugins-only" };
+    static const char *const RX[3] = { "off", "require", "prefer" };
+    static const char *const OU[3] = { "off", "tie-break", "strict" };
+    int tMax = ajustes_tamanho_max_gb(), tMin = ajustes_tamanho_min_gb(), pr = ajustes_fonte_prioridade();
+    const char *qcap = ajustes_qualidade();
+    printf("[fonte-diag] auto-play queue (%s): %d source(s), %d in the queue, %d out of auto-play, %d blocked by auto-play rules"
+           " | remembered=#%d | mode=%s priority=%s hdr=%s quality-cap=%s size=%d-%dGB"
+           " | rules: scope=%s allowed-addons=%d allowed-plugins=%d regex=%s(%s) others=%s order=%s(%d)\n",
+           onde ? onde : "-", total, nf, foraN, regraN, pref,
+           modo == FONTEAUTO_PRIMEIRA ? "first-in-addon-order" : "best-score",
+           pr == 1 ? "max-quality" : pr == 2 ? "start-fast" : "balanced",
+           ajustes_fonte_hdr() == 1 ? "indifferent" : ajustes_fonte_hdr() == 2 ? "avoid" : "prefer",
+           qcap && qcap[0] ? qcap : "auto", tMin, tMax,
+           ESC_[rc.escopo < 0 || rc.escopo > 2 ? 0 : rc.escopo], fonteregra_n(0), fonteregra_n(1),
+           RX[rc.regexModo < 0 || rc.regexModo > 2 ? 0 : rc.regexModo],
+           fonteregra_regex_estado() > 0 ? "ok" : fonteregra_regex_estado() < 0 ? "invalid, ignored" : "empty",
+           rc.usarOutros ? "on" : "off", OU[ordemUso < 0 || ordemUso > 2 ? 0 : ordemUso], fonteregra_ordem_n()); }
+  if (pref >= 0 && pref < total && posPref < 0)
+    printf("[fonte-diag] remembered #%d is outside the auto-play scope, so it does not go first\n", pref);
+  for (q = 0; q < nf && q < MOSTRA_FILA; q++) {
+    int x = fila[q], g = grp[x], gi = g < 0 ? -1 : (g >= FR_GRUPO_OUTROS ? 2 : 0) + (g % FR_GRUPO_OUTROS ? 1 : 0);
+    char pre[24], ex[96];
+    snprintf(pre, sizeof pre, "queue %d:", q + 1);
+    snprintf(ex, sizeof ex, "%sgroup=%s addon-rank=%d ", x == posPref ? "REMEMBERED " : "",
+             gi < 0 ? "-" : GR[gi], rk[x]);
+    diagLinha(pre, ordem[x], pts[x], ex);
+    // Por que ela ganhou das de baixo: a evidencia da nota, so nas 3 primeiras.
+    if (q < 3) { FonteNota nt; char e[256]; notaDe(&lista[ordem[x]], &nt); fontenota_explicar(&nt, e, sizeof e);
+      printf("[fonte-diag]   queue %d evidence: {%s}\n", q + 1, e); }
+  }
+  if (nf > MOSTRA_FILA) printf("[fonte-diag] ... %d more in the queue\n", nf - MOSTRA_FILA);
+  for (q = 0; q < total && mostrados < MOSTRA_FORA; q++) {
+    int i = ordem[q];
+    long idade;
+    const char *pq;
+    char ex[112];
+    if (naFilaQ[q]) continue;
+    if (excl[q]) {
+      pq = diagPorqueFora(i, &filtro, &idade);
+      if (idade >= 0) snprintf(ex, sizeof ex, "why=\"%s, %lds ago\" ", pq, idade);
+      else snprintf(ex, sizeof ex, "why=\"%s\" ", pq ? pq : "excluded");
+    } else snprintf(ex, sizeof ex, "why=\"auto-play rules (scope / allowed add-ons / regex), group=%d\" ", grp[q]);
+    diagLinha("out:", i, pts[q], ex);
+    mostrados++;
+  }
+  if (foraN + regraN > mostrados) printf("[fonte-diag] ... %d more out of the queue\n", foraN + regraN - mostrados);
+  pthread_mutex_unlock(&verTrava);
+  fflush(stdout);
+  goto livre;
+fim:
+  pthread_mutex_unlock(&verTrava);
+livre:
+  free(ordem); free(fila); free(rk); free(pts); free(acima); free(excl); free(naFilaQ); free(grp);
+}
+
 // BOA O SUFICIENTE PARA NAO ESPERAR O RESTO (#221): dentro do teto, em cache
 // no debrid, com link (nao P2P) e na resolucao do teto — 4K quando o teto e
 // "Automatica". E a faixa de cima da pontuacao: um addon que ainda nao

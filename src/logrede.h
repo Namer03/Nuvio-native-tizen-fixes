@@ -1,5 +1,5 @@
 // REGISTRO NA REDE LOCAL (dono, 16/10/2026): o log desta TV numa pagina da
-// rede de casa — http://<ip-da-tv>:8090/log — para ver ao vivo, do celular ou
+// rede de casa — http://<ip-da-tv>:8099/log — para ver ao vivo, do celular ou
 // do computador, por que a escolha da fonte saiu como saiu, sem Tizen Studio.
 //
 // Regras:
@@ -17,11 +17,11 @@
 
 #include <stddef.h>
 
-#define LOGREDE_PORTA 8090
+#define LOGREDE_PORTA 8099   // ocupada: uma livre (logrede_url diz qual)
 
 // Chamado a cada quadro: liga ou desliga o servidor conforme o ajuste.
 void logrede_configurar(int ligado, const char *arquivo);
-// "http://192.168.1.20:8090/log" com o servidor de pe; "" desligado.
+// "http://192.168.1.20:8099/log" com o servidor de pe; "" desligado.
 const char *logrede_url(void);
 // Limpa uma linha de log no lugar (exposta para teste). Nunca cresce a linha.
 void logrede_limpar(char *linha);
