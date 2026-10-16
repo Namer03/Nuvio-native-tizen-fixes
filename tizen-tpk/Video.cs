@@ -404,7 +404,7 @@ namespace NuvioTpk
             bool preparou = false, tocou = false;
             int ultBuf = -1;
             long bufDesde = -1;
-            Func<string> ms = () => relogio.ElapsedMilliseconds + " ms";
+            Func<string> tms = () => relogio.ElapsedMilliseconds + " ms";
             // Player novo nasce no volume cheio; so um pedido DESTA sessao
             // (trailer.c, logo depois do video_tocar) o muda.
             volAlvo = 1f; volPedido = false;
@@ -424,21 +424,21 @@ namespace NuvioTpk
                     if (minha != Volatile.Read(ref sessao)) return;
                     Log("erro " + e.Error);
                     string estado = "?"; try { estado = p.State.ToString(); } catch { }
-                    if (tocou) Log("[tocar-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") while playing at pos " + posMs / 1000 + " s, " + ms() + " after open, state=" + estado + ", last buffering " + ultBuf + "%");
-                    else Log("[abrir-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") at " + ms() + ", prepared=" + preparou + ", state=" + estado + ", buffering " + ultBuf + "%");
+                    if (tocou) Log("[tocar-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") while playing at pos " + posMs / 1000 + " s, " + tms() + " after open, state=" + estado + ", last buffering " + ultBuf + "%");
+                    else Log("[abrir-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") at " + tms() + ", prepared=" + preparou + ", state=" + estado + ", buffering " + ultBuf + "%");
                     NvVid.Evento(EV_ERRO, (int)e.Error, 0);
                 };
                 p.BufferingProgressChanged += (s, e) => {
                     if (minha != Volatile.Read(ref sessao)) return;
                     // Antes de tocar: cada passo de 25%. Tocando: inicio e fim de cada
                     // espera, com quanto durou.
-                    if (!tocou) { if (ultBuf < 0 || e.Percent / 25 != ultBuf / 25) Log("[abrir-diag] buffering " + e.Percent + "% at " + ms()); }
+                    if (!tocou) { if (ultBuf < 0 || e.Percent / 25 != ultBuf / 25) Log("[abrir-diag] buffering " + e.Percent + "% at " + tms()); }
                     else if (e.Percent < 100 && (ultBuf < 0 || ultBuf >= 100)) { bufDesde = relogio.ElapsedMilliseconds; Log("[tocar-diag] buffering started at pos " + posMs / 1000 + " s (" + e.Percent + "%)"); }
                     else if (e.Percent >= 100 && ultBuf >= 0 && ultBuf < 100 && bufDesde >= 0) Log("[tocar-diag] buffering ended after " + (relogio.ElapsedMilliseconds - bufDesde) + " ms at pos " + posMs / 1000 + " s");
                     ultBuf = e.Percent;
                     NvVid.Evento(EV_BUFFER, e.Percent, 0);
                 };
-                p.PlaybackInterrupted += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("interrompido: " + e.Reason); Log((tocou ? "[tocar-diag] interrupted (" : "[abrir-diag] interrupted (") + e.Reason + ") at pos " + posMs / 1000 + " s, " + ms() + " after open"); NvVid.Evento(EV_PAUSADO, 0, 0); } };
+                p.PlaybackInterrupted += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("interrompido: " + e.Reason); Log((tocou ? "[tocar-diag] interrupted (" : "[abrir-diag] interrupted (") + e.Reason + ") at pos " + posMs / 1000 + " s, " + tms() + " after open"); NvVid.Evento(EV_PAUSADO, 0, 0); } };
                 p.SubtitleUpdated += (s, e) => { if (minha == Volatile.Read(ref sessao)) NvVid.Legenda(e.Text ?? "", (int)e.Duration); };
                 foreach (var linha in (cabecalhos ?? "").Split('\n'))
                 {
@@ -463,12 +463,12 @@ namespace NuvioTpk
                 p.SetSource(new MediaUriSource(url));
                 p.Display = fazDisplay();
                 p.DisplaySettings.Mode = PlayerDisplayMode.LetterBox;
-                Log("[abrir-diag] source and display set at " + ms() + "; Prepare starts");
+                Log("[abrir-diag] source and display set at " + tms() + "; Prepare starts");
                 try { await p.PrepareAsync(); }
                 catch (Exception pe)
                 {
                     string estado = "?"; try { estado = p.State.ToString(); } catch { }
-                    Log("[abrir-diag] Prepare FAILED after " + ms() + ": " + pe.GetType().Name + " \"" + pe.Message + "\" hresult=0x" + pe.HResult.ToString("x8") + ", state=" + estado + ", last buffering " + ultBuf + "%");
+                    Log("[abrir-diag] Prepare FAILED after " + tms() + ": " + pe.GetType().Name + " \"" + pe.Message + "\" hresult=0x" + pe.HResult.ToString("x8") + ", state=" + estado + ", last buffering " + ultBuf + "%");
                     throw;
                 }
                 preparou = true;
@@ -476,7 +476,7 @@ namespace NuvioTpk
                     string v = "?", a = "?";
                     try { var vp = p.StreamInfo.GetVideoProperties(); v = p.StreamInfo.GetVideoCodec() + " " + vp.Size.Width + "x" + vp.Size.Height + " " + vp.Fps + " fps " + vp.BitRate / 1000 + " kbps"; } catch (Exception x) { v = "n/a (" + x.GetType().Name + ")"; }
                     try { var ap = p.StreamInfo.GetAudioProperties(); a = p.StreamInfo.GetAudioCodec() + " " + ap.Channels + "ch " + ap.SampleRate + " Hz " + ap.BitRate / 1000 + " kbps"; } catch (Exception x) { a = "n/a (" + x.GetType().Name + ")"; }
-                    Log("[abrir-diag] prepared in " + ms() + ": video " + v + " | audio " + a);
+                    Log("[abrir-diag] prepared in " + tms() + ": video " + v + " | audio " + a);
                 }
                 // A parada e dona unica do descarte, inclusive se o Prepare
                 // terminar depois do pedido de saida ou de outra abertura.
@@ -490,7 +490,7 @@ namespace NuvioTpk
                 if (minha != Volatile.Read(ref sessao)) return;
                 p.Start();
                 tocou = true;
-                Log("[abrir-diag] started at " + ms());
+                Log("[abrir-diag] started at " + tms());
                 windowMetrics.Invalidate();
                 AplicaVolume(p, "start");
                 NvVid.Evento(EV_TOCANDO, 0, 0);
