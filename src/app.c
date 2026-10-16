@@ -2615,6 +2615,11 @@ static void abrirParte(int fonte, const PartesLista *l, int k) {
   if (!partes_sessao_de(alvo)) partes_ponto_esquecer(alvo, sessao_usuario(), perfis_ativo());
   parteArqLista = *l; parteArqK = k;
   parteMp4 = nomeMp4(l->arq[k].nome);
+  // O prazo de 30 s do link conta DAQUI. Sem isto ele contava de um relogio
+  // velho e, minutos depois da primeira abertura, toda escolha "vencia" no
+  // primeiro quadro (log da TV, 16/10: "no link from TorBox in 30 s" na hora,
+  // e o link chegando 1 s depois).
+  parteDesde = SDL_GetTicks();
   parteFase = PF_LINK;
   partes_link_pedir(l->usenet, l->item, l->arq[k].id, 0);
   marco("abrir: arquivo da fonte (partes)");
