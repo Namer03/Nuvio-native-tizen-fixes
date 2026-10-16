@@ -135,12 +135,12 @@ static const char *const F_ABRIR[] = {
   "escolha manual", "erro do player", "sonda apos recusa", "nao abriu", "sem sinal de abertura",
   "fonte escolhida", "automatico (verificado)", "tocando enquanto confere", "[voltafonte]", "failover",
   "[host] erro", "[host] abrir", "[host] interrompido", "[host] cabecalho", "[mkv]", "[dts-tpk]",
-  "[video] tpk", "[logrede]", NULL
+  "[video] tpk", "[fonte-cdn]", "duration", "[logrede]", NULL
 };
 static const char *const F_TOCAR[] = {
   "[tocar-diag]", "[host] erro", "[host] interrompido", "[video]", "[player]", "[dts-tpk]", "[dts-range]",
   "[dts]", "[audio]", "[mkv]", "[tv] ", "reconex", "reconect", "failover", "escolha manual",
-  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[logrede]", NULL
+  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[logrede]", NULL
 };
 static const char *const *const FILTROS[4] = { NULL, F_FONTE, F_ABRIR, F_TOCAR };
 static const char *const NOMES_ARQ[4] = { "nuvio-log.txt", "nuvio-source-picking.txt", "nuvio-wont-open.txt",
@@ -237,7 +237,8 @@ static const char PAGINA[] =
 "<input id=q placeholder='Search (e.g. REFUSED, track #, T7)'>"
 "<button id=ba class=on>Auto-scroll</button><button id=bc>Clear</button>"
 "<a class=b id=dl href='/fonte.txt?baixar=1'>Download</a><span id=st></span>"
-"<div id=cfg>Log settings: <label><input type=checkbox id=cf> read the file header when a source won't open</label><label><input type=checkbox id=co> also for sources that open (to compare; extra 4 MB read)</label></div></header>"
+"<div id=cfg>Log settings: <label><input type=checkbox id=cf> read the file header when a source won't open</label><label><input type=checkbox id=co> also for sources that open (to compare; extra 4 MB read)</label>"
+"<label><input type=checkbox id=cc> test: CDN links expire after 2 min (instead of 2 h 30)</label></div></header>"
 "<div id=log></div><script>"
 "var de=-1,f=1,auto=1,q='',gen=0,L=document.getElementById('log'),S=document.getElementById('st');"
 "var ARQ=['/log.txt','/fonte.txt','/abrir.txt','/tocar.txt'],BT=[b0,b1,b2,b3];"
@@ -256,8 +257,8 @@ static const char PAGINA[] =
 "b0.onclick=function(){modo(0)};b1.onclick=function(){modo(1)};b2.onclick=function(){modo(2)};b3.onclick=function(){modo(3)};"
 "ba.onclick=function(){auto=!auto;ba.classList.toggle('on',auto)};bc.onclick=function(){L.textContent=''};"
 "document.getElementById('q').oninput=function(e){q=e.target.value.toLowerCase();filtrar()};"
-"function cfg(qs){fetch('/diag'+(qs||''),{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){cf.checked=!!j.falha;co.checked=!!j.ok}).catch(function(){})}"
-"cf.onchange=co.onchange=function(){cfg('?falha='+(cf.checked?1:0)+'&ok='+(co.checked?1:0))};cfg();puxar();"
+"function cfg(qs){fetch('/diag'+(qs||''),{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){cf.checked=!!j.falha;co.checked=!!j.ok;cc.checked=!!j.cdn}).catch(function(){})}"
+"cf.onchange=co.onchange=cc.onchange=function(){cfg('?falha='+(cf.checked?1:0)+'&ok='+(co.checked?1:0)+'&cdn='+(cc.checked?1:0))};cfg();puxar();"
 "</script></body></html>";
 
 // Le [ini, ini+max) do arquivo, so linhas inteiras, limpas. *fim = onde parou.
@@ -363,14 +364,16 @@ static void atender(int c) {
     // AJUSTES DO REGISTRO (abrirdiag.h): GET /diag?falha=1&ok=0 muda; sem
     // parametro so devolve o estado.
     const char *qs = strchr(caminho, '?'), *v;
-    char j[64];
-    int k, f = abrirdiag_falha(), o = abrirdiag_ok();
+    char j[96];
+    int k, f = abrirdiag_falha(), o = abrirdiag_ok(), cd = abrirdiag_cdn_teste();
     if (qs) {
       if ((v = strstr(qs, "falha="))) f = v[6] == '1';
       if ((v = strstr(qs, "ok="))) o = v[3] == '1';
-      abrirdiag_definir(f, o);
+      if ((v = strstr(qs, "cdn="))) { cd = v[4] == '1'; if (cd != abrirdiag_cdn_teste()) abrirdiag_definir_cdn_teste(cd); }
+      if (f != abrirdiag_falha() || o != abrirdiag_ok()) abrirdiag_definir(f, o);
     }
-    k = snprintf(j, sizeof j, "{\"falha\":%d,\"ok\":%d}", abrirdiag_falha(), abrirdiag_ok());
+    k = snprintf(j, sizeof j, "{\"falha\":%d,\"ok\":%d,\"cdn\":%d}", abrirdiag_falha(), abrirdiag_ok(),
+                 abrirdiag_cdn_teste());
     responderTexto(c, 200, "application/json", NULL, j, (size_t)k);
     return;
   }

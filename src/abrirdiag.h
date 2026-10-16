@@ -18,9 +18,13 @@
 //   falha: le o cabecalho de toda fonte que o player recusar (padrao: ligado)
 //   ok:    le tambem o de toda fonte que abrir, para comparar (padrao: desligado;
 //          custa uma leitura de ate 4 MiB ao lado do video)
+//   cdn2min: teste da troca do link do CDN (cdnlink.h): os links do CDN
+//          "vencem" em 2 min em vez de 2 h 30 (padrao: desligado)
 void abrirdiag_definir(int falha, int ok);
+void abrirdiag_definir_cdn_teste(int sim);
 int  abrirdiag_falha(void);
 int  abrirdiag_ok(void);
+int  abrirdiag_cdn_teste(void);
 
 // Le e loga o cabecalho de `url` num fio proprio. `porque` entra na linha
 // ("refused", "opened"). Uma vez por URL por sessao do app.

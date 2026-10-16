@@ -7,7 +7,7 @@
 
 // --- ajustes ------------------------------------------------------------------
 
-static volatile int ligFalha = 1, ligOk = 0, lidoAjuste;
+static volatile int ligFalha = 1, ligOk = 0, ligCdn = 0, lidoAjuste;
 
 #ifndef __EMSCRIPTEN__
 #include "dados.h"
@@ -19,25 +19,37 @@ static void carregar(void) {
   if (t) {
     if (strstr(t, "falha=0")) ligFalha = 0;
     if (strstr(t, "ok=1")) ligOk = 1;
+    if (strstr(t, "cdn2min=1")) ligCdn = 1;
     free(t);
   }
 }
+static void gravar(void) {
+  char b[64];
+  snprintf(b, sizeof b, "falha=%d\nok=%d\ncdn2min=%d\n", ligFalha, ligOk, ligCdn);
+  dados_gravar("logdiag.txt", b);
+  printf("[abrir-diag] settings: header on refusal=%s, header on every open=%s, CDN links expire after 2 min (test)=%s\n",
+         ligFalha ? "on" : "off", ligOk ? "on" : "off", ligCdn ? "on" : "off");
+  fflush(stdout);
+}
 void abrirdiag_definir(int falha, int ok) {
-  char b[48];
   carregar();
   ligFalha = falha ? 1 : 0; ligOk = ok ? 1 : 0;
-  snprintf(b, sizeof b, "falha=%d\nok=%d\n", ligFalha, ligOk);
-  dados_gravar("logdiag.txt", b);
-  printf("[abrir-diag] settings: header on refusal=%s, header on every open=%s\n",
-         ligFalha ? "on" : "off", ligOk ? "on" : "off");
-  fflush(stdout);
+  gravar();
+}
+void abrirdiag_definir_cdn_teste(int sim) {
+  carregar();
+  ligCdn = sim ? 1 : 0;
+  gravar();
 }
 int abrirdiag_falha(void) { carregar(); return ligFalha; }
 int abrirdiag_ok(void) { carregar(); return ligOk; }
+int abrirdiag_cdn_teste(void) { carregar(); return ligCdn; }
 #else
 void abrirdiag_definir(int falha, int ok) { (void)falha; (void)ok; }
+void abrirdiag_definir_cdn_teste(int sim) { (void)sim; }
 int abrirdiag_falha(void) { return 0; }
 int abrirdiag_ok(void) { return 0; }
+int abrirdiag_cdn_teste(void) { return 0; }
 #endif
 
 // --- EBML ---------------------------------------------------------------------
