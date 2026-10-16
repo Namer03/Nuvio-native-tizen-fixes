@@ -285,4 +285,3 @@
   0, 0, 0, /* shared exclusions parent, max-size view, release-group editor */
   0, 0, /* prefer binge group (the hand pick for the whole show + the auto memory) Ligado, across sessions Ligado */
   0, 5, /* reuse last link: Ligado (owner, 16/10), 24 h */
-  1, /* log page on the local network (logrede.h): Desligado */

@@ -313,9 +313,6 @@ int fontepref_escolher_lista(const char *id, const Stream *fontes, int n,
 // fontepref_escolher_lista. `forte` em semPerda = casou pelo bingeGroup: so
 // precisa poder tocar (a regra de evidencia nao vale).
 void fontepref_tocando(const char *id, const Stream *s);
-// [fonte-diag] no log: a fonte que tocava, a memoria e as 8 melhores pela
-// memoria, com pontos e motivo (para a pagina de registro na rede, logrede.h).
-void fontepref_diagnostico(const char *id, int next, int escolhida);
 int  fontepref_tocando_de(const char *id, char *provedor, unsigned tamProv, char *binge, unsigned tamBinge);
 int  fontepref_binge_tocando(const char *id);
 int  fontepref_escolher_lista_next(const char *id, const Stream *fontes, int total,
