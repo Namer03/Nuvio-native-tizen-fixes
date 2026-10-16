@@ -254,7 +254,7 @@ void stream_preparo_liberar(StreamPreparo *preparo);
 // (dono, 16/10: a fonte que ja tocou manda; uma "4K" de IA nao a tira); na
 // mesma resolucao, uma release com evidencia claramente maior ainda vence
 // (Code Geass). A manual nao passa por aqui.
-int  stream_grupo_sem_perda(int i);
+int  stream_grupo_sem_perda(int i, int forte);
 // O mesmo sem as regras de auto-play (#202): canal ao vivo.
 int  stream_automatico_canal(void);
 // Exclui uma candidata que ja foi entregue ao player e travou no pipeline.

@@ -265,16 +265,19 @@ void fontepref_trilha(const Stream *s, char *dst, unsigned tam);
 // THE MATCHING ORDER, for the remembered pick (manual) and for the automatic
 // memory alike, by points over the whole list (the highest wins; nothing
 // scores = -1, and the automatic pick takes over as always):
+//   5000  same bingeGroup (the addon's own "same source" label) — FIRST, as
+//         in Nuvio (owner, 16/10): it beats everything below combined, and
+//         for the automatic memory the release-evidence rule does not drop it;
 //   1000  same addon AND same fingerprint with a release group: the release
 //         you picked, in this episode;
-//    500  same bingeGroup (the addon's own "same source" label);
 //    400  same addon, same resolution AND same tier (SeaDex best/alt, Remux
 //         T1...): the release is missing, an equally ranked one is here;
 //    300  same addon AND same fingerprint without a group;
 //    200  same addon AND same audio tags (provedor + trilha, strict);
 //    100  same addon, today's tags contain the remembered ones.
 // Points add up, so a source that is the same release AND the same bingeGroup
-// beats one that is only either; nota() breaks ties.
+// beats one that is only either; nota() breaks ties. On Next, the bingeGroup
+// of the source PLAYING NOW comes before all of this (fontepref_binge_tocando).
 void fontepref_lancamento(const Stream *s, char *dst, unsigned tam);
 void fontepref_nivel(const Stream *s, char *dst, unsigned tam);
 
@@ -297,6 +300,22 @@ int fontepref_escolher(const char *id);
 // A mesma memoria para uma lista propria do proximo episodio. O callback
 // compara a qualidade nessa lista, sem ler/instalar a lista em reproducao.
 int fontepref_escolher_lista(const char *id, const Stream *fontes, int n,
-                             int (*semPerda)(int indice, void *ctx), void *ctx);
+                             int (*semPerda)(int indice, int forte, void *ctx), void *ctx);
+
+// --- NEXT: A FONTE QUE ESTA TOCANDO (dono, 16/10, como o Nuvio) -----------
+// No Next, a PRIMEIRA prioridade e uma fonte com o bingeGroup EXATO da fonte
+// que esta tocando agora (mesmo que ela tenha vindo de um recuo do automatico);
+// so sem ela entram as regras acima (escolha a mao / memoria do automatico).
+// So na RAM. fontepref_tocando: chamado quando uma fonte de episodio tocou de
+// verdade. _tocando_de: 1 se ha uma, com bingeGroup, para este titulo.
+// _binge_tocando: indice na lista atual (stream_item) ou -1.
+// _escolher_lista_next: o mesmo numa lista propria, e sem casar cai em
+// fontepref_escolher_lista. `forte` em semPerda = casou pelo bingeGroup: so
+// precisa poder tocar (a regra de evidencia nao vale).
+void fontepref_tocando(const char *id, const Stream *s);
+int  fontepref_tocando_de(const char *id, char *provedor, unsigned tamProv, char *binge, unsigned tamBinge);
+int  fontepref_binge_tocando(const char *id);
+int  fontepref_escolher_lista_next(const char *id, const Stream *fontes, int total,
+                                   int (*semPerda)(int indice, int forte, void *ctx), void *ctx);
 
 #endif
