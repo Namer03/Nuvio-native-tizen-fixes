@@ -910,6 +910,13 @@ static void convReabrir(double alvo, const char *porque) {
 
 // O player passa a ler o fluxo convertido `url`, que comeca em `pos` da fonte.
 static void convTrocar(int track, int modo, double pos, const char *url) {
+  // Erro ainda nao tratado neste instante e do player que sai (o original que
+  // recusou o audio, o Prepare dele que falhou): nao derruba o convertido.
+  if (reconErroPend) {
+    printf("[dts-tpk] player error 0x%x of the original, pending at the switch: dropped\n", (unsigned)reconErroCod);
+    fflush(stdout);
+    reconErroPend = 0; reconLinhaRede = 0;
+  }
   cv.ativo = 1; cv.sondando = 0; cv.track = track; cv.modo = modo; cv.inicio = pos;
   cv.prog = modoProg(modo);
   snprintf(cv.url, sizeof cv.url, "%s", url);
@@ -980,8 +987,8 @@ static void convSondar(int modo, const char *motivo) {
   if (parado || cv.ativo || cv.sondando || !convPossivel() || strstr(urlAtual, ".m3u8")) return;
   if (!convAbrirSessao(-1, modo, video_pos(), cv.url, sizeof cv.url)) return;
   cv.sondando = 1; cv.modo = modo;
-  printf("[dts-tpk] MP4, %s: o conversor procura DTS/TrueHD na fonte (modo %s); o original segue tocando\n",
-         motivo, nomeModo(modo));
+  printf("[dts-tpk] %s, %s: o conversor procura DTS/TrueHD na fonte (modo %s); o original segue tocando\n",
+         semCabecalho() ? "MP4" : "MKV", motivo, nomeModo(modo));
   fflush(stdout);
 }
 
@@ -1073,11 +1080,13 @@ static void sondaMkv(double pos) {
     }
     // A TV nao listou audio (ou acusou o codec) e a conversao pode entrar: o
     // cabecalho e preciso ja, nao daqui a 5 s de video mudo.
-    if (mkvEstado == 1 && pronto && !mkvSondarJa && convPossivel() &&
+    // O resgate (NotSupportedAudioCodec) nao espera o original preparar: ele
+    // pode nem preparar.
+    if (mkvEstado == 1 && (pronto || naoSupPend) && !mkvSondarJa && convPossivel() &&
         ((faixasLidas && nAudio == 0) || naoSupPend)) mkvSondarJa = 1;
     // Sem pre-busca (ou Tracks fora do trecho): Range proprio, com o video
     // andando. MP4 nao tem TrackEntry: nao vale a descida.
-    if (mkvEstado == 1 && pronto && (pos >= 5.0 || mkvSondarJa)) {
+    if (mkvEstado == 1 && (pronto || (naoSupPend && mkvSondarJa)) && (pos >= 5.0 || mkvSondarJa)) {
       PedidoMkv *p = fonteMp4 ? NULL : malloc(sizeof *p);
       pthread_t fio;
       mkvEstado = 3;
@@ -1213,7 +1222,17 @@ static void convBombear(void) {
     } else {
       int t = convPossivel() ? trilhaParaConverter(0) : 0;
       if (t > 0 && convIniciar(t, video_pos(), "a TV acusou NotSupportedAudioCodec")) return;
-      if (t <= 0) audioNaoSup = 1;
+      if (t <= 0 && mkvN == 0 && convPossivel()) {
+        // A sonda do cabecalho nao trouxe faixa nenhuma (host em pausa para
+        // leitura lateral, rede): o conversor le o arquivo ele mesmo e decide.
+        cv.naoSup = 1;
+        convSondar(ajustes_dts_tpk_modo(), "cabecalho do MKV nao lido; a TV acusou NotSupportedAudioCodec");
+        if (cv.sondando) return;
+      }
+      printf("[dts-tpk] rescue: nothing converted (track to convert %d, header tracks %d, converter %s)\n",
+             t, mkvN, t > 0 ? "did not open" : convPossivel() ? "available" : "not possible");
+      fflush(stdout);
+      audioNaoSup = 1;
     }
   }
   if (!cv.ativo && !cv.sondando && semCabecalho() && pronto && faixasLidas && !faixasDaTv() && convPossivel())
@@ -1234,7 +1253,7 @@ static void convBombear(void) {
       fflush(stdout);
       dts_tpk_fechar(); cv.sondando = 0; cv.desistiu = 1;
       if (cv.naoSup) audioNaoSup = 1;
-    } else if (e == DTSTPK_PRONTO && pronto && faixasLidas && (int)(agora - faixasEm) >= 2500) {
+    } else if (e == DTSTPK_PRONTO && ((pronto && faixasLidas && (int)(agora - faixasEm) >= 2500) || (cv.naoSup && resgateAte))) {
       // 2,5 s depois da lista: a releitura do audio do host (#165) ja veio.
       char url[256];
       double pos = video_pos();
@@ -1377,7 +1396,9 @@ void video_bombear(void) {
       // conversor recusou), ou o cabecalho nao chegou a tempo: falhou. A sonda
       // do conversor (MP4) em curso decide antes.
       resgateAte = 0;
-      printf("[dts-tpk] the converter did not take over: the source failed (TV refused the audio)\n");
+      printf("[dts-tpk] the converter did not take over: the source failed (TV refused the audio; header %s, %d track(s), %s)\n",
+             mkvEstado == 3 ? "read" : mkvEstado == 2 ? "still reading" : "not read", mkvN,
+             naoSupPend ? "timed out waiting" : "nothing to convert");
       fflush(stdout);
       falhou = 1;
     }

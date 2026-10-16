@@ -367,14 +367,16 @@ int main(void) {
   cabPronto = 0; abriuConversor = 0;
   video_tocar("http://h/r.mkv");
   ok(!abriuConversor, "rescue: the original opens (header not known yet)");
+  cabPronto = 1;   // the header probe finds the tracks
   video_tpk_log_host("erro AudioCodecNotSupported");
   nv_tpk_video_evento(5, (int)0xFE6C002Eu, 0);
-  bombear(2);
+  bombear(1);
   ok(!video_falhou(), "rescue: AudioCodecNotSupported is not a failed source");
-  nv_tpk_video_evento(5, -1, 0);   // the Prepare exception that follows
-  bombear(2);
+  // The Prepare exception of the ORIGINAL that follows, before the converted
+  // player opens (later ones the host drops: Video.cs checks the session).
+  nv_tpk_video_evento(5, -1, 0);
+  bombear(1);
   ok(!video_falhou(), "rescue: the Prepare error after it is ignored too");
-  cabPronto = 1;
   { Uint32 t0 = SDL_GetTicks(); while (!abriuConversor && SDL_GetTicks() - t0 < 3000) bombear(1); }
   ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl) && !video_falhou(), "rescue: the converter takes over, no error");
   // S95C 16/10: the converter gave up on the same tick ("o player nao preparou
@@ -382,6 +384,18 @@ int main(void) {
   // converter opened. It must still be converting a moment later.
   bombear(10);
   ok(video_tpk_convertendo() && !video_falhou() && dts_tpk_e_url(ultUrl), "rescue: still converting a moment later (no instant give-up)");
+  video_parar();
+  // HEADER PROBE COMES BACK EMPTY (host paused for side reads, network): the
+  // converter reads the file itself and takes over; the original never even
+  // prepared (S95C 16/10: the TTGA file failed ~2 s after open, "no error code").
+  cabPronto = 0; abriuConversor = 0;
+  video_tocar("http://h/r2.mkv");
+  nv_tpk_video_evento(5, (int)0xFE6C002Eu, 0);
+  { Uint32 t0 = SDL_GetTicks(); while (!abriuConversor && !video_falhou() && SDL_GetTicks() - t0 < 4000) bombear(1); }
+  bombear(10);
+  ok(!video_falhou() && abriuConversor >= 1 && video_tpk_convertendo(), "rescue, header not read: the converter's own probe takes over");
+  { Uint32 t0 = SDL_GetTicks(); while (!dts_tpk_e_url(ultUrl) && SDL_GetTicks() - t0 < 3000) bombear(1); }
+  ok(dts_tpk_e_url(ultUrl) && !video_falhou(), "rescue, header not read: the player opens the converted stream");
   video_parar();
   // Nothing to convert (only a FLAC the TV refuses, say): failed at once, as before.
   cabPronto = 1; misto = 0;
