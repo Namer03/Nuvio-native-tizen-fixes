@@ -30,8 +30,10 @@
 #define NUVIO_CDNLINK_H
 
 // Prazo da resolucao na abertura. O app ja mostra "Abrindo fonte"; o prazo de
-// abertura do app.c e de 15 s sem sinal.
-#define CDNLINK_PRAZO_S 6
+// abertura do app.c e de 15 s sem sinal. 10 s e nao 6: o MediaFusion ja levou
+// mais de 6 s no S95C (16/10), e cair para o link do addon nesse caso nao
+// adianta — o player desiste dele em ~3 s pelo mesmo motivo.
+#define CDNLINK_PRAZO_S 10
 // O que a verificacao resolveu ate este tempo atras serve sem pedido novo.
 #define CDNLINK_REUSO_MS 60000u
 // Validade usada nas decisoes (o TorBox da ~3 h).
