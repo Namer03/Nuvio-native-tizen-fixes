@@ -111,6 +111,7 @@ int dts_tpk_abrir(const char *url, const char *headers, int audio_ordinal, int s
                   int modo, double inicio, char *out, size_t n) {
   (void)url; (void)headers; (void)audio_ordinal; (void)stereo_aac; (void)modo;
   abriuConversor++;
+  SDL_Delay(3);   // like the TV: starting the local server takes a few ms
   snprintf(out, n, "http://127.0.0.1:1/tok/v.ts?t=%.0f", inicio);
   return 1;
 }
@@ -376,6 +377,11 @@ int main(void) {
   cabPronto = 1;
   { Uint32 t0 = SDL_GetTicks(); while (!abriuConversor && SDL_GetTicks() - t0 < 3000) bombear(1); }
   ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl) && !video_falhou(), "rescue: the converter takes over, no error");
+  // S95C 16/10: the converter gave up on the same tick ("o player nao preparou
+  // em 45 s", 0 requests) because convBombear's clock was read before the
+  // converter opened. It must still be converting a moment later.
+  bombear(10);
+  ok(video_tpk_convertendo() && !video_falhou() && dts_tpk_e_url(ultUrl), "rescue: still converting a moment later (no instant give-up)");
   video_parar();
   // Nothing to convert (only a FLAC the TV refuses, say): failed at once, as before.
   cabPronto = 1; misto = 0;

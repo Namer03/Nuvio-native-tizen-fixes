@@ -1212,8 +1212,8 @@ static void convBombear(void) {
       if (!cv.sondando) audioNaoSup = 1;
     } else {
       int t = convPossivel() ? trilhaParaConverter(0) : 0;
-      if (t > 0) convIniciar(t, video_pos(), "a TV acusou NotSupportedAudioCodec");
-      else audioNaoSup = 1;
+      if (t > 0 && convIniciar(t, video_pos(), "a TV acusou NotSupportedAudioCodec")) return;
+      if (t <= 0) audioNaoSup = 1;
     }
   }
   if (!cv.ativo && !cv.sondando && semCabecalho() && pronto && faixasLidas && !faixasDaTv() && convPossivel())
@@ -1234,7 +1234,7 @@ static void convBombear(void) {
       fflush(stdout);
       dts_tpk_fechar(); cv.sondando = 0; cv.desistiu = 1;
       if (cv.naoSup) audioNaoSup = 1;
-    } else if (e == DTSTPK_PRONTO && pronto && faixasLidas && agora - faixasEm >= 2500u) {
+    } else if (e == DTSTPK_PRONTO && pronto && faixasLidas && (int)(agora - faixasEm) >= 2500) {
       // 2,5 s depois da lista: a releitura do audio do host (#165) ja veio.
       char url[256];
       double pos = video_pos();
@@ -1266,7 +1266,11 @@ static void convBombear(void) {
       convDesistir(m);
       return;
     }
-    if (!pronto && agora - cv.abriuEm > 45000u) { convDesistir("o player nao preparou em 45 s"); return; }
+    // Com sinal: `agora` e lido no topo, e um convertido aberto neste mesmo
+    // quadro (sonda, NotSupportedAudioCodec) tem abriuEm DEPOIS dele — sem
+    // sinal a conta dava 4 bilhoes e desistia na hora (S95C, 16/10: "nao
+    // preparou em 45 s" com 0 pedidos ao servidor).
+    if (!pronto && (int)(agora - cv.abriuEm) > 45000) { convDesistir("o player nao preparou em 45 s"); return; }
   }
   // Troca no meio do filme (HLS): o player abriu do zero, e o seek vai depois
   // do Start, como no recarregar da reconexao.
@@ -1305,7 +1309,7 @@ static void convBombear(void) {
              (unsigned)(agora - cv.seekEm), p, nomeModo(cv.modo));
       fflush(stdout);
       cv.seekPend = 0;
-    } else if (agora - cv.seekEm > 30000u) {
+    } else if ((int)(agora - cv.seekEm) > 30000) {
       printf("[dts-tpk] seek para %.1f s: posicao %.2f s depois de 30 s\n", cv.seekAlvo, p);
       fflush(stdout);
       cv.seekPend = 0;
