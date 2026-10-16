@@ -240,7 +240,8 @@ static int autoParcialPronto(void) {
   }
   // O prazo da pessoa e o limite do "lento": quem passa dele quase sempre nesta
   // TV, ou ficou mudo nas ultimas buscas, deixa de segurar a decisao. -1 ("todos
-  // os add-ons") e a pessoa pedindo para esperar: ninguem sai.
+  // os add-ons") e a pessoa pedindo para esperar: ninguem sai, e a escolha so sai
+  // quando todo add-on permitido respondeu (streams.c, esperaTodos).
   addons_definir_espera_decisao(prazo > 0 ? prazo : 0);
   { int passou = prazo > 0 && addons_busca_ms() >= (unsigned)prazo;
     int r = stream_auto_pode_decidir(lembrada, prefPendente, passou, prazo == 0);
@@ -248,6 +249,7 @@ static int autoParcialPronto(void) {
       autoMotivo = lembrada >= 0 && !prefPendente ? "fonte lembrada deste titulo"
                  : passou ? "prazo de espera pelos add-ons"
                  : prazo == 0 ? "instantaneo"
+                 : prazo < 0 ? "todos os add-ons permitidos responderam"
                  : addons_faltam(NULL, 0) > addons_faltam_decisivos()
                      ? "so faltam add-ons mudos ou lentos nesta TV"
                      : "fonte boa o bastante";
