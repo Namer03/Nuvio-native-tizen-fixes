@@ -2004,12 +2004,12 @@ typedef struct {
   const unsigned char *excl;
   int n, melhor, lg;
 } PreparoQualidade;
-static int preparoGrupoSemPerda(int i, void *u) {
+static int preparoGrupoSemPerda(int i, int forte, void *u) {
   const PreparoQualidade *p = u;
   int q;
   for (q = 0; q < p->n && p->ordem[q] != i; q++) {}
   if (q == p->n || p->excl[q] || p->grupo[q] < 0) return 0;
-  if (p->melhor < 0 || p->melhor == i) return 1;
+  if (forte || p->melhor < 0 || p->melhor == i) return 1;
   // Como stream_grupo_sem_perda: resolucao nao conta; na mesma resolucao vale
   // a regra de evidencia (Code Geass).
   const Stream *s = &p->fontes[i], *melhor = &p->fontes[p->melhor];
@@ -2078,7 +2078,9 @@ StreamPreparo *stream_preparo_criar_alvo(const Stream *fontes, int total, int pr
   if (preferidaNext < 0 && alvo && alvo[0]) {
     PreparoQualidade qualidade = {fontes, ordem, grupo, excl, total,
                                  nc > 0 ? ordem[fila[0]] : -1, lgMp4Primeiro()};
-    int lembrada = fontepref_escolher_lista(alvo, fontes, total, preparoGrupoSemPerda, &qualidade);
+    // O preparo e sempre do PROXIMO episodio: primeiro o bingeGroup da fonte
+    // que esta tocando (fontepref.h, Next), depois a memoria do titulo.
+    int lembrada = fontepref_escolher_lista_next(alvo, fontes, total, preparoGrupoSemPerda, &qualidade);
     if (lembrada >= 0 && fonteregra_no_escopo(&escopo, ehPlugin(&fontes[lembrada]))) {
       for (int q = 0; q < total; q++) if (ordem[q] == lembrada) { pref = q; break; }
       // A politica de providers tambem recebe a preferida da lista propria.
@@ -2793,11 +2795,13 @@ int stream_verificar_proxima_vod(int atualIdx, int tentativas, int *conferidas) 
 // pode tocar (excluida, aviso do addon, barrada pelas regras do dono), a regra
 // do MP4 da LG na mesma resolucao e, na MESMA resolucao, uma release com
 // evidencia claramente menor (a regra do Code Geass, abaixo).
-int stream_grupo_sem_perda(int i) {
+int stream_grupo_sem_perda(int i, int forte) {
   int a, gi;
   if (i < 0 || i >= n || automaticaExcluida(i) || ehInformativa(&lista[i])) return 0;
   gi = grupoDe(i);
   if (gi < 0) return 0;
+  // O mesmo bingeGroup vem primeiro (dono, 16/10): so precisa poder tocar.
+  if (forte) return 1;
   a = automaticoCom(1);
   if (a < 0 || a == i) return 1;
   if (lgMp4Primeiro() && lista[i].altura == lista[a].altura &&

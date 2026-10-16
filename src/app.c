@@ -204,6 +204,7 @@ static int prefFolhaN = -1;
 // "[fonte] decisao em N ms (motivo)" (#202). Escrito por autoParcialPronto
 // quando ela devolve 1.
 static const char *autoMotivo = "";
+static int escolhaDoNext(const char *base, char *prov, unsigned tam);
 static int autoParcialPronto(void) {
   char base[24];
   const FontePref *fp;
@@ -216,6 +217,32 @@ static int autoParcialPronto(void) {
   idBaseDoTitulo(base, sizeof base);
   // 0 = Instantaneo, -1 = todos os addons (#202).
   prazo = ajustes_fonte_prazo_ms();
+  // NEXT (dono, 16/10, como o Nuvio): a fonte com o bingeGroup EXATO da que
+  // tocava vem primeiro e sai assim que chega. Enquanto o add-on dela ainda
+  // pode responder (dentro do prazo; sempre com "todos os add-ons"), as outras
+  // regras esperam; depois, a memoria do titulo como sempre.
+  { char provNext[96];
+    if (escolhaDoNext(base, provNext, sizeof provNext)) {
+      static unsigned ultGerNext; static int ultNNext = -1, ultNext = -1;
+      if (stream_n() != ultNNext || stream_lista_geracao() != ultGerNext) {
+        ultNNext = stream_n(); ultGerNext = stream_lista_geracao();
+        ultNext = fontepref_binge_tocando(base);
+      }
+      if (ultNext >= 0) {
+        addons_definir_espera_decisao(prazo > 0 ? prazo : 0);
+        if (stream_auto_pode_decidir(ultNext, 0, 0, prazo == 0)) {
+          autoMotivo = "next: mesmo bingeGroup da fonte que tocava";
+          return 1;
+        }
+        return 0;
+      }
+      if (prazo != 0 && !(prazo > 0 && addons_busca_ms() >= (unsigned)prazo) &&
+          addons_pendente_nome(provNext) && stream_addon_no_escopo(provNext)) {
+        addons_definir_espera_decisao(prazo > 0 ? prazo : 0);
+        return 0;
+      }
+    }
+  }
   // A MEMORIA EM VIGOR, a mao ou a do automatico (dono, 16/10): o add-on dela e
   // esperado antes de decidir, para um add-on lento nao fazer a escolha sair
   // sem ela. Com "escolher a fonte ao reproduzir" so a escolha a mao conta.
@@ -405,6 +432,9 @@ static int    fonteVODTentativas;
 // Retomar pela fonte guardada em curso (tocarFonteGuardada); 0 = caminho normal.
 static int    voltaAtiva;
 static Stream voltaFonte;  // fonte aberta fora da lista; vive alem da conferencia
+// O episodio que o Next abriu buscando (sem preparo): a escolha dele pensa
+// primeiro no bingeGroup da fonte que tocava (escolhaDoNext).
+static char buscaNextAlvo[64];
 static Uint32 voltaDesde;
 static Uint32 fonteVODDesde;
 static Uint32 fonteManualDesde;   // OK na folha de Fontes: prazo ate o primeiro quadro
@@ -632,6 +662,7 @@ static void limparFonteVOD(void) {
   fonteVODAutomatica = 0;
   voltaAtiva = 0;
   memset(&voltaFonte, 0, sizeof voltaFonte);
+  buscaNextAlvo[0] = 0;
   fonteVODTentativas = 0;
   provaZerar();
   fonteVODDesde = 0;
@@ -2146,6 +2177,14 @@ static void prepararAoAbrir(void) {
 // o worker independente termina, o episodio atual continua sendo o dono do
 // video/progresso; nunca resolve a mesma escolha outra vez no caminho frio.
 static struct { int tem, titulo, t, e, apontar; unsigned geracao; uint64_t sessaoPerfil; char atual[64], alvo[64]; } proximoIntento;
+// 1 quando a escolha em curso e a do Next com uma fonte tocando para seguir
+// (bingeGroup); *prov recebe o add-on dela.
+static int escolhaDoNext(const char *base, char *prov, unsigned tam) {
+  char alvo[64];
+  if (!buscaNextAlvo[0] || !base[0] || player_id_canal()[0]) return 0;
+  alvoPlayer(alvo, sizeof alvo);
+  return !strcmp(alvo, buscaNextAlvo) && fontepref_tocando_de(base, prov, tam, NULL, 0);
+}
 static void abrirProximoEpisodio(int t, int e, int apontar) {
   uint64_t sessaoEntrada = nv_perfil_sessao_ler();
   int titulo = player_indice();
@@ -2256,6 +2295,7 @@ static void abrirProximoEpisodio(int t, int e, int apontar) {
   } else {
     nv_perfil_sessao_destravar();
     marco("proximo episodio: buscando fontes");
+    snprintf(buscaNextAlvo, sizeof buscaNextAlvo, "%s", alvo);
     buscarParaPlayer();
     if (!(ajustes_link_reusar() && tocarFonteGuardada())) aguardandoFonte = 1;
   }
@@ -2629,6 +2669,30 @@ static void lembrarAutomatica(void) {
   { char base[24];
     idBaseDoTitulo(base, sizeof base);
     if (base[0]) fontepref_auto_guardar(base, stream_item(at)); }
+}
+// A FONTE QUE ESTA TOCANDO, para o Next (fontepref.h, dono 16/10, como o
+// Nuvio): qualquer fonte de episodio — do automatico, a mao, ou o link
+// reusado — depois de pronta e andando 3 s. So na RAM.
+static void lembrarTocando(void) {
+  static const Stream *ultS;
+  static unsigned ultGer;
+  static char ultAlvo[64];
+  char alvo[64], base[24];
+  const Stream *s;
+  int t = 0, e = 0;
+  if (player_id_canal()[0] || !player_aberto() || player_quer_sair() || aguardandoFonte != 0 ||
+      !video_pronto() || video_pos() < 3.0 || video_falhou() || player_fonte_falhou()) return;
+  s = stream_item(stream_atual());
+  if (!s && voltaFonte.url[0]) s = &voltaFonte;
+  if (!s) return;
+  alvoPlayer(alvo, sizeof alvo);
+  if (s == ultS && stream_lista_geracao() == ultGer && !strcmp(alvo, ultAlvo)) return;
+  player_episodio_atual(&t, &e);
+  if (t <= 0 || e <= 0) return;
+  ultS = s; ultGer = stream_lista_geracao();
+  snprintf(ultAlvo, sizeof ultAlvo, "%s", alvo);
+  idBaseDoTitulo(base, sizeof base);
+  if (base[0]) fontepref_tocando(base, s);
 }
 static void guardarPosicaoFonteFalha(void) {
   if (fonteFalha && player_aberto() && !player_quer_sair() &&
@@ -4869,8 +4933,12 @@ void app_atualizar(float dt, Uint32 agora) {
       // Com "escolher a fonte ao reproduzir" ligado so vale a escolha da PESSOA:
       // a memoria do automatico (bingeGroup) nao pode tocar sozinha aqui nem
       // aparecer como "Sua escolha anterior" na folha que vai abrir.
-      lembrada = base[0] ? (ajustes_fonte_manual() ? fontepref_escolher_manual(base)
-                                                   : fontepref_escolher(base)) : -1;
+      // NEXT: o bingeGroup exato da fonte que tocava vem antes de tudo (o Nuvio
+      // faz o mesmo, tambem com a escolha manual ligada).
+      lembrada = escolhaDoNext(base, NULL, 0) ? fontepref_binge_tocando(base) : -1;
+      if (lembrada < 0)
+        lembrada = base[0] ? (ajustes_fonte_manual() ? fontepref_escolher_manual(base)
+                                                     : fontepref_escolher(base)) : -1;
       stream_preferir(lembrada);
       // QUEM ESCOLHE E A PESSOA, quando ela pediu isso em Ajustes.
       //
@@ -5293,6 +5361,7 @@ void app_atualizar(float dt, Uint32 agora) {
   }
   tentarProximaFonteVOD();
   lembrarAutomatica();
+  lembrarTocando();
   atualizarMotivoInicio();
   // O OK na explicacao da ilha: sai do player e cai em Ajustes > Fontes e addons
   // > Escolha da fonte, na linha da espera. A pessoa pediu: e o unico caso em
@@ -5477,6 +5546,7 @@ void app_atualizar(float dt, Uint32 agora) {
       diagnostico_cancelar_vazao();
       player_encerrar(); player_abrir(titulo,NULL);
       player_definir_episodio(t,e);
+      buscaNextAlvo[0] = 0;   // episodio escolhido na lista: a memoria do titulo, nao o Next
       marco("buscando fontes"); buscarParaPlayer();
       // "Reusar o ultimo link": o episodio ja tocou com um link que vale? Abre
       // nele; a busca acima segue em segundo plano para o recuo e a folha.

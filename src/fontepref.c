@@ -6,6 +6,7 @@
 #include "idbase.h"
 #include "dados.h"
 #include <ctype.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1087,11 +1088,19 @@ static int pontosLanc(const char *provedor, const char *lanc, const Stream *s) {
   return lanc[0] != '|' ? 1000 : 300;
 }
 
+// O MESMO bingeGroup VEM PRIMEIRO (dono, 16/10, como o Nuvio): o addon pos a
+// mesma etiqueta na mesma release/pacote, entao ela vale mais que tudo o resto
+// somado. As outras regras (lancamento, nivel, provedor) so desempatam ou
+// assumem quando nenhuma fonte de hoje tem a etiqueta.
+#define PTS_BINGE 5000
+static int casouBinge;   // a ultima chamada de casar() casou pelo bingeGroup
+
 // A pontuacao de uma fonte contra a escolha manual (fontepref.h tem a tabela).
 // -1 = nao casa por nada; *como = o criterio de maior peso, para o log.
 static int casar(const FontePref *p, const Stream *s, const char **como) {
   int pts = 0, lp, best = 0;
   const char *c = "";
+  casouBinge = 0;
   if (!s) return -1;
   // The release only counts when no remembered audio mark is missing today
   // (the rule of fontepref.h: whoever picked DUB never lands on an ORIGINAL),
@@ -1105,7 +1114,7 @@ static int casar(const FontePref *p, const Stream *s, const char **como) {
     pts += lp; best = lp; c = lp >= 1000 ? "lancamento" : "lancamento sem grupo";
   }
   if (cfgBinge && p->bingeGroup[0] && s->bingeGroup[0] && !strcmp(s->bingeGroup, p->bingeGroup)) {
-    pts += 500; if (500 > best) { best = 500; c = "bingeGroup"; }
+    pts += PTS_BINGE; best = PTS_BINGE; c = "bingeGroup"; casouBinge = 1;
   }
   if (s->provedor[0] && !strcasecmp(s->provedor, p->provedor)) {
     char t[FONTEPREF_TRILHA];
@@ -1146,20 +1155,21 @@ static int melhorManual(const FontePref *p, int total, const Stream *(*item)(int
 // evidencia de release). Resolucao NAO entra (o dono, 16/10: uma "4K" de IA
 // nao tira a fonte que ja provou que toca).
 static int melhorAuto(const AutoPref *a, int total, const Stream *(*item)(int, void *),
-                      void *ctx, int (*semPerda)(int, void *), void *ctxPerda, const char **como) {
+                      void *ctx, int (*semPerda)(int, int, void *), void *ctxPerda, const char **como) {
   int i, melhor = -1, melhorPts = -1;
   const char *c = "", *ci;
   for (i = 0; i < total; i++) {
     int pts = casar(&a->p, item(i, ctx), &ci);
     if (pts <= melhorPts) continue;
-    if (semPerda && !semPerda(i, ctxPerda)) continue;
+    // O mesmo bingeGroup so precisa poder tocar: a regra de evidencia nao o tira.
+    if (semPerda && !semPerda(i, casouBinge, ctxPerda)) continue;
     melhorPts = pts; melhor = i; c = ci;
   }
   if (como) *como = c;
   return melhor;
 }
 
-static int semPerdaGlobal(int i, void *ctx) { (void)ctx; return stream_grupo_sem_perda(i); }
+static int semPerdaGlobal(int i, int forte, void *ctx) { (void)ctx; return stream_grupo_sem_perda(i, forte); }
 
 // Lado de leitura: ver melhorAuto.
 static int escolherAuto(const char *id) {
@@ -1201,7 +1211,7 @@ int fontepref_escolher(const char *id) {
 }
 
 int fontepref_escolher_lista(const char *id, const Stream *fontes, int total,
-                             int (*semPerda)(int, void *), void *ctx) {
+                             int (*semPerda)(int, int, void *), void *ctx) {
   if (!fontes || total < 1) return -1;
   const FontePref *p = fontepref_do_titulo(id);
   if (p) return melhorManual(p, total, itemVetor, (void *)fontes, NULL);
@@ -1209,6 +1219,65 @@ int fontepref_escolher_lista(const char *id, const Stream *fontes, int total,
   int k = autoAchar(base);
   if (!autoUsavel(k)) return -1;
   return melhorAuto(&tabAuto[k], total, itemVetor, (void *)fontes, semPerda, ctx, NULL);
+}
+
+// --- NEXT: A FONTE QUE ESTA TOCANDO (dono, 16/10, como o Nuvio) -----------
+// So na RAM: o bingeGroup e o add-on da fonte que tocou de verdade agora.
+// Lido tambem pelo worker do proximo episodio, dai a trava.
+static pthread_mutex_t travaTocando = PTHREAD_MUTEX_INITIALIZER;
+static char tocandoBase[24], tocandoProv[96], tocandoBinge[FONTEPREF_BINGE];
+
+void fontepref_tocando(const char *id, const Stream *s) {
+  char base[24];
+  if (!id || !s) return;
+  fontepref_id_base(id, base, sizeof base);
+  pthread_mutex_lock(&travaTocando);
+  snprintf(tocandoBase, sizeof tocandoBase, "%s", base);
+  snprintf(tocandoProv, sizeof tocandoProv, "%s", s->provedor);
+  snprintf(tocandoBinge, sizeof tocandoBinge, "%s", s->bingeGroup);
+  pthread_mutex_unlock(&travaTocando);
+}
+
+int fontepref_tocando_de(const char *id, char *provedor, unsigned tamProv, char *binge, unsigned tamBinge) {
+  char base[24];
+  int ok;
+  if (!id || !cfgBinge) return 0;
+  fontepref_id_base(id, base, sizeof base);
+  pthread_mutex_lock(&travaTocando);
+  ok = base[0] && tocandoBinge[0] && !strcmp(base, tocandoBase);
+  if (ok && provedor) snprintf(provedor, tamProv, "%s", tocandoProv);
+  if (ok && binge) snprintf(binge, tamBinge, "%s", tocandoBinge);
+  pthread_mutex_unlock(&travaTocando);
+  return ok;
+}
+
+static int bingeTocando(const char *id, int total, const Stream *(*item)(int, void *), void *ctx,
+                        int (*podeTocar)(int, int, void *), void *ctxPode) {
+  char binge[FONTEPREF_BINGE];
+  int i;
+  if (!fontepref_tocando_de(id, NULL, 0, binge, sizeof binge)) return -1;
+  // A PRIMEIRA da lista com a etiqueta exata, como o Nuvio: a ordem e a do addon.
+  for (i = 0; i < total; i++) {
+    const Stream *s = item(i, ctx);
+    if (s && s->bingeGroup[0] && !strcmp(s->bingeGroup, binge) && (!podeTocar || podeTocar(i, 1, ctxPode)))
+      return i;
+  }
+  return -1;
+}
+
+int fontepref_binge_tocando(const char *id) {
+  int i = bingeTocando(id, stream_n(), itemGlobal, NULL, semPerdaGlobal, NULL);
+  if (i >= 0) { printf("[fonte] next: mesmo bingeGroup da fonte que tocava, posicao %d\n", i); fflush(stdout); }
+  return i;
+}
+
+int fontepref_escolher_lista_next(const char *id, const Stream *fontes, int total,
+                                  int (*semPerda)(int, int, void *), void *ctx) {
+  int i;
+  if (!fontes || total < 1) return -1;
+  i = bingeTocando(id, total, itemVetor, (void *)fontes, semPerda, ctx);
+  if (i >= 0) { printf("[fonte] next (preparado): mesmo bingeGroup da fonte que tocava, posicao %d\n", i); fflush(stdout); return i; }
+  return fontepref_escolher_lista(id, fontes, total, semPerda, ctx);
 }
 
 static int escolherManual(const FontePref *p) {
