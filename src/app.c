@@ -2179,13 +2179,23 @@ static void prepararAoAbrir(void) {
                     s && s->infoHash[0];
   // URL assinada de addon nao ganha vida nova por uma sonda tardia. Busca
   // real renova a lista; hash nativo renova somente a mesma rota cache-only.
+  // LISTA VELHA NAO E MOTIVO PARA PERGUNTAR A TODOS OS ADDONS DE NOVO SOZINHO
+  // (dono, 16/10, log 20: "atualiza em intervalos aleatorios"). Esta funcao
+  // roda a cada quadro com a pagina do titulo aberta; com a lista passando de
+  // FA_LINK_VALE_MS ela chamava addons_buscar_renovar a cada
+  // FA_RENOVAR_INTERVALO_MS (a folha de Fontes esvaziava e enchia de novo no
+  // meio da escolha). Agora o preparo so desiste: o Play renova a lista velha
+  // (renovarListaDoPlayer) e "Perguntar a todos os addons de novo" e o jeito
+  // manual.
   if (!mesmoNativo && !(preparo.falhou && preparo.falha && s && s->infoHash[0]) &&
       stream_idade_ms() > FA_LINK_VALE_MS) {
     preparoInvalidar();
     preparoUltimo.tem = 1; preparoUltimo.lista = g; preparoUltimo.quando = SDL_GetTicks();
     preparoUltimo.contexto = contexto;
     snprintf(preparoUltimo.alvo, sizeof preparoUltimo.alvo, "%s", alvo);
-    stream_definir_alvo(alvo); addons_buscar_renovar(alvo, ci->tipo);
+    printf("[fonte] preparo: lista com %u s, nao renova sozinho (o Play renova)\n",
+           (unsigned)(stream_idade_ms() / 1000u));
+    fflush(stdout);
     return;
   }
   stream_preferir(lembrada); preparoLembradaRod = lembrada;
@@ -5173,8 +5183,22 @@ void app_atualizar(float dt, Uint32 agora) {
       int i = detail_indice();
       const CatItem *ci = cat_item(i);
       char alvo[64];
+      int esperaFoco = 0;
       idDoAlvo(ci, alvo, sizeof alvo);
-      if (!player_aberto() && aguardandoFonte != 2 && ci && ci->imdb[0] &&
+      // ANDAR PELOS EPISODIOS NAO E PEDIR FONTES (dono, 16/10: "busca a cada
+      // poucos segundos"). Trocar so o EPISODIO do mesmo titulo espera o foco
+      // parar 1,2 s nele; titulo novo, folha de Fontes aberta ou lista de
+      // addons mudada buscam na hora.
+      { static char pendAlvo[64];
+        static Uint32 pendDesde;
+        char b1[24], b2[24];
+        fontepref_id_base(alvo, b1, sizeof b1);
+        fontepref_id_base(ultimoAlvo, b2, sizeof b2);
+        if (ultimoAlvo[0] && strcmp(alvo, ultimoAlvo) && !strcmp(b1, b2) && !stream_folha_aberta()) {
+          if (strcmp(pendAlvo, alvo)) { snprintf(pendAlvo, sizeof pendAlvo, "%s", alvo); pendDesde = SDL_GetTicks(); }
+          esperaFoco = SDL_GetTicks() - pendDesde < 1200u;
+        } }
+      if (!player_aberto() && aguardandoFonte != 2 && ci && ci->imdb[0] && !esperaFoco &&
           (strcmp(alvo, ultimoAlvo) || (detail_aberto() && ultimaVersao != addons_versao()))) {
         if (!strcmp(alvo, ultimoAlvo)) printf("[addons] lista mudou: refazendo a busca de fontes de %s\n", alvo);
         snprintf(ultimoAlvo, sizeof ultimoAlvo, "%s", alvo);
@@ -5190,6 +5214,8 @@ void app_atualizar(float dt, Uint32 agora) {
         // e serie, mesmo quando o catalogo ja trouxe elenco.
         if (!strcmp(ci->tipo, "series") || strcmp(ci->tipo, "movie") ||
             ci->nElenco == 0) desc_episodios(i, 0);
+        printf("[addons] busca: pagina do titulo, %s\n", alvo);
+        fflush(stdout);
         { stream_definir_alvo(alvo); addons_buscar(alvo, ci->tipo); }
         aquecerAoAbrirTitulo();
         // Legendas do OpenSubtitles junto: sao dezenas por titulo e a busca
