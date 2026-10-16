@@ -1275,6 +1275,13 @@ static int pendenteRankCb(const char *nome, int plugin, void *u) {
   return fonteregra_ordem_rank(nome);
 }
 int  stream_cabe_no_teto(const Stream *s) { return s ? cabeNoTeto(s) : 1; }
+// O add-on `nome` pode dar fonte ao automatico ("Fontes do auto-play")? Para
+// app.c so esperar pela fonte lembrada quando ela poderia ser escolhida.
+int  stream_addon_no_escopo(const char *nome) {
+  FonteRegraCfg rc = regraCfg();
+  if (!nome || !nome[0]) return 0;
+  return fonteregra_grupo_pendente(&rc, nome, 0) >= 0 || fonteregra_grupo_pendente(&rc, nome, 1) >= 0;
+}
 
 // Endereco de aviso e nao de conteudo. Estes dois foram MEDIDOS no aparelho:
 // o AIOStreams manda para slate.m3u8/slate.mp4 ("This playback link couldn't be
@@ -2409,11 +2416,17 @@ int stream_auto_pode_decidir(int preferida, int prefPendente, int prazoPassou, i
   pthread_mutex_unlock(&verTrava);
   p.modo = ajustes_fonte_primeira() ? FONTEAUTO_PRIMEIRA : FONTEAUTO_MELHOR;
   p.total = total; p.preferida = posPref; p.prefPendente = prefPendente;
-  p.prazoPassou = prazoPassou; p.algumPendente = addons_faltam_decisivos() > 0;
+  p.prazoPassou = prazoPassou;
   p.pontos = pts; p.acimaTeto = acima; p.excluida = excl; p.boa = boa;
   p.addon = ad; p.pendenteAntes = pendenteAntesCb;
   p.grupo = grp; p.instantaneo = instantaneo;
   p.pendenteGrupoMin = addons_pendente_grupo_min(pendenteGrupoCb, &rc);
+  // SO OS ADD-ONS QUE O AUTOMATICO PODE USAR seguram a decisao (dono, 16/10):
+  // um add-on fora de "Fontes do auto-play" ainda respondendo nao faz "Todos os
+  // add-ons" esperar — as fontes dele nunca seriam escolhidas. Sem regras de
+  // escopo, todo add-on conta, como antes. pendenteGrupoMin ja e o menor grupo
+  // entre os pendentes PERMITIDOS (99 = nenhum).
+  p.algumPendente = p.pendenteGrupoMin < 99;
   p.rank = rk; p.ordemUso = ajustes_fonte_ordem_uso();
   p.pendenteRankMin = p.ordemUso == FR_ORDEM_ESTRITA ? addons_pendente_grupo_min(pendenteRankCb, &rc) : 99;
   r = fonteauto_pode_decidir(&p);

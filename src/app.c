@@ -214,7 +214,10 @@ static int autoParcialPronto(void) {
   if (stream_n() < 1 || stream_n() <= autoEsperaN) return 0;
   if (stream_n_candidatas() < 1) return 0;
   idBaseDoTitulo(base, sizeof base);
-  fp = base[0] ? fontepref_do_titulo(base) : NULL;
+  // A MEMORIA EM VIGOR, a mao ou a do automatico (dono, 16/10): o add-on dela e
+  // esperado antes de decidir, para um add-on lento nao fazer a escolha sair
+  // sem ela. Com "escolher a fonte ao reproduzir" so a escolha a mao conta.
+  fp = !base[0] ? NULL : ajustes_fonte_manual() ? fontepref_do_titulo(base) : fontepref_memoria(base);
   if (fp) {
     // fontepref_escolher escreve no log: uma vez por tamanho de lista.
     if (stream_n() != ultN || stream_lista_geracao() != ultGeracao) {
@@ -222,7 +225,8 @@ static int autoParcialPronto(void) {
       ultLembrada = fontepref_escolher(base);
     }
     lembrada = ultLembrada;
-    prefPendente = lembrada < 0 && addons_pendente_nome(fp->provedor);
+    // So vale esperar se o add-on dela pode dar fonte ao automatico.
+    prefPendente = lembrada < 0 && addons_pendente_nome(fp->provedor) && stream_addon_no_escopo(fp->provedor);
   }
   // Escolher a mao: a folha abre com o que ja chegou e continua enchendo.
   if (ajustes_fonte_manual() && lembrada < 0) {

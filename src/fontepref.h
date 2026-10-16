@@ -225,6 +225,11 @@ int fontepref_escolher_manual(const char *id);
 // app.c chama a cada quadro; sao so atribuicoes.
 void fontepref_configurar(int reusar, long long validadeS, int preferirGrupo, int grupoEntreSessoes);
 
+// A memoria em vigor deste titulo: a escolha a mao, senao a fonte que o
+// automatico tocou (se os ajustes a deixam valer). NULL = nenhuma. Para app.c
+// esperar pelo add-on dela antes de decidir (autoParcialPronto).
+const FontePref *fontepref_memoria(const char *id);
+
 // Le o arquivo do perfil corrente. Chamar no arranque, depois de
 // dados_iniciar. Sem pasta de dados e no-op silencioso (dados.c ja explicou no
 // log por que nao ha pasta) e a tabela comeca vazia.

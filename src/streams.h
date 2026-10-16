@@ -159,6 +159,8 @@ int  stream_ordem_addon(int i);
 // fonteauto_pode_decidir. `preferida` e o indice da lembrada nesta lista (-1).
 // `instantaneo` (#202): "Espera pelos add-ons" = Instantaneo.
 int  stream_auto_pode_decidir(int preferida, int prefPendente, int prazoPassou, int instantaneo);
+// 1 = o add-on `nome` esta dentro de "Fontes do auto-play" (fonteregra).
+int  stream_addon_no_escopo(const char *nome);
 // REGRAS DE AUTO-PLAY (#202, fonteregra.h): o grupo da fonte i (-1 = fora,
 // 0..3 = ordem) e se a ultima escolha so falhou por causa delas.
 int  stream_grupo_regra(int i);

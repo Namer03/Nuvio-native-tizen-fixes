@@ -1179,6 +1179,17 @@ static int escolherAuto(const char *id) {
   return melhor;
 }
 
+const FontePref *fontepref_memoria(const char *id) {
+  const FontePref *p = fontepref_do_titulo(id);
+  char base[24];
+  int k;
+  if (p) return p;
+  if (!carregado) fontepref_iniciar();
+  fontepref_id_base(id, base, sizeof base);
+  k = autoAchar(base);
+  return autoUsavel(k) ? &tabAuto[k].p : NULL;
+}
+
 int fontepref_escolher_manual(const char *id) {
   const FontePref *p = fontepref_do_titulo(id);
   return p ? escolherManual(p) : -1;
