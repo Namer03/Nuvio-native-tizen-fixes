@@ -35,6 +35,7 @@
 #include "proxyts.h"
 #include "dts/dts_hls_tpk.h"
 #include "cdnlink.h"
+#include "mkvfix.h"
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -361,7 +362,27 @@ void nv_tpk_video_legenda(const char *texto, int durMs) {
 }
 
 enum { EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5,
-       EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8 };
+       EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8, EV_BUSCA_FALHOU = 9 };
+
+// SEEK QUE A TV RECUSA NUM MKV DE INDICE ESCONDIDO (mkvfix.h). `hostUrl` e o
+// que o player recebeu de verdade (link do CDN, do addon ou do TorBox): e ele
+// que a sonda le, sem ir ao addon de novo.
+static char hostUrl[sizeof urlAtual], hostCab[sizeof cabecalhos];
+static struct {
+  int sondou;            // a sonda deste arquivo ja saiu
+  int ativo;             // o player le pelo servidor local
+  int pend; double pendAlvo; Uint32 pendEm;   // seek pedido com a sonda em curso
+  int avisou;            // "nao da para buscar" ja foi dito nesta fonte
+} mf;
+static atomic_int mfRecusas;   // EV_BUSCA_FALHOU (fio do host)
+static atomic_int mfAviso;     // video_tpk_aviso_busca consome
+static void abrirHost(const char *url, const char *cab) {
+  if (!mkvfix_e_url(url)) {
+    snprintf(hostUrl, sizeof hostUrl, "%s", url ? url : "");
+    snprintf(hostCab, sizeof hostCab, "%s", cab ? cab : "");
+  }
+  hAbrir(url, cab);
+}
 
 __attribute__((visibility("default")))
 void nv_tpk_video_evento(int tipo, int a, int b) {
@@ -385,6 +406,7 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
       if (a < 100 && !bufferando) { bufferando = 1; bufferDesde = SDL_GetTicks(); }
       else if (a >= 100) bufferando = 0;
       break;
+    case EV_BUSCA_FALHOU: atomic_fetch_add(&mfRecusas, 1); break;
     case EV_VELOCIDADE:
       vel_log(a, b ? "plataforma ok" : "plataforma recusou");
       if (!b) { velRecusada = 1; velPedida = 100; }
@@ -497,7 +519,7 @@ static Uint32 cdnIdade(void) { return cdn.usado ? SDL_GetTicks() - cdn.em : 0; }
 // O link do CDN do player ja passou da validade (cdnlink_validade_ms): toda
 // conexao nova dele (seek, retomar) arrisca o link vencido.
 static int cdnVelho(void) {
-  return cdn.usado && !cv.ativo && cdnG.validade_ms && cdnIdade() > cdnG.validade_ms();
+  return cdn.usado && !cv.ativo && !mf.ativo && cdnG.validade_ms && cdnIdade() > cdnG.validade_ms();
 }
 
 // Abre urlAtual pelo CDN. 1 = cuidou da abertura (ja abriu com o link da
@@ -516,7 +538,7 @@ static int cdnAbrir(void) {
     cdn.usado = 1; cdn.em = SDL_GetTicks() - idade;
     printf("[fonte-cdn] the player gets the CDN link the check resolved %u s ago\n", idade / 1000u);
     fflush(stdout);
-    hAbrir(fim, cabecalhos);
+    abrirHost(fim, cabecalhos);
     return 1;
   }
   p = calloc(1, sizeof *p);
@@ -547,8 +569,8 @@ static void cdnBombear(void) {
     if (!ativo || parado || !hAbrir) return;
     if (ok) {
       cdn.usado = 1; cdn.em = SDL_GetTicks();
-      hAbrir(fim, cabecalhos);
-    } else hAbrir(urlAtual, cabecalhos);
+      abrirHost(fim, cabecalhos);
+    } else abrirHost(urlAtual, cabecalhos);
     return;
   }
   if (SDL_GetTicks() - cdn.pediuEm > (CDNLINK_PRAZO_S + 3) * 1000u) {
@@ -556,7 +578,7 @@ static void cdnBombear(void) {
     fflush(stdout);
     cdn.pend = 0;
     atomic_fetch_add(&cdnGer, 1);   // o fio atrasado descarta o que achar
-    if (ativo && !parado && hAbrir) hAbrir(urlAtual, cabecalhos);
+    if (ativo && !parado && hAbrir) abrirHost(urlAtual, cabecalhos);
   }
 }
 
@@ -575,6 +597,52 @@ static void cdnRenovar(double alvo, const char *porque) {
 }
 
 static int emTrailer = 0;   // ver video_tpk_trailer_marcar
+// Reabre pelo servidor local em `alvo` (mkvfix.h): para o app e um seek, como
+// a troca do link do CDN — posicao mantida, faixas devolvidas, capa por cima.
+static void mfLigar(double alvo, const char *porque) {
+  printf("[mkvfix] %s at %.1f s: the TV can't seek this file as served; reopening through the local fix\n", porque, alvo);
+  fflush(stdout);
+  mf.ativo = 1; mf.pend = 0;
+  reconAudio = audioAtual; reconLeg = legAtual; reconFaixasPend = 1;
+  reconBuscarMs = alvo > 1.0 ? (int)(alvo * 1000.0) : -1;
+  cv.reabrindo = 1; cv.posMantida = alvo; cv.reabriuEm = SDL_GetTicks(); cv.reabTocandoEm = 0;
+  abrirSessao();
+}
+// A sonda: so filme/episodio, so o arquivo original (nao o conversor) e so
+// link http(s) de fora. Uma vez por fonte.
+static int mfPode(void) {
+  return reconPermitida && !cv.ativo && !emTrailer && !mf.sondou && hostUrl[0] &&
+         (!strncmp(hostUrl, "http://", 7) || !strncmp(hostUrl, "https://", 8)) &&
+         !strstr(hostUrl, "://127.0.0.1") && !strstr(hostUrl, "://localhost");
+}
+static void mfSondar(void) {
+  if (!mfPode()) return;
+  mf.sondou = 1;
+  mkvfix_sondar(hostUrl, hostCab, strcmp(urlAtual, hostUrl) ? urlAtual : NULL);
+}
+static void mfBombear(void) {
+  int e;
+  if (pronto && !mf.sondou) mfSondar();
+  if (!mf.sondou) return;
+  e = mkvfix_estado();
+  if (e == MKVFIX_SONDANDO) return;
+  if (mf.pend) {
+    mf.pend = 0;
+    if (e == MKVFIX_PRECISA && !mf.ativo && !cv.ativo && ativo && !parado && SDL_GetTicks() - mf.pendEm < 20000u)
+      mfLigar(mf.pendAlvo, "seek asked during the check");
+  }
+  // A TV recusou seek e nao ha o que consertar: diz uma vez, em vez do nada.
+  if (atomic_load(&mfRecusas) > 0 && !mf.ativo && !mf.avisou && (e == MKVFIX_SEM_INDICE || e == MKVFIX_NORMAL)) {
+    mf.avisou = 1;
+    printf("[mkvfix] the TV refused a seek and the header has %s\n",
+           e == MKVFIX_SEM_INDICE ? "no index to point to (nothing to fix)" : "its index listed (not the hidden-index case)");
+    fflush(stdout);
+    if (e == MKVFIX_SEM_INDICE) atomic_store(&mfAviso, 1);
+  }
+}
+__attribute__((visibility("default")))
+int video_tpk_aviso_busca(void) { return atomic_exchange(&mfAviso, 0); }
+
 // Abre urlAtual no host. Serve a fonte nova e ao recarregar da reconexao.
 static int abrirSessao(void) {
   // video_iniciar() NAO e chamada no .tpk (so video.c, o ramo da LG, a chama;
@@ -616,8 +684,15 @@ static int abrirSessao(void) {
       hAbrir(cv.url, pre); }
     return 1;
   }
+  if (mf.ativo) {
+    char u[256];
+    if (mkvfix_url(u, sizeof u)) { abrirHost(u, ""); return 1; }
+    mf.ativo = 0;
+    printf("[mkvfix] the local fix is gone: opening the file directly\n");
+    fflush(stdout);
+  }
   if (cdnAbrir()) return 1;
-  hAbrir(urlAtual, cabecalhos);
+  abrirHost(urlAtual, cabecalhos);
   return 1;
 }
 
@@ -634,6 +709,9 @@ int video_tocar(const char *u) {
   // em abrirSessao); no caminho de sempre abrirSessao ja as zerava.
   nAudio = nLeg = 0; audioAtual = 0; legAtual = -1;
   snprintf(urlAtual, sizeof urlAtual, "%s", u ? u : "");
+  memset(&mf, 0, sizeof mf); atomic_store(&mfRecusas, 0); atomic_store(&mfAviso, 0);
+  hostUrl[0] = hostCab[0] = 0;
+  mkvfix_parar();
   capmkv_iniciar(urlAtual);
   mkvGeracao++; mkvN = 0; faixasNovas = 0; mkvOlhou = 0; mkvSondarJa = 0; mkvNaoMkv = 0;
   // Um fio da fonte anterior ainda na rede ve a geracao mudada e descarta.
@@ -1363,6 +1441,7 @@ static void reabrindoVigiar(void) {
 
 void video_bombear(void) {
   cdnBombear();
+  mfBombear();
   convBombear();
   reabrindoVigiar();
   escolhasPendentes();
@@ -1475,6 +1554,8 @@ void video_parar(void) {
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   emTrailer = 0;
   temRoi = 0;
+  memset(&mf, 0, sizeof mf);
+  mkvfix_parar();
   capmkv_zerar();   // fio de capitulos em voo nao alimenta o proximo titulo
   audioPend = legPend = -1; comecou = 0; comecouEm = 0; audioComecou = 0;
   legendaLimpar(1);
@@ -1515,6 +1596,15 @@ void video_buscar(double s) {
   }
   // Seek com o link do CDN vencido: o seek abriria uma conexao nova com ele.
   if (pronto && cdnVelho()) { cdnRenovar(s, "seek"); terminou = 0; return; }
+  // MKV com o indice so no segundo SeekHead (mkvfix.h): a TV recusaria.
+  if (!cv.ativo && !mf.ativo && pronto) {
+    if (!mf.sondou) mfSondar();
+    if (mf.sondou) {
+      int e = mkvfix_estado();
+      if (e == MKVFIX_PRECISA) { mfLigar(s, "seek"); terminou = 0; return; }
+      if (e == MKVFIX_SONDANDO) { mf.pend = 1; mf.pendAlvo = s; mf.pendEm = SDL_GetTicks(); }
+    }
+  }
   if (hBuscar) hBuscar((int)(s * 1000.0));
   terminou = 0;
 }

@@ -95,7 +95,7 @@ namespace NuvioTpk
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int FnPos();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnEscolher(int tipo, int idx);
 
-        const int EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5, EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8;
+        const int EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5, EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8, EV_BUSCA_FALHOU = 9;
 
         readonly Func<Display> fazDisplay;
         readonly Action<Action> principal;
@@ -630,7 +630,9 @@ namespace NuvioTpk
             if (player == null) return;
             windowMetrics.Invalidate();
             try { posMs = ms; await player.SetPlayPositionAsync(ms, false); }
-            catch (Exception e) { Log("buscar: " + e.Message); }
+            // O core decide (mkvfix.h): MKV com o indice escondido reabre pelo
+            // servidor local; sem indice nenhum, avisa em vez de ficar parado.
+            catch (Exception e) { Log("buscar: " + e.Message); NvVid.Evento(EV_BUSCA_FALHOU, ms, 0); }
         }
 
         // Host 4/5 (Program40): move/redimensiona a janela ElmSharp do video.

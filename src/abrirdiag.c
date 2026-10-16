@@ -63,6 +63,7 @@ typedef struct {
   char ordem[600]; size_t ordemN; int nElem;
   // SeekHead
   long long seekCues, seekAnexos, seekTags, seekCaps, seekTracks, seekInfo;
+  long long seekSH2; int cuesSH2;   // segundo SeekHead (mkvpropedit) e o Cues achado nele
   // Info
   char muxing[64], writing[64]; double dur; unsigned long long escala;
   // Anexos
@@ -313,6 +314,7 @@ static void lerSeek(Est *e, const unsigned char *p, long long n) {
         if (alvo == 0x1C53BB6B) e->seekCues = pos; else if (alvo == 0x1941A469) e->seekAnexos = pos;
         else if (alvo == 0x1254C367) e->seekTags = pos; else if (alvo == 0x1043A770) e->seekCaps = pos;
         else if (alvo == 0x1654AE6B) e->seekTracks = pos; else if (alvo == 0x1549A966) e->seekInfo = pos;
+        else if (alvo == 0x114D9B74) e->seekSH2 = pos;
       }
     }
     o += ui + us + s;
@@ -429,7 +431,8 @@ static void resumo(Est *e) {
   printf("[abrir-diag] %s first frame at %s | attachments %d (%d fonts, %s) | cues at %s%s | %d track(s), %d compressed | default audio %s%s\n",
          e->tag, e->cluster >= 0 ? a : "not found", e->anexos, (int)e->anexosFontes, b,
          e->seekCues >= 0 ? c : "?",
-         e->seekCues >= 0 && e->total > 0 ? (e->seekCues > e->total / 2 ? " (end of file)" : " (start of file)") : "",
+         e->seekCues >= 0 && e->total > 0 ? (e->seekCues > e->total / 2 ? (e->cuesSH2 ? " (end of file, via second SeekHead)" : " (end of file)")
+                                                                   : (e->cuesSH2 ? " (start of file, via second SeekHead)" : " (start of file)")) : "",
          e->faixas, e->comprimidas, e->defAudio[0] ? e->defAudio : e->primAudio[0] ? "none flagged; first is " : "-",
          e->defAudio[0] ? "" : e->primAudio);
   if (e->cluster > 8LL * 1024 * 1024) { char d[80]; snprintf(d, sizeof d, "the player must read %s before the first frame", a); nota(e, d); }
@@ -445,6 +448,7 @@ long long abrirdiag_ler(const unsigned char *buf, long n, long long total, const
   long long pos;
   memset(&e, 0, sizeof e);
   e.seekCues = e.seekAnexos = e.seekTags = e.seekCaps = e.seekTracks = e.seekInfo = -1;
+  e.seekSH2 = -1;
   e.cluster = -1; e.total = total; e.tag = tag ? tag : "";
   pos = abrirSegmento(&e, buf, n);
   if (pos < 0) { printf("[abrir-diag] %s not a Matroska file (or header unreadable)\n", e.tag); fflush(stdout); return -1; }
@@ -496,6 +500,7 @@ static void *fio(void *u) {
   if (!buf || n < 64) { free(buf); goto fim; }
   memset(&e, 0, sizeof e);
   e.seekCues = e.seekAnexos = e.seekTags = e.seekCaps = e.seekTracks = e.seekInfo = -1;
+  e.seekSH2 = -1;
   e.cluster = -1; e.total = total; e.tag = tag;
   pos = abrirSegmento(&e, buf, n);
   if (pos < 0) {
@@ -515,6 +520,19 @@ static void *fio(void *u) {
     free(b);
   }
   if (saltos) { char d[48]; snprintf(d, sizeof d, "%d extra read(s) to reach the first frame", saltos); nota(&e, d); }
+  // O SeekHead do inicio nao lista o Cues e aponta para outro SeekHead (o que o
+  // mkvpropedit deixa quando falta espaco): le o segundo. O player da TV nao o
+  // segue e nao busca nesse arquivo (mkvfix.h).
+  if (e.seekCues < 0 && e.seekSH2 > 0) {
+    long m = 0; int st = 0, ui = 0, us = 0;
+    unsigned char *b = (unsigned char *)rede_baixar_trecho64_final(pd->url, pd->cab, e.seekSH2, total > 0 && e.seekSH2 + 4095 >= total ? total - 1 : e.seekSH2 + 4095, &m, NULL, &st, NULL, NULL, NULL);
+    uint32_t id = b && m > 8 ? lerId(b, m, &ui) : 0;
+    long long s = id == 0x114D9B74 ? lerTam(b + ui, m - ui, &us) : -2;
+    if (s > 0 && ui + us + s <= m) { lerSeek(&e, b + ui + us, s); e.cuesSH2 = e.seekCues >= 0; }
+    nota(&e, e.cuesSH2 ? "the first SeekHead only points to a second SeekHead, which lists the Cues (the TV player does not follow it)"
+                       : "the first SeekHead only points to a second SeekHead, without Cues in it");
+    free(b);
+  }
   resumo(&e);
 fim:
   free(pd->url); free(pd->cab); free(pd);
