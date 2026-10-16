@@ -676,18 +676,15 @@ int main(void) {
     valor[AJ_CW_MINIMO] = 99; assert(ajustes_cw_minimo() == 20);
     valor[AJ_CW_MINIMO] = antes; }
   // #400: acrescentado no fim, sem deslocar os indices antigos.
-  assert(AJ_LEG_SYNC_AUTO == AJ_FONTE_ORDEM_ADDON + 1 && AJ_LEG_MOSTRAR == AJ_LEG_SYNC_AUTO + 1 && AJ_AVISO_LEGAL == AJ_LEG_MOSTRAR + 1 && AJ_HDR_UI == AJ_AVISO_LEGAL + 1 && AJ_TELA_ABERTURA == AJ_HDR_UI + 1 && AJ_CW_MINIMO == AJ_TELA_ABERTURA + 1 && AJ_BUFFER == AJ_CW_MINIMO + 1 && AJ_PULAR_ABERTURA == AJ_BUFFER + 1 && AJ_PULAR_RESUMO == AJ_PULAR_ABERTURA + 1 && AJ_PROXIMO_AUTO == AJ_PULAR_RESUMO + 1 && AJ_PULAR_CREDITOS == AJ_PROXIMO_AUTO + 1 && AJ_PROXIMO_CONTAGEM == AJ_PULAR_CREDITOS + 1 && AJ_INTERFACE_MODO == AJ_PROXIMO_CONTAGEM + 1);
-  // Microfone da busca (.tpk): acrescentado depois de todas as opcoes do master.
-  assert(AJ_MIC_BUSCA == AJ_PROVEDORES_ESCOPO + 1);
+  assert(AJ_LEG_SYNC_AUTO == AJ_FONTE_ORDEM_ADDON + 1 && AJ_LEG_MOSTRAR == AJ_LEG_SYNC_AUTO + 1 && AJ_AVISO_LEGAL == AJ_LEG_MOSTRAR + 1 && AJ_HDR_UI == AJ_AVISO_LEGAL + 1 && AJ_TELA_ABERTURA == AJ_HDR_UI + 1 && AJ_CW_MINIMO == AJ_TELA_ABERTURA + 1 && AJ_BUFFER == AJ_CW_MINIMO + 1 && AJ_PULAR_ABERTURA == AJ_BUFFER + 1 && AJ_PULAR_RESUMO == AJ_PULAR_ABERTURA + 1 && AJ_PROXIMO_AUTO == AJ_PULAR_RESUMO + 1 && AJ_PULAR_CREDITOS == AJ_PROXIMO_AUTO + 1 && AJ_PROXIMO_CONTAGEM == AJ_PULAR_CREDITOS + 1 && AJ_INTERFACE_MODO == AJ_PROXIMO_CONTAGEM + 1 && AJ_MIC_BUSCA == AJ_PROVEDORES_ESCOPO + 1);
+  assert(AJ_LEG_SYNC_AUTO == AJ_FONTE_ORDEM_ADDON + 1 && AJ_AUD_LINGUA2 == AJ_FONTE_IDIOMA_AUDIO + 1);
   assert(!strcmp(CHAVE[AJ_MIC_BUSCA], "micBuscaLocal") && valorPadrao[AJ_MIC_BUSCA] == 0);
   assert(!strcmp(OPCOES[AJ_MIC_BUSCA].valores[0], "Automático") && OPCOES[AJ_MIC_BUSCA].n == 3);
   assert(somenteDesteAparelho(AJ_MIC_BUSCA) && !dePerfil(AJ_MIC_BUSCA));
-  // Segundo idioma do audio: depois do microfone.
-  assert(AJ_AUD_LINGUA2 == AJ_MIC_BUSCA + 1);
-  // Memoria da fonte (15-16/10/2026): quatro linhas no fim, locais. Preferir o
+  // Memoria da fonte (15-16/10/2026): quatro linhas no fim (depois dos filtros), locais. Preferir o
   // grupo e entre sessoes ligados (o comportamento de antes); reusar o ultimo
   // link ligado de fabrica (dono), 24 h. Uma vez cada na tela.
-  assert(AJ_FONTE_GRUPO == AJ_AUD_LINGUA2 + 1 && AJ_LINK_PRAZO == AJ_FONTE_GRUPO + 3 && AJ_N == AJ_LINK_PRAZO + 1);
+  assert(AJ_FONTE_GRUPO == AJ_FILTRO_GRUPOS + 1 && AJ_LINK_PRAZO == AJ_FONTE_GRUPO + 3 && AJ_N == AJ_LINK_PRAZO + 1);
   { static const char *CH[4] = { "fonteGrupoLocal", "fonteGrupoSessoesLocal", "linkReusarLocal", "linkPrazoLocal" };
     static const int PAD[4] = { 0, 0, 0, 5 }, NV[4] = { 2, 2, 2, 9 };
     for (int o = 0; o < 4; o++) {

@@ -68,6 +68,7 @@
 #include "selospacote.h"
 #include "fonteregra.h"
 #include "fontefalha.h"
+#include "fontefiltro.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -82,7 +83,7 @@
 #include "apoio.h"
 #include "telefoneui.h"
 #include "dts/dts_hls_tpk.h"
-#if defined(NV_ANDROID) && defined(NV_TOUCH_UI)
+#ifdef NV_ANDROID
 #include "android.h"
 #endif
 
@@ -561,10 +562,17 @@ typedef enum {
   // nao ter microfone fica sem ele) / Ligado / Desligado. LOCAL, so na tela do
   // .tpk. No fim: valor[]/CHAVE[] posicionais.
   AJ_MIC_BUSCA,
+  AJ_FONTE_IDIOMA_AUDIO, // V_LIGA: 0 preferir o idioma do audio na escolha automatica; local, append-only
   // SEGUNDO IDIOMA DE AUDIO (dono, 15/10/2026): secondary_preferred_audio_language
   // do app oficial; a mesma lista e a regra da legenda secundaria (audioescolha.h:
   // a ordem do audio automatico). No fim: posicionais.
   AJ_AUD_LINGUA2,
+#ifdef NV_ANDROID
+  AJ_BAIXAR_REGISTRO, // acao local; no fim para preservar os IDs existentes
+#endif
+  AJ_HERO_SINOPSE, // #477: shared Normal/Grande setting, local
+  // Shared exclusions live in fontefalha.txt; appended device-local views.
+  AJ_FILTROS_FONTES, AJ_FILTRO_TAM_MAX, AJ_FILTRO_GRUPOS,
   // MEMORIA DA FONTE (dono, 15-16/10/2026). Prefer Binge Group (a escolha a
   // mao valendo para o titulo inteiro E a memoria do automatico, fontepref.h)
   // e Reuse Binge Group (o mesmo entre sessoes): Ligado, Ligado, o
@@ -656,6 +664,7 @@ static const char *V_FONTE_MODELO[] = { "Personalizado", "Espanhol", "Português
 // "Usar a ordem" dos add-ons (fonteregra.h FR_ORDEM_*): o indice e o gravado.
 static const char *V_FONTE_ORDEM_USO[] = { "Não", "Para desempatar", "Ordem estrita" };
 // Indice gravado em tamanhoUiLocal; o fator sai de ajustes_tamanho_ui.
+static const char *V_HERO_SINOPSE[] = { "Normal", "Grande" };
 static const char *V_TAMANHO_UI[] = { "100%", "120%", "130%", "150%" };
 static const char *V_TAMANHO_AJUSTES[] = { "80%", "90%", "100%" };
 static const char *V_INTERFACE_MODO[] = { "TV", "Mobile" };
@@ -1468,7 +1477,16 @@ static const Opcao OPCOES[AJ_N] = {
 
   ESC("Configuração dos provedores", V_PROVEDORES_ESCOPO, 2),
   ESC("Botão de microfone na busca", V_MIC_BUSCA, 3),   // local: micBuscaLocal (.tpk)
+  ESC("Preferir o idioma do áudio",    V_LIGA, 2),   // local: fonteIdiomaAudioLocal (fontenota.h)
   ESC("Segundo idioma do áudio",         V_LINGUA, 2),
+#ifdef NV_ANDROID
+  ACAO("Baixar registro"),
+#endif
+
+  ESC("Tamanho da sinopse", V_HERO_SINOPSE, 2),
+  ACAO("Filtros das fontes"),
+  NUM("Tamanho máximo da fonte", 0, 1000, 1, " GB"),
+  ACAO("Grupos de lançamento excluídos"),
   ESC("Preferir o mesmo grupo de fonte", V_LIGA, 2),          // local: fonteGrupoLocal
   ESC("Reusar o grupo entre sessões", V_LIGA, 2),             // local: fonteGrupoSessoesLocal
   ESC("Reusar o último link", V_LIGA, 2),                     // local: linkReusarLocal
@@ -1725,7 +1743,14 @@ static const char *CHAVE[] = {
 
   "-provedoresEscopo",
   "micBuscaLocal",
+  "fonteIdiomaAudioLocal",
   "audioSecundarioIdioma",
+#ifdef NV_ANDROID
+  "-baixarRegistro",
+#endif
+
+  "heroSynopsisSizeLocal",
+  "-filtrosFontes", "-filtroTamanhoMax", "-filtroGrupos",
   "fonteGrupoLocal", "fonteGrupoSessoesLocal",
   "linkReusarLocal", "linkPrazoLocal",
 };
@@ -1877,9 +1902,11 @@ static char faAddonTitulo[FR_NOME_MAX + 48];
 static int faRetornarFolha;
 static int ajFalhaBackend(int op) {
   return op == AJ_FALHA_PROVEDORES || op == AJ_FALHA_ADDONS ||
-         (op >= AJ_FALHA_RD_LIMITE && op <= AJ_FALHA_AD_LIMITE) || op == AJ_FALHA_ADDON_LIMITE;
+         (op >= AJ_FALHA_RD_LIMITE && op <= AJ_FALHA_AD_LIMITE) || op == AJ_FALHA_ADDON_LIMITE ||
+         op == AJ_FILTRO_TAM_MAX;
 }
 static int ajFalhaValor(int op) {
+  if (op == AJ_FILTRO_TAM_MAX) { FonteFiltroConfig cfg; fontefalha_filtro(&cfg); return (int)cfg.maxGB; }
   if (op == AJ_FALHA_PROVEDORES) return fontefalha_provedores() ? 0 : 1;
   if (op == AJ_FALHA_ADDONS) return fontefalha_addons() ? 0 : 1;
   if (op >= AJ_FALHA_RD_LIMITE && op <= AJ_FALHA_AD_LIMITE)
@@ -1892,7 +1919,11 @@ static void ajFalhaEspelhar(void) {
 }
 static int ajFalhaDefinir(int op, int novo) {
   int ok;
-  if (op == AJ_FALHA_PROVEDORES) ok = fontefalha_definir_provedores(novo == 0);
+  if (op == AJ_FILTRO_TAM_MAX) {
+    FonteFiltroConfig cfg; fontefalha_filtro(&cfg); cfg.maxGB = (unsigned)novo;
+    ok = fontefalha_filtro_definir(&cfg);
+  }
+  else if (op == AJ_FALHA_PROVEDORES) ok = fontefalha_definir_provedores(novo == 0);
   else if (op == AJ_FALHA_ADDONS) ok = fontefalha_definir_addons(novo == 0);
   else if (op >= AJ_FALHA_RD_LIMITE && op <= AJ_FALHA_AD_LIMITE)
     ok = fontefalha_provedor_definir_limite(op - AJ_FALHA_RD_LIMITE, novo);
@@ -2340,6 +2371,11 @@ int ajustes_relogio_12h(void) { return valor[AJ_RELOGIO_12H] == 1; }
 // GB da faixa de tamanho da escolha automatica; 0 = "Sem limite".
 int ajustes_tamanho_max_gb(void) { int v = valor[AJ_TAM_MAX]; return v < 0 || v >= (int)(sizeof TAMANHO_GB / sizeof *TAMANHO_GB) ? 0 : TAMANHO_GB[v]; }
 int ajustes_tamanho_min_gb(void) { int v = valor[AJ_TAM_MIN]; return v < 0 || v >= (int)(sizeof TAMANHO_GB / sizeof *TAMANHO_GB) ? 0 : TAMANHO_GB[v]; }
+int ajustes_sinopse_tamanho(void) {
+  int v = valor[AJ_HERO_SINOPSE];
+  return v == 1;
+}
+int ajustes_hero_sinopse_grande(void) { return ajustes_sinopse_tamanho(); }
 float ajustes_tamanho_ui(void) {
   static const float F[] = { 1.0f, 1.2f, 1.3f, 1.5f };
   int v = valor[AJ_TAMANHO_UI];
@@ -2395,6 +2431,7 @@ int ajustes_buffer_preset(void) {
   return 0;   // so o ExoPlayer deixa o app escolher o buffer
 #endif
 }
+int ajustes_fonte_idioma_audio(void) { return valor[AJ_FONTE_IDIOMA_AUDIO] == 0; }
 int ajustes_cache_seek_mb(void) {
   static const int MB[] = { 0, 256, 512, 1024 };
   int v = valor[AJ_CACHE_SEEK];
@@ -3596,6 +3633,7 @@ void ajustes_dir(const char *dir) {
   { int viuIdioma = 0, viuAuto = 0, idiomaGravado = IDIOMA_EN, autoGravado = 0;
     int medidorAntigo = -1, viuMedidor = 0, resAntiga = -1, viuRes = 0, prazoAntigo = -1, viuEspera = 0;
     int focoAntigo = -1, viuFoco = 0;
+    int sinopseAntiga = -1, sinopseQuatro = -1, viuSinopse = 0;
     int dtsSaidaAntiga = -1, dtsModoAntigo = -1, viuDtsTpk = 0;
   while (fgets(linha, sizeof linha, f)) {
     char chave[64]; int v, i;
@@ -3629,6 +3667,16 @@ void ajustes_dir(const char *dir) {
       if (v >= IDA_TMDB && v <= IDA_PADRAO) idiomaFonteGravada = v;
       continue;
     }
+    // Consolidate preview scales into integration's Normal/Grande setting.
+    // Its saved preference wins regardless of file order.
+    if (!strcmp(chave, "sinopsePercentualLocal") || !strcmp(chave, "sinopseTamanhoLocal")) {
+      if (v >= 0 && v < 3) sinopseAntiga = v;
+      continue;
+    }
+    if (!strcmp(chave, "sinopseEscalaLocal")) {
+      if (v >= 0 && v < 4) sinopseQuatro = v;
+      continue;
+    }
     for (i = 0; i < AJ_N; i++) {
       if (!CHAVE[i] || strcmp(CHAVE[i], chave)) continue;
       if (OPCOES[i].tipo == OP_LEITURA || OPCOES[i].tipo == OP_ACAO) continue;
@@ -3639,9 +3687,14 @@ void ajustes_dir(const char *dir) {
       if (i == AJ_RESOLUCAO) viuRes = 1;
       if (i == AJ_FONTE_PRAZO) viuEspera = 1;
       if (i == AJ_FOCO_TRAILER) viuFoco = 1;
+      if (i == AJ_HERO_SINOPSE) viuSinopse = 1;
       if (i == AJ_DTS_AC3) viuDtsTpk = 1;
       break;
     }
+  }
+  if (!viuSinopse) {
+    if (sinopseQuatro >= 0) valor[AJ_HERO_SINOPSE] = sinopseQuatro > 0;
+    else if (sinopseAntiga >= 0) valor[AJ_HERO_SINOPSE] = sinopseAntiga > 0;
   }
   if (!viuMedidor && medidorAntigo >= 0) valor[AJ_MEDIDOR] = medidorAntigo == 0 ? 3 : 0;
   if (!viuRes && resAntiga >= 0) {
@@ -4664,6 +4717,7 @@ static int somenteDesteAparelho(int op) {
     case AJ_ESPACO_FILEIRAS: case AJ_ESPACO_TITULOS: /* o web nao tem espacamento */
     case AJ_FONTE_PRAZO:    /* o web nao tem: a rede e os addons sao desta casa */
     case AJ_MEDIDOR:        /* o medidor e da GPU desta TV; o web nao tem */
+    case AJ_HERO_SINOPSE: /* acessibilidade desta tela; sem par na conta */
     case AJ_TAMANHO_UI:     /* o tamanho e desta tela, e o web nao tem */
     case AJ_TAMANHO_AJUSTES:
     case AJ_LAYOUT_AJUSTES: /* #339: o arranjo dos Ajustes e desta TV */
@@ -4679,6 +4733,7 @@ static int somenteDesteAparelho(int op) {
     case AJ_LEG2_POS: case AJ_LEG2_TAMANHO: case AJ_LEG2_COR: case AJ_LEG2_FUNDO: case AJ_LEG2_BORDA: /* estilo da legenda e desta TV */
     case AJ_CACHE_SEEK:     /* F07: o disco e o player sao desta TV */
     case AJ_BUFFER:         /* #338: o buffer e do player desta TV */
+    case AJ_FONTE_IDIOMA_AUDIO: /* como a prioridade da fonte: escolha desta TV */
     case AJ_TRAILER_ZOOM_TPK: /* #241: o firmware de cada Samsung reage de um jeito */
     case AJ_FUNDO:          /* o desfoque custa GPU desta TV; o web nao tem */
     case AJ_VIDRO_OPAC: case AJ_VIDRO_FOSCO: /* teste do vidro: visual desta TV */
@@ -4985,6 +5040,10 @@ static void focarOpcao(int op);
 // D1: "Posicao do relogio" 238 pessoas, "Sincronia por audio" 157, "Zoom do
 // trailer" 86, P2P no .wgt 6), escondendo o aviso que importa.
 static int foraDestaPlataforma(int op) {
+  // Os limites dos provedores sao editados dentro da folha de ordem.
+  if (op >= AJ_FALHA_RD_LIMITE && op <= AJ_FALHA_AD_LIMITE) return 1;
+  // Only the shared parent appears in the category; these editors are its children.
+  if (op == AJ_FILTRO_TAM_MAX || op == AJ_FILTRO_GRUPOS) return 1;
 #ifndef NV_TOUCH_UI
   if (op == AJ_INTERFACE_MODO) return 1;
 #endif
@@ -5365,6 +5424,7 @@ static void pxAtivar(int op) {
 static const char *frResumo(int plugin);
 static const char *frOrdemResumo(void);
 static const char *faResumo(int provedores);
+static const char *ffResumo(void);
 static const char *frRegexTexto(void);
 static const char *textoLeitura(int op) {
   static char buf[64];
@@ -5424,6 +5484,7 @@ static const char *textoLeitura(int op) {
     return pf.apelido[0] ? pf.apelido : i18n("Não configurado");
   }
   if (op == AJ_FALHA_PROVEDOR_ORDEM || op == AJ_FALHA_ADDON_ORDEM) return faResumo(op == AJ_FALHA_PROVEDOR_ORDEM);
+  if (op == AJ_FILTROS_FONTES) return ffResumo();
   if (op == AJ_FONTE_ORDEM) return frOrdemResumo();
   if (op == AJ_FONTE_ADDONS_PERM) return frResumo(0);
   if (op == AJ_FONTE_PLUGINS_PERM) return frResumo(1);
@@ -5901,7 +5962,7 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_FONTE_HDR: return "Preferir: fontes com HDR ou Dolby Vision vêm na frente. Indiferente: o formato não conta. Evitar: prefere SDR na mesma resolução. O Dolby Vision só entra se estiver ligado em Imagem e som; perfil 5 sem HDR10 fica atrás do HDR10, porque sai com cores erradas fora de TV Dolby Vision. Só vale para a escolha automática.";
     case AJ_FONTE_ORDEM_ADDON: return "Por qualidade: as fontes vêm agrupadas por resolução, da maior para a menor, e do maior arquivo para o menor. Do addon: cada addon na ordem em que você o instalou, e as fontes de cada um na ordem em que ele mandou — para quem já ordena no AIOStreams. A escolha automática não muda.";
     case AJ_FONTE_TEXTO: return "Do Nuvio: o nome do título em cima e os logos de qualidade embaixo. Do addon: o nome e a descrição exatamente como o addon manda — para quem já formata o texto no AIOStreams. Logo do título: a logo do título no lugar do nome escrito.";
-    case AJ_FONTE_PRAZO: return "As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Com uma fonte escolhida antes neste título, o add-on dela é sempre esperado.";
+    case AJ_FONTE_PRAZO: return "As fontes aparecem na lista assim que cada add-on responde. A escolha automática não espera o mais lento: sai quando já há uma fonte boa ou depois deste tempo. Dentro deste tempo, o add-on da fonte que você usou antes neste título é esperado. Com Todos os add-ons, todos os add-ons permitidos no auto-play são esperados e a melhor fonte é escolhida.";
     case AJ_FONTE_TOCAR_CONFERINDO: return "Abre o player com a primeira fonte do automático na hora em que a conferência dela começa, em vez de esperar o resultado. Se a conferência reprovar a fonte, volta a esperar e segue para a próxima, sem baixar a qualidade. Torrent e fonte que precisa ser resolvida antes seguem o caminho de sempre.";
     case AJ_FONTE_AQUECER: return "Ao abrir a página de um título e quando as fontes chegam, abre antes a conexão com o debrid e com os hosts das primeiras fontes, para o Play não gastar esse tempo. Não resolve nenhum link e não cria arquivo no debrid.";
     case AJ_FONTE_CONFERIR_VARIAS: return "Confere até 3 fontes já prontas no debrid ao mesmo tempo, em vez de uma por vez, e toca a melhor que servir. Fontes que ainda não estão prontas seguem uma por vez, sem baixar nada a mais. Só vale com a Fonte automática em Melhor fonte.";
@@ -5913,6 +5974,9 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_FONTE_PRECARREGAR: return "Carrega alguns segundos de vídeo ao abrir um título e prepara o próximo episódio perto dos créditos. O Play reaproveita o buffer. Usa mais dados e pode adicionar arquivos ao debrid mesmo sem assistir. Não marca episódios como vistos.";
     case AJ_FONTE_REPOR: return "Quantas outras fontes o automático tenta quando a escolhida não abre. Cada tentativa pode adicionar um arquivo na sua conta de debrid.";
     case AJ_FALHA_PROVEDORES: return "Se o vídeo não iniciar a tempo ou der erro, tenta os provedores Debrid configurados na ordem escolhida. O limite de cada provedor conta links distintos de todos os add-ons, incluindo o primeiro. Parar ou Voltar cancela as tentativas.";
+    case AJ_FILTROS_FONTES: return "Selecione os valores que deseja filtrar. As alterações são salvas na hora e valem antes dos limites de links.";
+    case AJ_FILTRO_TAM_MAX: return "Acima deste tamanho, a fonte é removida antes de contar as tentativas. Zero significa sem limite.";
+    case AJ_FILTRO_GRUPOS: return "Digite grupos separados por vírgulas. Vazio remove o filtro.";
     case AJ_FALHA_PROVEDOR_ORDEM: return "Suba ou desça os provedores Debrid e ajuste o total de links de cada um. O primeiro provedor tenta seus links antes do próximo. Provedores sem chave são ignorados.";
     case AJ_FALHA_RD_LIMITE: case AJ_FALHA_TB_LIMITE: case AJ_FALHA_PM_LIMITE: case AJ_FALHA_AD_LIMITE:
       return "Total de links distintos deste provedor, incluindo o primeiro, somando todos os add-ons. De 1 a 10. Se a troca de add-on estiver ligada, o limite de cada add-on também vale; não repete o mesmo link.";
@@ -6045,6 +6109,7 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_IDIOMA: return "Idioma de toda a interface. Automático segue a sua conta e, sem ela, o idioma da TV. Não muda o idioma das legendas nem do áudio.";
     case AJ_GPU_EFEITOS: return "Automático mede a TV nos primeiros segundos e, se ela não der conta, tira os efeitos mais pesados. Completos mantém tudo; Leves tira desfoque e brilho para deixar a navegação mais lisa.";
     case AJ_FONTE_UI: return "Altera a tipografia dos menus. A fonte das legendas é escolhida separadamente no player.";
+    case AJ_HERO_SINOPSE: return "Aumenta apenas as sinopses. Na página do título, abra Mais opções › Ler sinopse para ler o texto completo.";
     case AJ_TAMANHO_UI: return "Aumenta os controles do player, os painéis e os avisos. Os Ajustes têm um tamanho próprio.";
     case AJ_INTERFACE_MODO: return "TV para controle remoto. Mobile para toque, em retrato ou paisagem. A troca é imediata e fica salva só neste aparelho.";
     case AJ_TAMANHO_AJUSTES: return i18n("Muda só o tamanho dos Ajustes nesta TV. O padrão é 80%.");
@@ -6139,6 +6204,7 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_LOGO_TRAILER: return "Para TVs OLED: não deixa a logo parada na tela enquanto o trailer toca.";
     case AJ_TRAILER_ZOOM_TPK: return "Amplia a imagem do trailer e libera os modos de recorte e zoom da proporção no player; em algumas TVs Samsung pode deixar a tela preta ou mostrar a tela inicial da TV.";
     case AJ_BUFFER: return "Quanto vídeo o player baixa à frente. Pequeno poupa memória e rede; Grande aguenta melhor internet instável e arquivos pesados, até o limite de memória da TV. Não muda a qualidade da imagem. Vale a partir do próximo vídeo.";
+    case AJ_FONTE_IDIOMA_AUDIO: return "Na escolha automática, fontes com o seu Idioma do áudio ou áudio duplo passam na frente na mesma resolução. Não é filtro: sem elas, a melhor das outras toca.";
     case AJ_CACHE_SEEK: return "Guarda no disco o trecho já baixado do vídeo, para voltar sem baixar de novo. Apagado ao fechar o player.";
     case AJ_ANIM: return "Use Reduzidas para movimentos mais discretos ao navegar pela interface.";
     case AJ_RESOLUCAO: return "Automática começa em 1080p e testa o 4K sozinha: só usa 4K se a tela for 4K e a TV aguentar com folga; se travar depois, volta para 1080p. Nunca baixa para 720p. Escolher 4K força 4K (se a TV não aguentar, o app volta para 1080p e avisa). 720p desenha em 1280x720 e amplia: mais leve, com texto mais suave. Reinicie o app depois de mudar. O vídeo não muda.";
@@ -6158,6 +6224,9 @@ static const char *ajudaOpcaoBase(int op) {
         ? "Abre o cartão da versão nova, com o que mudou e o botão de instalar."
         : "Procura agora uma versão nova do Nuvio. Se houver, abre o cartão com o que mudou e o botão de instalar. O app também confere sozinho a cada 6 horas.";
     case AJ_VER_REGISTRO: return "Abre o registro do app por cima desta tela, ao vivo: o mesmo painel do botão vermelho do controle, para quem não tem esse botão.";
+#ifdef NV_ANDROID
+    case AJ_BAIXAR_REGISTRO: return "Salva o registro desta sessão em um arquivo de texto, sem senhas nem chaves.";
+#endif
     case AJ_MEDIDOR: return "Mostra quadros por segundo, o pior quadro e a memória dentro da ilha do relógio, atualizados a cada 3 s. Mínimo fica na linha da hora, Menor ganha uma segunda linha e Grande abre o painel completo. Quando a ilha mostra um aviso, o medidor se recolhe e volta depois.";
     case AJ_AVISO_LEGAL: return "Aviso legal";
     case AJ_GUIA: return "O que o Nuvio faz, em 12 capítulos. Cada recurso diz onde fica e tem um atalho para ele.";
@@ -6943,13 +7012,14 @@ static void riscoFolhaEvento(SDL_Keycode k) {
 }
 static void desenhaRiscoFolha(void);
 static void desenhaFolhaFalha(void);
+static void desenhaFolhaFiltros(void);
 
 // --- folha "Add-ons permitidos" / "Plugins permitidos" (#202) ----------------
 // Modal dentro desta tela, como a de fileiras: a lista dos instalados (e dos
 // marcados que ja nao estao instalados, para poder tira-los), com "Todos" no
 // topo. OK marca/desmarca e grava na hora (fonteregra.c); Voltar fecha.
 #define FR_FOLHA_MAX 128
-static int frAberta;            // 0 closed; 1/2 allowed; 3 legacy order; 4/5 failover service/instance order
+static int frAberta;            // 0 closed; 1/2 allowed; 3 legacy order; 4/5 failover order; 6 shared exclusions
 // Failover order uses native IDs / opaque instance keys, never display names.
 typedef struct {
   int servico, instalado;
@@ -7057,6 +7127,110 @@ static const char *faResumo(int provedores) {
   return buf;
 }
 
+// Shared, exclusion-only filters. Category checkboxes save atomically as soon
+// as OK/tap toggles one; size uses the existing explicit-confirmation editor.
+// Every edit reads the saved config first, so another field is never lost.
+static int ffCategoria = -1, ffFoco, ffValorFoco;
+static const int FF_CATEGORIA[9] = {
+  FONTEFILTRO_RESOLUCAO, FONTEFILTRO_QUALIDADE, -1,
+  FONTEFILTRO_VISUAL, FONTEFILTRO_AUDIO, FONTEFILTRO_CANAIS,
+  FONTEFILTRO_ENCODE, FONTEFILTRO_LINGUAS, -1
+};
+static const char *ffNome(int linha) {
+  if (linha < 0 || linha >= 9) return "";
+  if (linha == 2) return "Tamanho máximo da fonte";
+  if (linha == 8) return "Grupos de lançamento excluídos";
+  return fontefiltro_rotulo(FF_CATEGORIA[linha]);
+}
+static int ffBits(uint64_t bits) {
+  int n = 0;
+  while (bits) { bits &= bits - 1; n++; }
+  return n;
+}
+static const char *ffValor(int linha) {
+  static char texto[160]; FonteFiltroConfig cfg;
+  fontefalha_filtro(&cfg);
+  if (linha == 2) {
+    if (!cfg.maxGB) return i18n("Sem limite de tamanho");
+    snprintf(texto, sizeof texto, "%u GB", cfg.maxGB);
+  } else if (linha == 8) {
+    if (!cfg.grupos[0]) return i18n("Nenhuma exclusão");
+    snprintf(texto, sizeof texto, "%s", cfg.grupos);
+  } else {
+    int n = linha >= 0 && linha < 9 ? ffBits(cfg.excluir[FF_CATEGORIA[linha]]) : 0;
+    if (!n) return i18n("Nenhuma exclusão");
+    snprintf(texto, sizeof texto, i18n("%d valores filtrados"), n);
+  }
+  return texto;
+}
+static const char *ffResumo(void) {
+  static char texto[80]; FonteFiltroConfig cfg; int n = 0;
+  fontefalha_filtro(&cfg);
+  for (int c = 0; c < FONTEFILTRO_N; c++) n += ffBits(cfg.excluir[c]);
+  n += cfg.maxGB > 0;
+  if (cfg.grupos[0]) { n++; for (const char *p = cfg.grupos; *p; p++) n += *p == ','; }
+  if (!n) return i18n("Nenhum filtro");
+  snprintf(texto, sizeof texto, i18n("%d filtros ativos"), n);
+  return texto;
+}
+static void ffAbrir(void) {
+  uxCancelar(); faRetornarFolha = 0; frAberta = 6;
+  ffCategoria = -1; ffFoco = ffValorFoco = 0;
+}
+static void ffGruposDefinir(const char *texto) {
+  FonteFiltroConfig cfg; fontefalha_filtro(&cfg);
+  if (!fontefiltro_grupos_normalizar(texto, cfg.grupos, sizeof cfg.grupos)) {
+    uxNotificar("Grupos inválidos: use nomes separados por vírgulas."); return;
+  }
+  if (!fontefalha_filtro_definir(&cfg)) {
+    uxNotificar("Não foi possível salvar. O valor anterior foi mantido."); return;
+  }
+  uxNotificar("Ajuste salvo nesta TV.");
+}
+static void ffEscolher(void) {
+  if (frAberta != 6 || teclado_aberto()) return;
+  if (ffCategoria >= 0) {
+    uint64_t bit = fontefiltro_bit(ffCategoria, ffValorFoco);
+    FonteFiltroConfig cfg; fontefalha_filtro(&cfg);
+    if (!bit) return;
+    cfg.excluir[ffCategoria] ^= bit;
+    if (!fontefalha_filtro_definir(&cfg))
+      uxNotificar("Não foi possível salvar. O valor anterior foi mantido.");
+    else uxNotificar("Ajuste salvo nesta TV.");
+    return;
+  }
+  if (ffFoco == 2) {
+    frAberta = 0; ajFalhaEspelhar(); uxAbrirEditor(AJ_FILTRO_TAM_MAX);
+    faRetornarFolha = 6;
+  } else if (ffFoco == 8) {
+    static const char *const alfabeto =
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789, ._-+";
+    FonteFiltroConfig cfg; char contexto[160]; fontefalha_filtro(&cfg);
+    snprintf(contexto, sizeof contexto, "%s · %s", i18n("Fontes e addons"), i18n("Filtros das fontes"));
+    teclado_contexto(contexto); stCampo = AJ_FILTRO_GRUPOS;
+    teclado_abrir_com("Grupos de lançamento excluídos", "Ex.: YTS, EZTV, RARBG. Vazio remove o filtro.",
+                      TECLADO_LONGO, alfabeto, cfg.grupos);
+    teclado_permitir_vazio(1);
+  } else {
+    ffCategoria = FF_CATEGORIA[ffFoco]; ffValorFoco = 0;
+  }
+}
+static void ffVoltar(void) {
+  if (frAberta != 6 || teclado_aberto()) return;
+  if (ffCategoria >= 0) ffCategoria = -1;
+  else frAberta = 0;
+}
+static void ffEvento(SDL_Keycode k) {
+  int *foco = ffCategoria >= 0 ? &ffValorFoco : &ffFoco;
+  int n = ffCategoria >= 0 ? fontefiltro_opcoes_n(ffCategoria) : 9;
+  if (k == SDLK_ESCAPE || k == SDLK_AC_BACK || k == SDLK_BACKSPACE || k == SDLK_DELETE || k == SDLK_LEFT) {
+    ffVoltar(); return;
+  }
+  if (k == SDLK_UP && *foco > 0) (*foco)--;
+  if (k == SDLK_DOWN && *foco + 1 < n) (*foco)++;
+  if (k == SDLK_RETURN || k == SDLK_KP_ENTER) ffEscolher();
+}
+
 static int frFoco;
 static int frCol;               // folha da ordem: 0 = subir, 1 = descer
 static int frN;
@@ -7157,6 +7331,7 @@ static void frEventoOrdem(SDL_Keycode k) {
 }
 static void frEvento(SDL_Keycode k) {
   int plugin = frAberta == 2;
+  if (frAberta == 6) { ffEvento(k); return; }
   if (frAberta >= 4) { faEvento(k); return; }
   if (frAberta == 3) { frEventoOrdem(k); return; }
   frMontar();
@@ -7473,11 +7648,19 @@ static void eventoTela(const SDL_Event *e) {
     if (focoOp == AJ_ENVIAR_LOG) { registro_envio_abrir(); return; }
     if (focoOp == AJ_AVISO_LEGAL) { registro_legal_abrir(); return; }
     if (focoOp == AJ_VER_REGISTRO) { registro_abrir(); return; }
+#ifdef NV_ANDROID
+    if (focoOp == AJ_BAIXAR_REGISTRO) {
+      android_baixar_registro(registro_arquivo(), i18n("Registro salvo."),
+                             i18n("Não foi possível salvar o registro. Tente outro local."));
+      return;
+    }
+#endif
     if (focoOp == AJ_GUIA) { guiaAbrir(0); return; }
     if (focoOp == AJ_NOVIDADES20) { pediuNovidades20 = 1; return; }
     if (focoOp == AJ_APOIAR) { apoioAbrir(); return; }
     if (focoOp == AJ_ADDONS) { pediuAddons = 1; return; }
     if (focoOp == AJ_PLUGINS) { pediuPlugins = 1; return; }
+    if (focoOp == AJ_FILTROS_FONTES) { ffAbrir(); return; }
     if (focoOp == AJ_FALHA_PROVEDOR_ORDEM || focoOp == AJ_FALHA_ADDON_ORDEM) { faAbrir(focoOp == AJ_FALHA_PROVEDOR_ORDEM); return; }
     if (focoOp == AJ_FONTE_ORDEM) { frAbrir(3); return; }
     if (focoOp == AJ_FONTE_ADDONS_PERM || focoOp == AJ_FONTE_PLUGINS_PERM) {
@@ -7642,6 +7825,7 @@ void ajustes_atualizar(float dt, Uint32 agora) {
       else if (stCampo == AJ_SEEKR_CHAVE)     { seekrDefinir(teclado_texto()); atomic_store_explicit(&skTeste, 0, memory_order_release); }
       else if (stCampo == AJ_SELOS_PACOTE_ADD) spAdicionar(teclado_texto());
       else if (stCampo == AJ_P2P_URL)         ajustes_definir_p2p_url(teclado_texto());
+      else if (stCampo == AJ_FILTRO_GRUPOS) ffGruposDefinir(teclado_texto());
       else if (stCampo == AJ_FONTE_REGEX_PADRAO) {
         int e = fonteregra_definir_regex(teclado_texto());
         sync_proteger_ajustes_locais();
@@ -7793,6 +7977,10 @@ static const char *textoValor(int op) {
   if (ajFalhaBackend(op)) {
     int v = ajFalhaValor(op);
     if (op == AJ_FALHA_PROVEDORES || op == AJ_FALHA_ADDONS) return i18n(V_LIGA[v]);
+    if (op == AJ_FILTRO_TAM_MAX) {
+      if (!v) return i18n("Sem limite de tamanho");
+      snprintf(buf, sizeof buf, "%d GB", v); return buf;
+    }
     snprintf(buf, sizeof buf, "%d", v); return buf;
   }
   const Opcao *o = &OPCOES[op];
@@ -8235,7 +8423,7 @@ static AjPreview familiaPreviaOpcao(int op) {
     case AJ_FONTE_AUTO: case AJ_FONTE_REPOR: case AJ_FONTE_TEXTO: case AJ_FONTE_ORDEM_ADDON: case AJ_SELOS_CORES: case AJ_FONTE_TOCAR_CONFERINDO: case AJ_FONTE_AQUECER: case AJ_FONTE_CONFERIR_VARIAS: case AJ_FONTE_PREPARAR: case AJ_FONTE_PRECARREGAR:
     case AJ_FONTE_GRUPO: case AJ_FONTE_GRUPO_SESSOES:
     case AJ_LINK_REUSAR: case AJ_LINK_PRAZO:
-    case AJ_FONTE_PRIORIDADE: case AJ_FONTE_HDR:
+    case AJ_FONTE_PRIORIDADE: case AJ_FONTE_HDR: case AJ_FONTE_IDIOMA_AUDIO:
     case AJ_SELOS_PACOTE:
     case AJ_REACAO_CREDITOS: case AJ_PULAR_ABERTURA: case AJ_PULAR_RESUMO: case AJ_PROXIMO_AUTO: case AJ_PULAR_CREDITOS: case AJ_PROXIMO_CONTAGEM:
     case AJ_FONTE_PRAZO: case AJ_TAM_MAX: case AJ_TAM_MIN: case AJ_PROPORCAO_PADRAO: case AJ_DTS_AC3:
@@ -8277,7 +8465,7 @@ static AjPreview familiaPreviaOpcao(int op) {
     case AJ_IDIOMA: case AJ_ANIM: case AJ_TEMA:
     case AJ_COR_LOGO: case AJ_FONTE_UI: case AJ_VIDRO: case AJ_VIDRO_CONTORNO:
     case AJ_RELOGIO: case AJ_RELOGIO_POS: case AJ_SAIDA_PLAYER: case AJ_RELOGIO_12H:
-    case AJ_TAMANHO_UI: case AJ_TAMANHO_AJUSTES: case AJ_LAYOUT_AJUSTES: case AJ_INTERFACE_MODO: case AJ_FUNDO: case AJ_VIDRO_OPAC: case AJ_VIDRO_FOSCO:
+    case AJ_HERO_SINOPSE: case AJ_TAMANHO_UI: case AJ_TAMANHO_AJUSTES: case AJ_LAYOUT_AJUSTES: case AJ_INTERFACE_MODO: case AJ_FUNDO: case AJ_VIDRO_OPAC: case AJ_VIDRO_FOSCO:
     case AJ_AVANCADAS: case AJ_LOGO_APP: case AJ_ABERTURA:
     case AJ_ESMAECER: case AJ_BRILHO_PLAYER: case AJ_HDR_UI: case AJ_MANTER_VIDEO:
     case AJ_DESCANSO_ESTILO: case AJ_DESCANSO_FONTE:
@@ -8289,6 +8477,9 @@ static AjPreview familiaPreviaOpcao(int op) {
       return AJPV_RASTREIO;
     case AJ_VERSAO_I: case AJ_ATUALIZAR: case AJ_ENVIAR_LOG: case AJ_GUIA: case AJ_NOVIDADES20: case AJ_APOIAR:
     case AJ_ENVIO_AUTO: case AJ_VER_REGISTRO:
+#ifdef NV_ANDROID
+    case AJ_BAIXAR_REGISTRO:
+#endif
       return AJPV_ABOUT;
     case AJ_TMDB_LIGADO: case AJ_TMDB_IDIOMA: case AJ_TMDB_ARTE:
     case AJ_TMDB_BASICO: case AJ_TMDB_FICHA: case AJ_TMDB_DATAS:
@@ -8371,7 +8562,8 @@ static void ajDesenharTudo(Uint32 agora) {
 #endif
     ESCALA_REAL_INI(); desenhaFileiras(); ESCALA_REAL_FIM(); }
   if (riscoFolha) desenhaRiscoFolha();
-  if (frAberta >= 4) desenhaFolhaFalha();
+  if (frAberta == 6) desenhaFolhaFiltros();
+  else if (frAberta >= 4) desenhaFolhaFalha();
   else if (frAberta == 3) desenhaFolhaOrdem();
   else if (frAberta) desenhaFolhaPermitidos();
 

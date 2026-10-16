@@ -114,8 +114,9 @@ int fonteauto_pode_decidir(const FonteautoParcial *p) {
   if (!p->algumPendente) return 1;
   if (p->preferida >= 0 && p->preferida < p->total &&
       !(p->excluida && p->excluida[p->preferida])) return 1;
+  if (p->esperaTodos) return 0;      // falta um permitido: espera todos
+  if (p->prazoPassou) return 1;      // o prazo da pessoa vence a memoria pendente
   if (p->prefPendente) return 0;
-  if (p->prazoPassou) return 1;
   nf = fonteauto_fila_o(p->modo, p->total, -1, p->pontos, p->acimaTeto,
                         p->excluida, p->grupo, p->rank, p->ordemUso, 1, fila);
   if (nf < 1) return 0;

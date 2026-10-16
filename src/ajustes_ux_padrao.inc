@@ -276,6 +276,12 @@
   1, /* hide watched movies (#366): Desligado, per profile on this device */
   0, /* provider setup: shared legacy accounts; choice itself belongs to this profile */
   0, /* Mic button in search (.tpk): Automatico, local */
+  1, /* audio language in the automatic choice: off (V_LIGA 1), behaviour unchanged */
   0, /* second audio language: Da conta */
+#ifdef NV_ANDROID
+  0, /* Baixar registro: acao local, sem preferencia gravada */
+#endif
+  0, /* synopsis text size (#477): Normal, original typography */
+  0, 0, 0, /* shared exclusions parent, max-size view, release-group editor */
   0, 0, /* prefer binge group (the hand pick for the whole show + the auto memory) Ligado, across sessions Ligado */
   0, 5, /* reuse last link: Ligado (owner, 16/10), 24 h */

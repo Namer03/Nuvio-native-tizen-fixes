@@ -90,6 +90,7 @@ static void uxValorTexto(int op, int v, char *buf, size_t tam) {
   o = &OPCOES[op];
   if (o->tipo == OP_ACAO) texto = i18n("Abrir");
   else if (o->tipo == OP_LEITURA) texto = i18n("Ver detalhes");
+  else if (op == AJ_FILTRO_TAM_MAX && v == 0) texto = i18n("Sem limite de tamanho");
   else if (op == AJ_HERO_TRAILER_ESPERA) {
     snprintf(buf, tam, i18n("%d,%d s"), v / 10, v % 10);
     return;
@@ -164,6 +165,7 @@ static const char *uxSinonimos(int op) {
     case AJ_LEG_LINGUA: return "idioma legenda legendado subtitle subtitles cc closed captions";
     case AJ_LEG2_POS: case AJ_LEG2_TAMANHO: case AJ_LEG2_COR: case AJ_LEG2_FUNDO: case AJ_LEG2_BORDA:
       return "legenda secundaria segunda dupla dual posicao topo junto empilhada tamanho cor fundo borda contorno estilo second subtitle position size color";
+    case AJ_FONTE_IDIOMA_AUDIO: return "fonte automatica idioma audio dublado dublagem dual multi anime ingles japones preferir dub language";
     case AJ_FONTE_PRIORIDADE: case AJ_FONTE_HDR: return "fonte automatica prioridade qualidade equilibrio fluidez hdr dolby vision dv hdr10 sdr cor escolha melhor resolucao";
     case AJ_LOGO_APP: return "logo marca simbolo novo classico icone identidade nuvio tv retro play gradiente splash";
     case AJ_ABERTURA: return "abertura splash inicio animacao zoom esmaecer fade direto rapido logo entrada boot arranque";
@@ -211,7 +213,10 @@ static const char *uxSinonimos(int op) {
     case AJ_FONTE_REGEX: case AJ_FONTE_REGEX_PADRAO: case AJ_FONTE_REGEX_MODELO:
       return "regex expressao regular padrao filtro nome idioma espanhol latino castellano multi dual remux auto-play autoplay regex match pattern";
     case AJ_TAM_MAX: case AJ_TAM_MIN: return "tamanho maximo minimo gb gigabyte arquivo franquia dados internet limite cota plano economizar fonte automatica size quota data cap";
+    case AJ_FILTROS_FONTES: case AJ_FILTRO_TAM_MAX: case AJ_FILTRO_GRUPOS:
+      return "filtros excluir exclusao resolucao qualidade tamanho tags visuais hdr dolby vision audio canais encode idiomas linguas grupos lancamento antes limite links filter exclude resolution quality size visual audio channels codec encode language release group";
     case AJ_FALHA_PROVEDORES: case AJ_FALHA_PROVEDOR_ORDEM: case AJ_FALHA_RD_LIMITE: case AJ_FALHA_TB_LIMITE: case AJ_FALHA_PM_LIMITE: case AJ_FALHA_AD_LIMITE:
+      return "falha erro provedor debrid trocar ordem prioridade limite links timeout failover fallback retry real-debrid torbox premiumize alldebrid";
     case AJ_FALHA_ADDONS: case AJ_FALHA_ADDON_ORDEM: case AJ_FALHA_ADDON_LIMITE:
       return "falha erro provedor debrid addon add-on trocar ordem prioridade limite links timeout failover fallback retry";
     case AJ_FONTE_ORDEM_ADDON: return "ordem fontes qualidade addon aiostreams resolucao tamanho instalacao source order quality";
@@ -272,11 +277,11 @@ static const char *uxCaminhoAntigo(int op) {
     case AJ_FONTE_HDR: case AJ_FONTE_PRAZO: case AJ_FONTE_TEXTO: case AJ_FONTE_ORDEM_ADDON: case AJ_TAM_MAX: case AJ_TAM_MIN:
     case AJ_FONTE_ESCOPO: case AJ_FONTE_ADDONS_PERM: case AJ_FONTE_PLUGINS_PERM: case AJ_FONTE_OUTROS:
     case AJ_FONTE_REGEX: case AJ_FONTE_REGEX_PADRAO: case AJ_FONTE_REGEX_MODELO:
-    case AJ_FONTE_ORDEM: case AJ_FONTE_ORDEM_USO:
+    case AJ_FONTE_ORDEM: case AJ_FONTE_ORDEM_USO: case AJ_FONTE_IDIOMA_AUDIO:
     case AJ_SELOS_CORES: case AJ_SELOS_PACOTE: case AJ_SELOS_PACOTE_ADD: case AJ_SELOS_PACOTE_REM:
       return "Fontes e addons";   // 2.0.2; desde a 2.0.3 a escolha da fonte mora em Reproducao
     case AJ_BUSCA_CINEMETA: case AJ_BUSCA_NUVIO: case AJ_BUSCA_ORIGEM: return "Busca";
-    case AJ_AVANCADAS: return "Aparência";
+    case AJ_HERO_SINOPSE: case AJ_AVANCADAS: return "Aparência";
     case AJ_IDIOMA: return "Idioma";
     // 2.0.3: Cartazes e arte + Trailers viraram Cartazes e trailers; Desempenho
     // desta TV virou Esta TV; Conta e perfis virou Conta e servicos.

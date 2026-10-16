@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include "streamfit.h"
 #include "fontefalha.h"
+#include "fontefiltro.h"
 
 // A lista cresce conforme a resposta dos addons; a UI virtualiza as linhas.
 
@@ -48,6 +49,10 @@ typedef struct Stream {
   // Legendas anexadas pelo addon tambem contam, sem afirmar que sao embutidas.
   char audioIdiomas[512];
   char legendaIdiomas[512];
+  // Metadados canonicos para as exclusoes compartilhadas. Independentes dos
+  // badges importados e do tamanho exato exigido pelo StreamFit.
+  FonteFiltroDados filtro;
+  int filtroLido;       // 1 = classificado pelo parser; 0 = origem sintetica
   char descricao[2048];
   char arquivo[512];
   // O QUE O ADDON DECLARA COMO "a mesma fonte" entre episodios:
@@ -114,6 +119,9 @@ typedef struct Stream {
 int stream_extrair(const char *json, const char *provedor, Stream **saida);
 // Idiomas declarados para exibicao, sem rotulo. 0 = nenhum informado.
 int stream_faixas_texto(const Stream *fonte, int legendas, char *saida, unsigned tam);
+void stream_filtro_dados(const Stream *fonte, FonteFiltroDados *saida);
+int stream_filtro_permite(const Stream *fonte);
+int stream_filtro_bloqueou(void);
 void stream_definir_atual(int indice);
 int stream_atual(void);
 void stream_folha_contexto(const char *texto);
@@ -151,6 +159,8 @@ int  stream_ordem_addon(int i);
 // fonteauto_pode_decidir. `preferida` e o indice da lembrada nesta lista (-1).
 // `instantaneo` (#202): "Espera pelos add-ons" = Instantaneo.
 int  stream_auto_pode_decidir(int preferida, int prefPendente, int prazoPassou, int instantaneo);
+// 1 = o add-on `nome` esta dentro de "Fontes do auto-play" (fonteregra).
+int  stream_addon_no_escopo(const char *nome);
 // REGRAS DE AUTO-PLAY (#202, fonteregra.h): o grupo da fonte i (-1 = fora,
 // 0..3 = ordem) e se a ultima escolha so falhou por causa delas.
 int  stream_grupo_regra(int i);
@@ -240,8 +250,10 @@ Stream *stream_preparo_tomar_lista(StreamPreparo *preparo, int *n);
 void stream_preparo_liberar(StreamPreparo *preparo);
 // A fonte `i` pode ser seguida pela memoria do AUTOMATICO (fontepref): nao
 // excluida, nao aviso do addon, nao barrada pelas regras do dono e, na LG,
-// nunca um nao-MP4 no lugar do MP4 da mesma resolucao. Qualidade nao conta
-// (dono, 16/10): a fonte que ja tocou manda. A manual nao passa por aqui.
+// nunca um nao-MP4 no lugar do MP4 da mesma resolucao. Resolucao nao conta
+// (dono, 16/10: a fonte que ja tocou manda; uma "4K" de IA nao a tira); na
+// mesma resolucao, uma release com evidencia claramente maior ainda vence
+// (Code Geass). A manual nao passa por aqui.
 int  stream_grupo_sem_perda(int i);
 // O mesmo sem as regras de auto-play (#202): canal ao vivo.
 int  stream_automatico_canal(void);

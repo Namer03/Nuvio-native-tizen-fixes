@@ -367,6 +367,19 @@ IGNORAR = {
     "definido por gpun_definir_nivel", "nenhum", "padrao", "sem alvo interno",
     "teto de tempo de medida",
     "lento pela CPU ou pelo resto, nao pela GPU: menos pixel nao ajuda",
+    # Samsung conversion diagnostics: convIniciar/convSondar/convReabrir/
+    # convDesistir only print their reasons; position and subtitle suffixes
+    # below also appear only in printf. None reaches the player UI.
+    "cabecalho lido antes de abrir: so DTS/TrueHD",
+    "cabecalho lido antes de abrir: a ordem do audio escolhe uma faixa DTS/TrueHD",
+    ", legenda escolhida mantida", "troca para o convertido",
+    "volta ao original", "volta ao audio da TV",
+    "a TV nao listou audio e o arquivo so tem DTS/TrueHD", "a TV nao listou audio",
+    "sem indice de quadros-chave para o HLS", "o player nao preparou em 45 s",
+    "a fonte nao abriu no conversor (%s)",
+    "o player recusou o fluxo convertido (erro 0x%08x)",
+    "absoluta (tempo da fonte)", "absoluta com os +10 s do fluxo",
+    "relativa ao comeco do fluxo",
     # .tpk: so vao ao nuvio.log / erro de compilacao / nome de arquivo.
     "NV_TPK40 e so da libnuvio.so do Tizen 4/5; nunca junto com Emscripten",
     "libEGL nao encontrada na TV", "libnuvio.staged.ver",
@@ -395,6 +408,8 @@ IGNORAR = {
     # ISO 639-2 do portugues (linguas.c). Virou candidato quando "por" entrou
     # na lista de palavras de portugues; e codigo de idioma, nao rotulo.
     "por",
+    # Release-language matching terms in fontenota.c; input data, never UI labels.
+    "français", "inglês", "japonês", "română", "türkçe",
     # O MESMO CODIGO EM MAIUSCULA (fontepref.c). E o valor da tabela TERMOS,
     # que traduz "portugues"/"brazilian"/"nacional" num codigo de idioma para
     # COMPARAR duas fontes entre si. Nunca chega na tela: a assinatura inteira

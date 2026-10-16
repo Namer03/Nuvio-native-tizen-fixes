@@ -84,10 +84,20 @@ static void parcial(void) {
   p.prazoPassou = 1;
   CONFERE(fonteauto_pode_decidir(&p), "melhor: prazo passou e nao decidiu");
   p.prefPendente = 1;
-  CONFERE(!fonteauto_pode_decidir(&p), "lembrada pendente: o prazo nao vale");
+  CONFERE(fonteauto_pode_decidir(&p), "lembrada pendente: o prazo da pessoa vence");
+  p.prazoPassou = 0;
+  CONFERE(!fonteauto_pode_decidir(&p), "lembrada pendente: dentro do prazo segura");
   p.preferida = 2;
   CONFERE(fonteauto_pode_decidir(&p), "lembrada presente nao decidiu");
   p.preferida = -1; p.prefPendente = 0; p.prazoPassou = 0;
+  // "Todos os add-ons": a 4K boa ja presente nao basta; so sai sem permitido pendente.
+  bo[1] = 1; p.esperaTodos = 1;
+  CONFERE(!fonteauto_pode_decidir(&p), "todos: decidiu com add-on permitido pendente");
+  p.preferida = 2;
+  CONFERE(fonteauto_pode_decidir(&p), "todos: a lembrada presente nao decidiu");
+  p.preferida = -1; p.algumPendente = 0;
+  CONFERE(fonteauto_pode_decidir(&p), "todos: todos responderam e nao decidiu");
+  bo[1] = 0; p.esperaTodos = 0; p.algumPendente = 1;
   p.modo = FONTEAUTO_PRIMEIRA;
   CONFERE(!fonteauto_pode_decidir(&p), "primeira: o addon 0 falta e decidiu");
   ad[0] = ad[1] = 0;
