@@ -389,9 +389,22 @@ namespace NuvioTpk
             }, null);
         }
 
+        // [abrir-diag]/[tocar-diag] (dono, 16/10): a linha do tempo da abertura no
+        // player da TV e os eventos depois de tocar. Sem URL: so o host.
+        static string HostDe(string u)
+        {
+            try { var x = new Uri(u); return x.Host + (x.IsDefaultPort ? "" : ":" + x.Port); } catch { return "?"; }
+        }
+        static string ErroHex(PlayerError e) { return "0x" + ((uint)(int)e).ToString("x8"); }
+
         async void Abrir(string url, string cabecalhos, int minha)
         {
             posMs = 0;
+            var relogio = Stopwatch.StartNew();
+            bool preparou = false, tocou = false;
+            int ultBuf = -1;
+            long bufDesde = -1;
+            Func<string> ms = () => relogio.ElapsedMilliseconds + " ms";
             // Player novo nasce no volume cheio; so um pedido DESTA sessao
             // (trailer.c, logo depois do video_tocar) o muda.
             volAlvo = 1f; volPedido = false;
@@ -404,10 +417,28 @@ namespace NuvioTpk
                 bool viva;
                 lock (trocaTrava) { viva = minha == Volatile.Read(ref sessao); if (viva) { player = p; playerSessao = minha; } }
                 if (!viva) { Liberar(p); return; }
-                p.PlaybackCompleted += (s, e) => { if (minha == Volatile.Read(ref sessao)) NvVid.Evento(EV_FIM, 0, 0); };
-                p.ErrorOccurred += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("erro " + e.Error); NvVid.Evento(EV_ERRO, (int)e.Error, 0); } };
-                p.BufferingProgressChanged += (s, e) => { if (minha == Volatile.Read(ref sessao)) NvVid.Evento(EV_BUFFER, e.Percent, 0); };
-                p.PlaybackInterrupted += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("interrompido: " + e.Reason); NvVid.Evento(EV_PAUSADO, 0, 0); } };
+                Log("[abrir-diag] open start: host " + HostDe(url) + (url.StartsWith("http://127.0.0.1") ? " (local converter/proxy)" : "") +
+                    ", headers: " + ((cabecalhos ?? "").Trim().Length == 0 ? "none" : string.Join(",", Array.ConvertAll((cabecalhos ?? "").Split('\n'), l => { int i = l.IndexOf(':'); return i > 0 ? l.Substring(0, i).Trim() : ""; })).Trim(',')));
+                p.PlaybackCompleted += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("[tocar-diag] playback completed at pos " + posMs / 1000 + " s"); NvVid.Evento(EV_FIM, 0, 0); } };
+                p.ErrorOccurred += (s, e) => {
+                    if (minha != Volatile.Read(ref sessao)) return;
+                    Log("erro " + e.Error);
+                    string estado = "?"; try { estado = p.State.ToString(); } catch { }
+                    if (tocou) Log("[tocar-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") while playing at pos " + posMs / 1000 + " s, " + ms() + " after open, state=" + estado + ", last buffering " + ultBuf + "%");
+                    else Log("[abrir-diag] player error " + e.Error + " (" + ErroHex(e.Error) + ") at " + ms() + ", prepared=" + preparou + ", state=" + estado + ", buffering " + ultBuf + "%");
+                    NvVid.Evento(EV_ERRO, (int)e.Error, 0);
+                };
+                p.BufferingProgressChanged += (s, e) => {
+                    if (minha != Volatile.Read(ref sessao)) return;
+                    // Antes de tocar: cada passo de 25%. Tocando: inicio e fim de cada
+                    // espera, com quanto durou.
+                    if (!tocou) { if (ultBuf < 0 || e.Percent / 25 != ultBuf / 25) Log("[abrir-diag] buffering " + e.Percent + "% at " + ms()); }
+                    else if (e.Percent < 100 && (ultBuf < 0 || ultBuf >= 100)) { bufDesde = relogio.ElapsedMilliseconds; Log("[tocar-diag] buffering started at pos " + posMs / 1000 + " s (" + e.Percent + "%)"); }
+                    else if (e.Percent >= 100 && ultBuf >= 0 && ultBuf < 100 && bufDesde >= 0) Log("[tocar-diag] buffering ended after " + (relogio.ElapsedMilliseconds - bufDesde) + " ms at pos " + posMs / 1000 + " s");
+                    ultBuf = e.Percent;
+                    NvVid.Evento(EV_BUFFER, e.Percent, 0);
+                };
+                p.PlaybackInterrupted += (s, e) => { if (minha == Volatile.Read(ref sessao)) { Log("interrompido: " + e.Reason); Log((tocou ? "[tocar-diag] interrupted (" : "[abrir-diag] interrupted (") + e.Reason + ") at pos " + posMs / 1000 + " s, " + ms() + " after open"); NvVid.Evento(EV_PAUSADO, 0, 0); } };
                 p.SubtitleUpdated += (s, e) => { if (minha == Volatile.Read(ref sessao)) NvVid.Legenda(e.Text ?? "", (int)e.Duration); };
                 foreach (var linha in (cabecalhos ?? "").Split('\n'))
                 {
@@ -432,7 +463,21 @@ namespace NuvioTpk
                 p.SetSource(new MediaUriSource(url));
                 p.Display = fazDisplay();
                 p.DisplaySettings.Mode = PlayerDisplayMode.LetterBox;
-                await p.PrepareAsync();
+                Log("[abrir-diag] source and display set at " + ms() + "; Prepare starts");
+                try { await p.PrepareAsync(); }
+                catch (Exception pe)
+                {
+                    string estado = "?"; try { estado = p.State.ToString(); } catch { }
+                    Log("[abrir-diag] Prepare FAILED after " + ms() + ": " + pe.GetType().Name + " \"" + pe.Message + "\" hresult=0x" + pe.HResult.ToString("x8") + ", state=" + estado + ", last buffering " + ultBuf + "%");
+                    throw;
+                }
+                preparou = true;
+                {
+                    string v = "?", a = "?";
+                    try { var vp = p.StreamInfo.GetVideoProperties(); v = p.StreamInfo.GetVideoCodec() + " " + vp.Size.Width + "x" + vp.Size.Height + " " + vp.Fps + " fps " + vp.BitRate / 1000 + " kbps"; } catch (Exception x) { v = "n/a (" + x.GetType().Name + ")"; }
+                    try { var ap = p.StreamInfo.GetAudioProperties(); a = p.StreamInfo.GetAudioCodec() + " " + ap.Channels + "ch " + ap.SampleRate + " Hz " + ap.BitRate / 1000 + " kbps"; } catch (Exception x) { a = "n/a (" + x.GetType().Name + ")"; }
+                    Log("[abrir-diag] prepared in " + ms() + ": video " + v + " | audio " + a);
+                }
                 // A parada e dona unica do descarte, inclusive se o Prepare
                 // terminar depois do pedido de saida ou de outra abertura.
                 if (minha != Volatile.Read(ref sessao)) return;
@@ -444,6 +489,8 @@ namespace NuvioTpk
                 NvVid.Evento(EV_PRONTO, dur, 0);
                 if (minha != Volatile.Read(ref sessao)) return;
                 p.Start();
+                tocou = true;
+                Log("[abrir-diag] started at " + ms());
                 windowMetrics.Invalidate();
                 AplicaVolume(p, "start");
                 NvVid.Evento(EV_TOCANDO, 0, 0);

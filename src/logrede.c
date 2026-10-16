@@ -1,5 +1,6 @@
 // Ver logrede.h para o porque e as regras.
 #include "logrede.h"
+#include "abrirdiag.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -117,29 +118,40 @@ const char *logrede_url(void) { return ""; }
 #define LR_FILTRO_LER (8 * 1024 * 1024)  // filtro "escolha da fonte": varre ate 8 MB do fim
 #define LR_FILTRO_MAX (1024 * 1024)      // e devolve no maximo o ultimo 1 MB do que casou
 
-// AS LINHAS DA ESCOLHA DA FONTE. O filtro roda AQUI, no servidor: o log tem uma
-// linha de FPS por segundo, e um filtro so no navegador sobre os ultimos 512 KB
-// deixava a pagina quase vazia — o bloco [fonte-diag] de dez minutos atras ja
-// tinha saido da janela (o painel de 8099 da etapa de DTS varria 8 MB, por isso
-// funcionava). A mesma lista colore as linhas na pagina.
-static const char *const FILTRO[] = {
+// AS ABAS DA PAGINA (dono, 16/10): cada uma e um filtro que roda AQUI, no
+// servidor, sobre ate 8 MB do fim do log (o log tem uma linha de FPS por
+// segundo; filtrar so no navegador sobre 512 KB perdia os blocos de minutos
+// atras). Termos em minuscula; a linha e comparada em minuscula.
+//   1 Source picking      — como a fonte foi escolhida
+//   2 Won't open          — o player recusou a fonte antes de tocar
+//   3 Error while playing — a fonte tocou e depois deu erro / parou
+static const char *const F_FONTE[] = {
   "[fonte", "[voltafonte", "[addons", "[addon]", "[preparo", "[proximo", "[debrid", "[verif",
-  "[next", "abrir:", "proximo episodio", "buscando fontes", "automatico", "auto-play", "auto pick",
-  "bingegroup", "fonte escolhida", "nenhuma fonte", "[logrede]",
-  // O PLAYER (dono, 16/10): a fonte que tocava e o player recusou na reabertura,
-  // e a linha que dizia por que ("[host] erro ...") ficava de fora do filtro.
-  // As mesmas etiquetas do painel de 8099 da etapa de DTS; FPS= continua fora.
-  "[host]", "[video]", "[player]", "[dts-tpk]", "[dts-range]", "[dts]", "[audio]", "[mkv]", "[tv] ", NULL
+  "[next", "proximo episodio", "buscando fontes", "automatico", "auto-play", "auto pick",
+  "bingegroup", "fonte escolhida", "nenhuma fonte", "[logrede]", NULL
 };
-// A lista acima e minuscula; a linha e baixada para minuscula numa copia (ate
-// 1 KB, onde ficam as etiquetas) e cada termo vira um strstr — 8 MB em poucos
-// centesimos de segundo no ARM da TV.
-static int linhaDaFonte(const char *l) {
+static const char *const F_ABRIR[] = {
+  "[abrir-diag]", "abrir:", "pipeline open", "picked in the sheet", "sheet opened", "hand-picked",
+  "escolha manual", "erro do player", "sonda apos recusa", "nao abriu", "sem sinal de abertura",
+  "fonte escolhida", "automatico (verificado)", "tocando enquanto confere", "[voltafonte]", "failover",
+  "[host] erro", "[host] abrir", "[host] interrompido", "[host] cabecalho", "[mkv]", "[dts-tpk]",
+  "[video] tpk", "[logrede]", NULL
+};
+static const char *const F_TOCAR[] = {
+  "[tocar-diag]", "[host] erro", "[host] interrompido", "[video]", "[player]", "[dts-tpk]", "[dts-range]",
+  "[dts]", "[audio]", "[mkv]", "[tv] ", "reconex", "reconect", "failover", "escolha manual",
+  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[logrede]", NULL
+};
+static const char *const *const FILTROS[4] = { NULL, F_FONTE, F_ABRIR, F_TOCAR };
+static const char *const NOMES_ARQ[4] = { "nuvio-log.txt", "nuvio-source-picking.txt", "nuvio-wont-open.txt",
+                                          "nuvio-error-while-playing.txt" };
+static int linhaDoFiltro(const char *l, int modo) {
   char b[1024];
   size_t i;
+  if (modo <= 0 || modo > 3) return 1;
   for (i = 0; i + 1 < sizeof b && l[i]; i++) b[i] = (char)tolower((unsigned char)l[i]);
   b[i] = 0;
-  for (int k = 0; FILTRO[k]; k++) if (strstr(b, FILTRO[k])) return 1;
+  for (int k = 0; FILTROS[modo][k]; k++) if (strstr(b, FILTROS[modo][k])) return 1;
   return 0;
 }
 
@@ -211,23 +223,25 @@ static const char PAGINA[] =
 "<!doctype html><html lang=en><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1'>"
 "<title>Nuvio log</title><style>"
-":root{color-scheme:dark;--bg:#0e1116;--fg:#d6dbe3;--dim:#7d8590;--fonte:#7ee0a1;--diag:#f2c45a;--next:#7cc4ff;--erro:#ff8a80}"
+":root{color-scheme:dark;--bg:#0e1116;--fg:#d6dbe3;--dim:#7d8590;--fonte:#7ee0a1;--diag:#f2c45a;--next:#7cc4ff;--erro:#ff8a80;--abrir:#e0a8ff}"
 "body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 ui-monospace,Menlo,Consolas,monospace}"
 "header{position:sticky;top:0;background:#151a21;padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid #222a35}"
 "header b{font:600 14px system-ui,sans-serif;margin-right:6px}"
 "button,input,a.b{background:#1f2630;color:var(--fg);border:1px solid #2d3745;border-radius:6px;padding:5px 9px;font:12px system-ui,sans-serif;text-decoration:none}"
-"button.on{background:#2b5b3f;border-color:#3f8a5e}input{min-width:160px;flex:1;max-width:320px}"
-"#st{color:var(--dim);font:12px system-ui,sans-serif}"
+"button.on{background:#2b5b3f;border-color:#3f8a5e}input#q{min-width:160px;flex:1;max-width:320px}"
+"#st,#cfg{color:var(--dim);font:12px system-ui,sans-serif}#cfg label{margin-right:12px;white-space:nowrap}#cfg{width:100%}"
 "#log{padding:8px 12px 40px;white-space:pre-wrap;word-break:break-word}"
-".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.h{color:#fff;font-weight:700;margin-top:10px;border-top:1px solid #333}.x{display:none}"
+".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.a{color:var(--abrir)}.h{color:#fff;font-weight:700;margin-top:10px;border-top:1px solid #333}.x{display:none}"
 "</style></head><body><header><b>Nuvio log</b>"
-"<button id=bf class=on>Source &amp; player</button><button id=bt>Everything</button>"
-"<input id=q placeholder='Search (e.g. T7, queue 1, why=)'>"
+"<button id=b1 class=on>Source picking</button><button id=b2>Won't open</button><button id=b3>Error while playing</button><button id=b0>Everything</button>"
+"<input id=q placeholder='Search (e.g. REFUSED, track #, T7)'>"
 "<button id=ba class=on>Auto-scroll</button><button id=bc>Clear</button>"
-"<a class=b id=dl href='/fonte.txt?baixar=1'>Download</a><span id=st></span></header>"
+"<a class=b id=dl href='/fonte.txt?baixar=1'>Download</a><span id=st></span>"
+"<div id=cfg>Log settings: <label><input type=checkbox id=cf> read the file header when a source won't open</label><label><input type=checkbox id=co> also for sources that open (to compare; extra 4 MB read)</label></div></header>"
 "<div id=log></div><script>"
 "var de=-1,f=1,auto=1,q='',gen=0,L=document.getElementById('log'),S=document.getElementById('st');"
-"function cls(t){return /=====/.test(t)?'h':/\\[fonte-diag\\]/.test(t)?'d':/next/i.test(t)?'n':/(falh|erro|error|fail|refused|NAO)/.test(t)?'e':/\\[fonte/.test(t)?'f':''}"
+"var ARQ=['/log.txt','/fonte.txt','/abrir.txt','/tocar.txt'],BT=[b0,b1,b2,b3];"
+"function cls(t){return /=====/.test(t)?'h':/REFUSED|FAILED|failed AFTER|NOT CHANGED/.test(t)?'e':/\\[abrir-diag\\]|\\[tocar-diag\\]/.test(t)?'a':/\\[fonte-diag\\]/.test(t)?'d':/next/i.test(t)?'n':/(falh|erro|error|fail|refused)/i.test(t)?'e':/\\[fonte/.test(t)?'f':''}"
 "function vis(d){return !q||d.textContent.toLowerCase().indexOf(q)>=0}"
 "function add(txt){var fr=document.createDocumentFragment();txt.split('\\n').forEach(function(t){if(!t)return;"
 "var d=document.createElement('div');d.className='l '+cls(t);d.textContent=t;if(!vis(d))d.classList.add('x');fr.appendChild(d)});"
@@ -237,15 +251,18 @@ static const char PAGINA[] =
 "if(r.headers.get('X-Novo')==='1')L.textContent='';if(x!==null)de=+x;return r.text()}).then(function(t){if(g!==gen)return;if(t)add(t);"
 "S.textContent=(L.childNodes.length?L.childNodes.length+' lines':'no lines yet')+' • live • '+new Date().toLocaleTimeString()})"
 ".catch(function(){S.textContent='TV not answering, retrying…'}).then(function(){if(g===gen)setTimeout(puxar,1500)})}"
-"function modo(v){f=v;bf.classList.toggle('on',v===1);bt.classList.toggle('on',v===0);"
-"dl.href=v?'/fonte.txt?baixar=1':'/log.txt?baixar=1';gen++;de=-1;L.textContent='';S.textContent='loading…';puxar()}"
-"bf.onclick=function(){modo(1)};bt.onclick=function(){modo(0)};"
+"function modo(v){f=v;for(var i=0;i<4;i++)BT[i].classList.toggle('on',i===v);"
+"dl.href=ARQ[v]+'?baixar=1';gen++;de=-1;L.textContent='';S.textContent='loading…';puxar()}"
+"b0.onclick=function(){modo(0)};b1.onclick=function(){modo(1)};b2.onclick=function(){modo(2)};b3.onclick=function(){modo(3)};"
 "ba.onclick=function(){auto=!auto;ba.classList.toggle('on',auto)};bc.onclick=function(){L.textContent=''};"
-"document.getElementById('q').oninput=function(e){q=e.target.value.toLowerCase();filtrar()};puxar();"
+"document.getElementById('q').oninput=function(e){q=e.target.value.toLowerCase();filtrar()};"
+"function cfg(qs){fetch('/diag'+(qs||''),{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){cf.checked=!!j.falha;co.checked=!!j.ok}).catch(function(){})}"
+"cf.onchange=co.onchange=function(){cfg('?falha='+(cf.checked?1:0)+'&ok='+(co.checked?1:0))};cfg();puxar();"
 "</script></body></html>";
 
 // Le [ini, ini+max) do arquivo, so linhas inteiras, limpas. *fim = onde parou.
 static char *lerTrecho(const char *arq, long de, long max, int filtrar, long *fim, int *novo, size_t *n) {
+  // filtrar: 0 tudo, 1..3 a aba (FILTROS)
   FILE *f = fopen(arq, "rb");
   struct stat st;
   long tam, ini;
@@ -280,7 +297,7 @@ static char *lerTrecho(const char *arq, long de, long max, int filtrar, long *fi
     char *nl = strchr(p, '\n'), *ln = p;
     size_t k;
     if (nl) *nl = 0;
-    if (!filtrar || linhaDaFonte(ln)) {
+    if (linhaDoFiltro(ln, filtrar)) {
       logrede_limpar(ln);
       k = strlen(ln);
       memcpy(o, ln, k); o += k; *o++ = '\n';
@@ -342,14 +359,31 @@ static void atender(int c) {
     responderTexto(c, 200, "text/html; charset=utf-8", NULL, PAGINA, sizeof PAGINA - 1);
     return;
   }
-  if (!strncmp(caminho, "/log.txt", 8) || !strncmp(caminho, "/fonte.txt", 10)) {
+  if (!strncmp(caminho, "/diag", 5)) {
+    // AJUSTES DO REGISTRO (abrirdiag.h): GET /diag?falha=1&ok=0 muda; sem
+    // parametro so devolve o estado.
+    const char *qs = strchr(caminho, '?'), *v;
+    char j[64];
+    int k, f = abrirdiag_falha(), o = abrirdiag_ok();
+    if (qs) {
+      if ((v = strstr(qs, "falha="))) f = v[6] == '1';
+      if ((v = strstr(qs, "ok="))) o = v[3] == '1';
+      abrirdiag_definir(f, o);
+    }
+    k = snprintf(j, sizeof j, "{\"falha\":%d,\"ok\":%d}", abrirdiag_falha(), abrirdiag_ok());
+    responderTexto(c, 200, "application/json", NULL, j, (size_t)k);
+    return;
+  }
+  if (!strncmp(caminho, "/log.txt", 8) || !strncmp(caminho, "/fonte.txt", 10) ||
+      !strncmp(caminho, "/abrir.txt", 10) || !strncmp(caminho, "/tocar.txt", 10)) {
     const char *qs = strchr(caminho, '?'), *v;
     long de = -1, fim = 0, max = LR_PASSO;
-    int novo = 0, baixar = 0, filtrar = !strncmp(caminho, "/fonte.txt", 10);
+    int novo = 0, baixar = 0, filtrar = !strncmp(caminho, "/fonte.txt", 10) ? 1 : !strncmp(caminho, "/abrir.txt", 10) ? 2
+                                      : !strncmp(caminho, "/tocar.txt", 10) ? 3 : 0;
     size_t n = 0;
-    char *txt, extra[160];
+    char *txt, extra[200];
     if (qs && (v = strstr(qs, "de="))) de = strtol(v + 3, NULL, 10);
-    if (qs && strstr(qs, "f=1")) filtrar = 1;
+    if (qs && ((v = strstr(qs, "?f=")) || (v = strstr(qs, "&f=")))) { filtrar = atoi(v + 3); if (filtrar < 0 || filtrar > 3) filtrar = 0; }
     if (qs && strstr(qs, "baixar=1")) { baixar = 1; de = -1; max = filtrar ? LR_FILTRO_LER : LR_BAIXAR; }
     else if (de < 0) max = filtrar ? LR_FILTRO_LER : LR_INICIO;
     if (!arq[0] || !(txt = lerTrecho(arq, de, max, filtrar, &fim, &novo, &n))) {
@@ -357,9 +391,9 @@ static void atender(int c) {
       responderTexto(c, 200, "text/plain; charset=utf-8", "X-Fim: 0\r\n", de < 0 ? sem : "", de < 0 ? sizeof sem - 1 : 0);
       return;
     }
-    snprintf(extra, sizeof extra, "X-Fim: %ld\r\nX-Novo: %d\r\n%s", fim, novo,
-             !baixar ? "" : filtrar ? "Content-Disposition: attachment; filename=\"nuvio-source-picking.txt\"\r\n"
-                    : "Content-Disposition: attachment; filename=\"nuvio-log.txt\"\r\n");
+    if (baixar) snprintf(extra, sizeof extra, "X-Fim: %ld\r\nX-Novo: %d\r\nContent-Disposition: attachment; filename=\"%s\"\r\n",
+                         fim, novo, NOMES_ARQ[filtrar]);
+    else snprintf(extra, sizeof extra, "X-Fim: %ld\r\nX-Novo: %d\r\n", fim, novo);
     responderTexto(c, 200, "text/plain; charset=utf-8", extra, txt, n);
     free(txt);
     return;

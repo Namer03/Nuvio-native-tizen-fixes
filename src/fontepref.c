@@ -1002,6 +1002,20 @@ static int contemMarcas(const char *t, const char *lembrada) {
   return 1;
 }
 
+
+// UMA LINHA POR RESULTADO (dono, 16/10): a folha e a decisao perguntam a mesma
+// coisa a cada quadro, e "[fonte] preferida de ... na posicao N" enchia o log
+// centenas de vezes. Repete so quando titulo, posicao, regra ou lista mudam.
+static int logNovo(int slot, const char *id, int pos, const char *como) {
+  static char ultimos[3][200];
+  char *ult = ultimos[slot];
+  char k[200];
+  snprintf(k, sizeof k, "%s|%d|%s|%u|%d", id ? id : "", pos, como ? como : "", stream_lista_geracao(), stream_n());
+  if (!strcmp(k, ult)) return 0;
+  snprintf(ult, sizeof ultimos[0], "%s", k);
+  return 1;
+}
+
 static int porTrilha(const FontePref *p) {
   int i, melhor = -1, melhorNota = -1, total = stream_n(), passo;
   // DOIS PASSOS. 1: provedor E trilha iguais (o casamento estrito de
@@ -1024,7 +1038,7 @@ static int porTrilha(const FontePref *p) {
       n = nota(s, p);
       if (n > melhorNota) { melhorNota = n; melhor = i; }
     }
-    if (melhor >= 0 && passo == 1) {
+    if (melhor >= 0 && passo == 1 && logNovo(0, p->id, melhor, "trilha aproximada")) {
       printf("[fonte] preferida de %s casou por provedor com trilha aproximada\n", p->id);
       fflush(stdout);
     }
@@ -1181,7 +1195,7 @@ static int escolherAuto(const char *id) {
   k = autoAchar(base);
   if (!autoUsavel(k)) return -1;
   melhor = melhorAuto(&tabAuto[k], stream_n(), itemGlobal, NULL, semPerdaGlobal, NULL, &como);
-  if (melhor >= 0) {
+  if (melhor >= 0 && logNovo(1, base, melhor, como)) {
     printf("[fonte] preferida de %s na posicao %d pela fonte que o automatico tocou, por %s (lancamento=%s)\n",
            base, melhor, como, tabAuto[k].p.lancamento[0] ? tabAuto[k].p.lancamento : "-");
     fflush(stdout);
@@ -1349,6 +1363,7 @@ static int escolherManual(const FontePref *p) {
   // UMA passada pela lista inteira, por pontos (fontepref.h). Nao casou nada:
   // -1, e o automatico assume como sempre — a lembrada nunca trava a escolha.
   int melhor = melhorManual(p, stream_n(), itemGlobal, NULL, &como);
+  if (!logNovo(2, p->id, melhor, como)) return melhor;
   if (melhor >= 0)
     printf("[fonte] preferida de %s na posicao %d por %s (lancamento=%s)\n", p->id, melhor, como,
            p->lancamento[0] ? p->lancamento : "-");

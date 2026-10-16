@@ -145,6 +145,7 @@
 #include "ondever.h"
 #include "fontepref.h"
 #include "logrede.h"
+#include "abrirdiag.h"
 #include "fontesmortas.h"
 #include "video.h"
 #include "addons.h"
@@ -2571,6 +2572,59 @@ static void vigiarAberturaManual(void) {
   fonteManualDesde = 0;
   marcarFonteMorta(stream_atual());
   player_erro_fonte_motivo(i18n("A fonte não respondeu a tempo."), NULL);
+}
+// [abrir-diag] / [tocar-diag] (dono, 16/10): UMA linha quando a fonte do
+// player falha, separando "nao abriu" (o player recusou antes de tocar) de
+// "abriu e deu erro depois" — e, na recusa, a leitura do cabecalho do arquivo
+// (abrirdiag.h) quando a pagina de registro pede. Tambem a abertura que deu
+// certo, para comparar.
+static void vigiarDiagAbertura(void) {
+  static unsigned hVista;
+  static int erroVisto, okVisto;
+  static Uint32 desde;
+  const char *u = video_url_atual();
+  unsigned h = 2166136261u;
+  const Stream *s;
+  const char *cab, *modo;
+  char lanc[FONTEPREF_LANC] = "";
+  int falhou, tocou;
+  if (!player_aberto() || player_id_canal()[0] || !u || !*u) { hVista = 0; return; }
+  for (const char *c = u; *c; c++) h = (h ^ (unsigned char)*c) * 16777619u;
+  if (h != hVista) { hVista = h; erroVisto = okVisto = 0; desde = SDL_GetTicks(); }
+  falhou = video_falhou() || player_fonte_falhou();
+  if (!falhou && (okVisto || !video_pronto() || video_pos() <= 0.5)) return;
+  if (falhou && erroVisto) return;
+  s = voltaAtiva ? &voltaFonte : stream_item(stream_atual());
+  cab = s ? s->cabecalhos : "";
+  if (s) fontepref_lancamento(s, lanc, sizeof lanc);
+  modo = voltaAtiva ? "saved link (Reuse last link)" : fonteManualDesde ? "hand pick"
+       : fonteVODAutomatica ? "auto-play" : "other";
+  tocou = video_fonte_tocou() || fonteProvouTocar();
+  if (!falhou) {
+    okVisto = 1;
+    printf("[abrir-diag] opened OK in %u ms: source #%d | %s | %dp | release=%s | %s | mode=%s\n",
+           (unsigned)(SDL_GetTicks() - desde), stream_atual(), s && s->provedor[0] ? s->provedor : "-",
+           s ? s->altura : 0, lanc[0] ? lanc : "-", s ? s->rotulo : "-", modo);
+    fflush(stdout);
+    if (abrirdiag_ok()) abrirdiag_sondar(u, cab, "opened");
+    return;
+  }
+  erroVisto = 1;
+  if (tocou) {
+    printf("[tocar-diag] source #%d failed AFTER playing: %s | pos %.0f s of %.0f s | buffered to %.0f s | %u ms since open"
+           " | reconnecting=%d | mode=%s | %s | release=%s | %s\n",
+           stream_atual(), video_erro_texto()[0] ? video_erro_texto() : "no error code", video_pos(), video_duracao(),
+           video_buffer_fim(), (unsigned)(SDL_GetTicks() - desde), video_reconectando(), modo,
+           s && s->provedor[0] ? s->provedor : "-", lanc[0] ? lanc : "-", s ? s->rotulo : "-");
+  } else {
+    printf("[abrir-diag] source #%d REFUSED before playing, %u ms after open: %s | mode=%s | %s | %dp | release=%s | binge=%s | %s\n",
+           stream_atual(), (unsigned)(SDL_GetTicks() - desde), video_erro_texto()[0] ? video_erro_texto() : "no error code",
+           modo, s && s->provedor[0] ? s->provedor : "-", s ? s->altura : 0, lanc[0] ? lanc : "-",
+           s && s->bingeGroup[0] ? s->bingeGroup : "-", s ? s->rotulo : "-");
+    if (abrirdiag_falha()) abrirdiag_sondar(u, cab, "refused");
+    else printf("[abrir-diag] header read is off (log page > Log settings)\n");
+  }
+  fflush(stdout);
 }
 // PRAZO DE ABERTURA (#202, inicio.h): 15 s sem nenhum sinal de vida, 30 s com
 // dado chegando — e o curto so quando a proxima candidata nao e pior que esta
@@ -5438,6 +5492,7 @@ void app_atualizar(float dt, Uint32 agora) {
     trocarTela(TELA_AJUSTES); menu_definir_destino(MENU_AJUSTES);
   }
   vigiarAberturaManual();
+  vigiarDiagAbertura();
   processarTorrentJob();
 
   int fonte;
