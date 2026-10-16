@@ -233,7 +233,7 @@ int main(void) {
   ok(nResolve == 1 && nAbriu == 1 && !strcmp(ultUrl, "https://cdn.test/fresh1"), "old link: reopened with a fresh CDN link");
   validadeMs = 150 * 60 * 1000;
   posMs = 0; playerPronto(); bombear(3);
-  ok(nBuscas == 1, "old link: the new player seeks to the target once it plays");
+  ok(nBuscas == 1 && perto(video_pos(), 600.0), "old link: the new player seeks to the target once it plays; no jump to 0");
   posMs = 600500; bombear(3);
 
   // OLD LINK + PAUSE: resume reopens at the position.
@@ -247,7 +247,9 @@ int main(void) {
   ok(nAbriu == 1 && !strncmp(ultUrl, "https://cdn.test/fresh", 22), "old link + resume: reopened with a fresh link");
   validadeMs = 150 * 60 * 1000;
   posMs = 0; playerPronto(); bombear(3);
-  ok(nBuscas == 1 && perto(video_pos(), 0.0) == 0, "old link + resume: back to the paused position");
+  ok(nBuscas == 1 && perto(video_pos(), 600.5), "old link + resume: back to the paused position (kept while reopening)");
+  posMs = 600600; bombear(3);
+  ok(perto(video_pos(), 600.6), "old link + resume: plays on from there");
   posMs = 700000; bombear(3);
 
   // ERROR AFTER PLAYING, NOT A NETWORK ERROR: reconnect with a fresh link.

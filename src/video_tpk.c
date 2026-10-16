@@ -206,6 +206,17 @@ static struct {
 } cv = { .buscarMs = -1 };
 static Uint32 faixasEm;           // quando a ultima lista de faixas do player chegou
 static volatile int naoSupPend;   // NotSupportedAudioCodec veio do host (outro fio)
+// RESGATE PELO CONVERSOR (dono, 16/10/2026). O player acusa
+// AudioCodecNotSupported (0xfe6c002e) num arquivo so com DTS/TrueHD; o erro
+// virava `falhou` na hora, e o app punha o cartao de erro e marcava a fonte
+// morta 2 s antes de o conversor assumir (TTGA so DTS: o convertido chegou a
+// tocar 21 s atras do cartao). Agora, com a conversao possivel, esse erro abre
+// uma janela: o conversor tem ate RESGATE_MS para assumir; erros do original
+// nessa janela (o Prepare que falha depois) nao contam. Sem conversor ate o
+// fim da janela: `falhou`, como antes.
+#define TPK_ERRO_AUDIO 0xFE6C002Eu
+#define RESGATE_MS 20000u
+static Uint32 resgateAte;
 int video_faixa_dts(const VideoFaixa *f);
 static int convIniciar(int track, double pos, const char *motivo);
 static void convDesistir(const char *motivo);
@@ -608,7 +619,7 @@ static int trilhaPelaOrdem(void);
 static int videoConvertivel(void);
 
 int video_tocar(const char *u) {
-  parado = 0;
+  parado = 0; resgateAte = 0;
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   // As listas do titulo anterior nao passam para o convertido (que as mantem
@@ -1309,8 +1320,10 @@ static void reabrindoVigiar(void) {
       (cv.ativo && cv.prog && !cv.deslocOk)) { cv.reabTocandoEm = 0; return; }
   if (!cv.reabTocandoEm) cv.reabTocandoEm = agora | 1u;
   p = posReal();
-  if (p < 0.3 && agora - cv.reabTocandoEm < 10000u) return;
-  if (fabs(p - cv.posMantida) > 20.0 && agora - cv.reabTocandoEm < 10000u) return;
+  // Com sinal: no quadro em que foi marcado, `agora | 1` pode passar de agora
+  // por 1 ms, e a conta sem sinal dava 4 bilhoes (soltava em posicao 0).
+  if (p < 0.3 && (int)(agora - cv.reabTocandoEm) < 10000) return;
+  if (fabs(p - cv.posMantida) > 20.0 && (int)(agora - cv.reabTocandoEm) < 10000) return;
   printf("%s reaberto em %u ms: posicao %.2f s (alvo %.1f s)\n", cv.ativo ? "[dts-tpk]" : "[fonte-cdn]",
          (unsigned)(agora - cv.reabriuEm), p, cv.posMantida);
   fflush(stdout);
@@ -1344,6 +1357,33 @@ void video_bombear(void) {
     printf("[video] reconexao: retomado em %ds\n", reconBuscarMs / 1000);
     fflush(stdout);
     reconBuscarMs = -1;
+  }
+  if (resgateAte) {
+    if (cv.ativo || parado || !ativo) resgateAte = 0;   // o conversor assumiu (ou saiu)
+    else if (!cv.sondando && (!naoSupPend || (int)(SDL_GetTicks() - resgateAte) >= 0)) {
+      // convBombear ja decidiu e nao converteu (nenhuma faixa para converter,
+      // conversor recusou), ou o cabecalho nao chegou a tempo: falhou. A sonda
+      // do conversor (MP4) em curso decide antes.
+      resgateAte = 0;
+      printf("[dts-tpk] the converter did not take over: the source failed (TV refused the audio)\n");
+      fflush(stdout);
+      falhou = 1;
+    }
+  }
+  if (reconErroPend && !cv.ativo && !parado) {
+    Uint32 agora = SDL_GetTicks();
+    if (resgateAte) {
+      printf("[dts-tpk] player error 0x%x while the converter takes over: ignored\n", (unsigned)reconErroCod);
+      fflush(stdout);
+      reconErroPend = 0; reconLinhaRede = 0;
+    } else if ((unsigned)reconErroCod == TPK_ERRO_AUDIO && !reconIniciou && convPossivel()) {
+      printf("[dts-tpk] the TV refused the audio codec: the converter takes over (not a failed source; %u s to start)\n",
+             RESGATE_MS / 1000u);
+      fflush(stdout);
+      resgateAte = (agora + RESGATE_MS) | 1u;
+      naoSupPend = 1;
+      reconErroPend = 0; reconLinhaRede = 0;
+    }
   }
   if (reconErroPend) {
     int antes = recon.tentativa;
@@ -1395,7 +1435,7 @@ void video_bombear(void) {
   }
 }
 void video_parar(void) {
-  parado = 1;
+  parado = 1; resgateAte = 0;
   cdn.pend = 0; cdn.usado = 0;
   atomic_fetch_add(&cdnGer, 1);
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
@@ -1677,7 +1717,9 @@ void video_tpk_log_host(const char *linha) {
   // "erro ConnectionFailed" vem logo antes do evento 5 (Video.cs).
   if (!strncmp(linha, "erro ", 5) && nv_recon_rede_tpk(0, linha)) reconLinhaRede = 1;
   // O player acusa o codec sem lista vazia: mesmo aviso, com a linha de prova.
-  if (!strncmp(linha, "erro NotSupportedAudioCodec", 27)) {
+  // Video.cs loga o nome do enum PlayerError do Tizen.Multimedia, que e
+  // "AudioCodecNotSupported" (log do S95C, 16/10); o outro e o nome do CAPI.
+  if (!strncmp(linha, "erro NotSupportedAudioCodec", 27) || !strncmp(linha, "erro AudioCodecNotSupported", 27)) {
     printf("[audio] TV recusou o audio da fonte: player acusou NotSupportedAudioCodec (faixas da TV=%d)\n", nAudio);
     fflush(stdout);
     // Com a conversao possivel, o fio do app decide (convBombear); sem ela, o

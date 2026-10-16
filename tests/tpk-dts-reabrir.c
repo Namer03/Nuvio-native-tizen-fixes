@@ -331,6 +331,39 @@ int main(void) {
   video_tocar("http://h/g.mkv");
   ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl), "H.264 video, only DTS: converts");
   video_parar();
+  // THE CONVERTER RESCUES A DTS-ONLY FILE THE TV REFUSES (16/10, TTGA): the
+  // header is not known at open, the TV says AudioCodecNotSupported. That is
+  // not a failed source: no `falhou`, the Prepare error after it is ignored,
+  // and the converter takes over as soon as the header is read.
+  misto = 0; pref = ""; videoCodec = "V_MPEG4/ISO/AVC"; montarCabecalho();
+  cabPronto = 0; abriuConversor = 0;
+  video_tocar("http://h/r.mkv");
+  ok(!abriuConversor, "rescue: the original opens (header not known yet)");
+  video_tpk_log_host("erro AudioCodecNotSupported");
+  nv_tpk_video_evento(5, (int)0xFE6C002Eu, 0);
+  bombear(2);
+  ok(!video_falhou(), "rescue: AudioCodecNotSupported is not a failed source");
+  nv_tpk_video_evento(5, -1, 0);   // the Prepare exception that follows
+  bombear(2);
+  ok(!video_falhou(), "rescue: the Prepare error after it is ignored too");
+  cabPronto = 1;
+  { Uint32 t0 = SDL_GetTicks(); while (!abriuConversor && SDL_GetTicks() - t0 < 3000) bombear(1); }
+  ok(abriuConversor == 1 && dts_tpk_e_url(ultUrl) && !video_falhou(), "rescue: the converter takes over, no error");
+  video_parar();
+  // Nothing to convert (only a FLAC the TV refuses, say): failed at once, as before.
+  cabPronto = 1; misto = 0;
+  { unsigned char t[512]; long n = 0;   // video + one AAC: no DTS/TrueHD track
+    n += faixa(t + n, 1, 1, "V_MPEG4/ISO/AVC", NULL, 0);
+    n += faixa(t + n, 2, 2, "A_AAC", "eng", 2);
+    cabN = 0; cab[cabN++] = 0x1A; cab[cabN++] = 0x45; cab[cabN++] = 0xDF; cab[cabN++] = 0xA3; cab[cabN++] = 0x80;
+    cabN += el(cab + cabN, 0x1654AE6B, 4, t, n);
+    { unsigned char z[64] = {0}; cabN += el(cab + cabN, 0xEC, 1, z, sizeof z); } }
+  abriuConversor = 0;
+  video_tocar("http://h/s.mkv");
+  nv_tpk_video_evento(5, (int)0xFE6C002Eu, 0);
+  { Uint32 t0 = SDL_GetTicks(); while (!video_falhou() && SDL_GetTicks() - t0 < 3000) bombear(1); }
+  ok(video_falhou() && !abriuConversor, "rescue: nothing to convert -> failed right away");
+  video_parar();
   printf(falhas ? "tpk-dts-reabrir: %d FAIL(S)\n" : "tpk-dts-reabrir: ok\n", falhas);
   return falhas != 0;
 }
