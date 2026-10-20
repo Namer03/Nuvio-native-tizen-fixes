@@ -1,5 +1,6 @@
 #include "arteurl.h"
 #include "descoberta.h"
+#include "dados.h"
 #include "idioma.h"
 #include "ajustes.h"
 #include "extras.h"
@@ -2945,7 +2946,7 @@ static int continuarLocal(CatItem *saida, int max) {
     int j, repetido = 0;
     if (r->durSeg < 60.0) continue;
     p = r->posSeg / r->durSeg;
-    if (p * 100.0 < (double)ajustes_cw_minimo() || p * 100.0 >= ajustes_cw_concluido()) continue;
+    if (!prog_inicio_continuar(r, ajustes_cw_minimo()) || p * 100.0 >= ajustes_cw_concluido()) continue;
     // Uma serie com varios episodios gravados entra UMA vez, no mais recente.
     for (j = 0; j < n; j++) {
       size_t L = idbase_len(saida[j].imdb);   // "kitsu:41370" inteiro, nao "kitsu"
@@ -2962,6 +2963,7 @@ static int continuarLocal(CatItem *saida, int max) {
     d->temporada = r->temporada;
     d->episodio = r->episodio;
     d->progresso = (int)(100.0 * p);
+    if (d->progresso < 1) d->progresso = 1; // Keep early checkpoints in the paused section.
     d->restanteMin = (int)((r->durSeg - r->posSeg) / 60.0 + 0.5);
     // O instante ja esta aqui, no registro: carimbar agora poupa a busca por
     // chave que instanteDaConta faria depois. Ver retomadoMs em catalogo.h.
@@ -5974,9 +5976,9 @@ static void metaChaveContexto(const char *id, char *dst, size_t n) {
   snprintf(dst, n, "%s/%d/%s/%s", usuario ? usuario : "", perfis_ativo(), desc_tmdb_idioma(), id);
 }
 static int metaDiscoNome(const char *chave, char *dst, size_t n) {
-  const char *dir = dados_dir();
-  if (!dir || !dir[0]) return 0;
-  snprintf(dst, n, "%s/meta-%02u.txt", dir, hashBaseAddon(chave) % 64);
+  char nome[32];
+  snprintf(nome, sizeof nome, "meta-%02u.txt", hashBaseAddon(chave) % 64);
+  if (!dados_caminho(dst, (unsigned)n, nome)) return 0;
   return 1;
 }
 // ponytail: 64 slots (colisao vira miss), ate 256 KiB/corpo e validade 6 h.
@@ -6342,9 +6344,7 @@ const char *dados_dir(void);
 static int locDiscoLido;
 
 static int locCaminho(char *dst, size_t n) {
-  const char *d = dados_dir();
-  if (!d || !d[0]) return 0;
-  snprintf(dst, n, "%s/loc-texto.txt", d);
+  if (!dados_caminho(dst, (unsigned)n, "loc-texto.txt")) return 0;
   return 1;
 }
 
