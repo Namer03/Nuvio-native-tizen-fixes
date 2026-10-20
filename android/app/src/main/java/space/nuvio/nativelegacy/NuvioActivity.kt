@@ -198,6 +198,12 @@ class NuvioActivity : SDLActivity() {
             camada, 0,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
+        // SDL adds the SurfaceView WRAP_CONTENT; SurfaceView.onMeasure then
+        // resolves to min(setFixedSize, parent), so a buffer smaller than the
+        // screen (720p) shrank the view to the top-left. MATCH_PARENT lets the
+        // compositor scale the small buffer to the full view.
+        mSurface.layoutParams = RelativeLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         mSurface.setZOrderMediaOverlay(true)
         mSurface.holder.setFormat(PixelFormat.TRANSLUCENT)
         NvPlayer.iniciar(this, camada)
@@ -389,6 +395,57 @@ class NuvioActivity : SDLActivity() {
     // Chamado pelo C (android_pedir_superficie), do fio do SDL, antes de criar a
     // janela: fixa o buffer da SDLSurface em w x h e espera a superficie nova
     // chegar (ate 2 s). Devolve true se ela veio nesse tamanho.
+    // SDL calls this before EGL surface creation; request a ten-bit UI layer.
+    // ExoPlayer retains its separate SurfaceView and video color handling.
+    private var hdrCapabilitiesLogged = false
+    private var hdrSurfaceRequested = false
+
+    fun pedirHdrInterface(ativa: Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < 26) return false
+        val done = CountDownLatch(1)
+        var ok = false
+        runOnUiThread {
+            try {
+                if (!ativa || (Build.VERSION.SDK_INT >= 34 && display?.isHdr == true)) {
+                    window.colorMode = if (ativa) ActivityInfo.COLOR_MODE_HDR else ActivityInfo.COLOR_MODE_DEFAULT
+                    if (ativa) {
+                        hdrSurfaceRequested = true
+                        mSurface.holder.setFormat(PixelFormat.RGBA_1010102)
+                        if (Build.VERSION.SDK_INT >= 35) {
+                            mSurface.setDesiredHdrHeadroom(1000.0f / 203.0f)
+                            window.setDesiredHdrHeadroom(1000.0f / 203.0f)
+                        }
+                    } else if (hdrSurfaceRequested) {
+                        mSurface.holder.setFormat(PixelFormat.TRANSLUCENT)
+                        if (Build.VERSION.SDK_INT >= 35) {
+                            mSurface.setDesiredHdrHeadroom(0.0f)
+                            window.setDesiredHdrHeadroom(0.0f)
+                        }
+                        hdrSurfaceRequested = false
+                    }
+                    ok = !ativa || window.colorMode == ActivityInfo.COLOR_MODE_HDR
+                }
+            } catch (_: Exception) {
+                ok = false
+            } finally {
+                if (ativa && !hdrCapabilitiesLogged) {
+                    hdrCapabilitiesLogged = true
+                    try {
+                        @Suppress("DEPRECATION")
+                        val screen = windowManager.defaultDisplay
+                        val caps = screen.hdrCapabilities
+                        Log.i("Nuvio", "[hdr-ui] cap=display types=${caps.supportedHdrTypes.joinToString(",")} maxLuminance=${caps.desiredMaxLuminance} mode=${screen.mode} isHdr=${if (Build.VERSION.SDK_INT >= 34) screen.isHdr else "unavailable"} colorMode=${window.colorMode} wideColorGamut=${screen.isWideColorGamut}")
+                    } catch (error: Exception) {
+                        Log.w("Nuvio", "[hdr-ui] cap=error ${error.javaClass.simpleName}: ${error.message}")
+                    }
+                }
+                done.countDown()
+            }
+        }
+        done.await()
+        return ok
+    }
+
     fun pedirSuperficie(w: Int, h: Int): Boolean {
         // SDL normalizes touches against the holder buffer dimensions. On a
         // phone that buffer must follow the viewport's physical view size.
@@ -668,6 +725,20 @@ class NuvioActivity : SDLActivity() {
         env("NUVIO_ARTE", File(res, "art").path)
         env("NUVIO_LOCALE", java.util.Locale.getDefault().toLanguageTag())
         env("NUVIO_TV_INFO", "${Build.MANUFACTURER} ${Build.MODEL}|${Build.VERSION.SDK_INT}|${Build.VERSION.RELEASE}|$versao")
+        // SDL may expose only the 1080p graphics plane on a 4K television.
+        // Mode dimensions describe the physical output, including supported UHD modes.
+        try {
+            if (Build.VERSION.SDK_INT >= 23) {
+                @Suppress("DEPRECATION")
+                val panel = windowManager.defaultDisplay.supportedModes.maxByOrNull {
+                    it.physicalWidth.toLong() * it.physicalHeight
+                }
+                if (panel != null) {
+                    env("NUVIO_PANEL_SIZE", "${panel.physicalWidth}x${panel.physicalHeight}")
+                    env("NUVIO_PANEL_SOURCE", "Android Display.Mode supportedModes")
+                }
+            }
+        } catch (_: Exception) { /* Keep the SDL fallback when display info is unavailable. */ }
         // Real metrics include physical DPI; use the same pixel space as that DPI.
         // Display.Mode.physicalWidth/Height are pixel counts, not inches.
         val panelInches = try {

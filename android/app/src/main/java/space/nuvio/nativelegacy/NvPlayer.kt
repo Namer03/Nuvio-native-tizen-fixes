@@ -95,7 +95,7 @@ object NvPlayer {
 
     private const val TELA_W = 1920   // coordenadas de layout do app
     private const val TELA_H = 1080
-    private const val FAIXAS_MAX = 32 // NV_FAIXA_MAX do C
+    private const val FAIXAS_MAX = 64 // NV_FAIXA_MAX do C
     private const val TIQUE_MS = 250L
     private const val RETRY_DECODER_MS = 5000L
 
@@ -128,6 +128,9 @@ object NvPlayer {
     private var fracaoAtual = 0
     private var fracaoPendente = 0
     private var geracaoNative = 0
+    @Volatile private var limitedNext = false
+    private var limitedSession = false
+    @JvmStatic fun limitedConnections(on: Int) { limitedNext = on != 0 }
     private var urlAtual = ""
     private var cabAtual = ""
     private var abriuEm = 0L
@@ -159,6 +162,7 @@ object NvPlayer {
 
     // --- natives (src/video_android.c, Java_space_nuvio_nativelegacy_NvPlayer_*) ---
     @JvmStatic external fun nativeIniciar()
+    @JvmStatic external fun nativeLimitedStatus(): Int
     @JvmStatic external fun nativeEvento(tipo: Int, a: Int, b: Int)
     // flags (#287): 1 = forcada (SELECTION_FLAG_FORCED), 2 = SDH
     // (ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND); nome = Format.label.
@@ -633,6 +637,7 @@ object NvPlayer {
         var liberado = false
         @Volatile var adotado = carga.adotada
         @Volatile var audioFormato = AudioSyncTap.FMT_NENHUM
+        @Volatile var velocidadePcm = false
         val proc = GanhoAudioProcessor()
         val tap = AudioSyncTap(
             { pcm, n, pts -> if (adotado) try { nativeAudioPcm(pcm, n, pts) } catch (_: UnsatisfiedLinkError) {} },
@@ -718,7 +723,7 @@ object NvPlayer {
 
     private fun enfileirarPreparo(url: String, cabecalhos: String, inicioMs: Int, fracao: Int,
                                  token: Int, buffer: Int, cacheMb: Int, proximo: Boolean, idiomaAudio: String, kbps: Int) {
-        if (token <= 0 || url.isEmpty()) return
+        if (token <= 0 || url.isEmpty() || limitedNext) return
         val pedido = synchronized(travaPreparo) {
             val n = pedidosPreparo.incrementAndGet()
             consultaPreparo = ConsultaPreparo(token, 1)
@@ -1130,11 +1135,27 @@ object NvPlayer {
     @JvmStatic fun ganho(pct: Int) {
         principal.post { ganhoPct = GanhoMath.pct(pct); aplicarGanho() }
     }
-    // #202: velocidade em centesimos. O C reaplica a cada abertura (o player
-    // novo nasce em 1x), entao aqui nao fica estado.
+    // C reapplies speed after each open; keep PCM policy with that player.
     @JvmStatic fun velocidade(centesimos: Int) {
         val v = centesimos.coerceIn(25, 400) / 100f
-        principal.post { player?.setPlaybackSpeed(v) }
+        val pedido = pedidos.get()
+        principal.post {
+            if (pedido != pedidos.get()) return@post
+            val p = player ?: return@post
+            val r = recursosAtuais ?: return@post
+            val pcm = v != 1f
+            if (r.velocidadePcm != pcm) {
+                val pos = p.currentPosition
+                r.velocidadePcm = pcm
+                // Re-select the audio decoder against the new sink capabilities.
+                // stop/prepare keeps the media source, track overrides and pause.
+                p.stop()
+                p.seekTo(pos)
+                p.setPlaybackSpeed(v)
+                p.prepare()
+            } else p.setPlaybackSpeed(v)
+            Log.i(TAG, "[speed] requested=$v parameters=${p.playbackParameters.speed} pcm=$pcm")
+        }
     }
     private val janelaPedido = AtomicInteger()
     // Request -> applied on the UI thread (definida) -> acknowledged after a
@@ -1256,10 +1277,16 @@ object NvPlayer {
                 else props[nome] = valor
             }
             http.setDefaultRequestProperties(props)
+            val limited = !preparando && limitedNext
+            // Check only once per player. HLS segments share the same connection gate.
+            val checked = java.util.concurrent.atomic.AtomicBoolean()
+            val serialHttp: DataSource.Factory = if (limited) LimitedDataSource.Factory(http, { r.carga.cancelada }) {
+                if (checked.compareAndSet(false, true)) nativeLimitedStatus() else 0
+            } else http
             val baixa = url.lowercase()
             val adaptativo = baixa.contains(".m3u8") || baixa.contains("m3u8?") || baixa.contains(".mpd")
             // Cache off or not applicable for a VOD: whatever was kept is stale.
-            if (pedidoCache <= 0) { r.cacheEstado = CacheSessao.DESLIGADO; if (titulo.isNotEmpty()) CacheMidia.descartar("setting off") }
+            if (pedidoCache <= 0 || limited) { r.cacheEstado = CacheSessao.DESLIGADO; if (titulo.isNotEmpty()) CacheMidia.descartar("setting off") }
             else if (adaptativo || !ParaleloDataSource.serve(Uri.parse(url))) {
                 r.cacheEstado = CacheSessao.NAO_SE_APLICA
                 if (titulo.isNotEmpty()) CacheMidia.descartar("not progressive")
@@ -1281,10 +1308,11 @@ object NvPlayer {
                 r.cache = c; r.cacheEstado = estado
             }
             r.rede = { token ->
-                val rede = ParaleloDataSource.Factory(ua, props, http, medidor, token)
+                val rede: DataSource.Factory = if (limited) serialHttp
+                    else ParaleloDataSource.Factory(ua, props, http, medidor, token)
                 r.cache?.fabrica(rede) ?: rede
             }
-            val origemPreparo = r.cache?.fabrica(http) ?: http
+            val origemPreparo = r.cache?.fabrica(serialHttp) ?: serialHttp
             val token = if (preparando) 0L else medidor.sessao(geracao).also { medidorToken = it }
             r.origem = OrigemPlayer(if (preparando) origemPreparo else r.rede(token), r.carga)
             // ON: platform decoder/passthrough first, FFmpeg only as fallback.
@@ -1292,9 +1320,10 @@ object NvPlayer {
             r.renderizadores = object : androidx.media3.exoplayer.DefaultRenderersFactory(act) {
                 override fun buildAudioSink(context: Context, enableFloatOutput: Boolean,
                                             enableAudioTrackPlaybackParams: Boolean): AudioSink =
-                    AudioSyncSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(enableFloatOutput)
-                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                        .setAudioProcessors(arrayOf(r.proc)).build(), r.tap)
+                    // Sonic needs integer PCM; float output bypasses audio processors.
+                    AudioSyncSink(DefaultAudioSink.Builder(context).setEnableFloatOutput(false)
+                        .setEnableAudioTrackPlaybackParams(false)
+                        .setAudioProcessors(arrayOf(r.proc)).build(), r.tap, { r.velocidadePcm })
             }.setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
                 .setEnableDecoderFallback(true)
             r.fabricaMidia = DefaultMediaSourceFactory(act)
@@ -1302,7 +1331,7 @@ object NvPlayer {
                 // nao empilhar outra rodada invisivel do Loader antes da
                 // maquina de reconexao 3/10/25 s do nucleo.
                 .setLoadErrorHandlingPolicy(PoliticaErroParalelo())
-                .setDataSourceFactory(LivePlaylistDataSource.Factory(
+                .setDataSourceFactory(if (limited) DefaultDataSource.Factory(act, r.origem) else LivePlaylistDataSource.Factory(
                     DefaultDataSource.Factory(act, r.origem),
                     DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
                         .setConnectTimeoutMs(2000).setReadTimeoutMs(2000)
@@ -1362,9 +1391,9 @@ object NvPlayer {
         }
         // MStar/Amlogic: o overlay e o decoder antigos precisam sair antes do novo.
         // Poll no Handler deixa Back/parar funcionar enquanto o release corre em fundo.
-        if (preparada?.proximo == true || (semRecriar && preparada == null)) {
+        if (limitedNext || limitedSession || preparada?.proximo == true || (semRecriar && preparada == null)) {
             val ms = SystemClock.elapsedRealtime() - espera
-            if (liberacoesEmCurso.get() > 0 && ms < 3000) {
+            if (liberacoesEmCurso.get() > 0 && (limitedNext || limitedSession || ms < 3000)) {
                 principal.postDelayed({
                     abrirMain(url, cabecalhos, reabrindo, inicioMs, geracao, pedido, fracao, espera, preparada)
                 }, 25)
@@ -1372,6 +1401,7 @@ object NvPlayer {
             }
             Log.i(TAG, "[player] esperou o release anterior $ms ms (pendentes=${liberacoesEmCurso.get()})")
         }
+        limitedSession = limitedNext
         novaSuperficie(act)
         mostrarQuadro(url, tituloPedido)
         pedidoAtivo = pedido
@@ -1947,6 +1977,7 @@ object NvPlayer {
                 Player.STATE_READY -> {
                     if (live.ready()) Log.i(TAG, "[live] janela recuperada na mesma sessao=$minha")
                     ev(EV_BUFFER, 100)
+                    Log.i(TAG, "[speed] ready parameters=${p.playbackParameters.speed} pcm=${recursosAtuais?.velocidadePcm}; awaiting native clock measurement")
                     relatarAudio(minha, "pronto volume=${p.volume} playWhenReady=${p.playWhenReady} suppression=${p.playbackSuppressionReason}")
                     if (!pronto) {
                         // Antes do EV_PRONTO: o C le o ack ao ver o "pronto".
@@ -2068,6 +2099,14 @@ object NvPlayer {
             if (!atual(minha)) return
             val exo = error as? ExoPlaybackException
             val p = player
+            val status = generateSequence(error.cause) { it.cause }
+                .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
+            if (limitedSession && status in listOf(403, 458, 509)) {
+                live.cancel()
+                ev(EV_ERRO, status ?: 0, C.TRACK_TYPE_UNKNOWN)
+                try { nativeErroTexto("HTTP $status") } catch (_: Throwable) {}
+                return
+            }
             val recoveryTimeout = LiveWindowRecovery.timeoutForSegment(liveSegmentMs)
             if (p != null && live.recover(p, error, SystemClock.elapsedRealtime(), recoveryTimeout) {
                     Log.w(TAG, "[live] recuperacao excedeu $recoveryTimeout ms sessao=$minha; seguindo erro normal")

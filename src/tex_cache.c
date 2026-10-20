@@ -1132,6 +1132,16 @@ static int tetoDoHeroiQualidade(void) {
   return NV_TEX_HERO_LARG_MAX;
 }
 static float escalaBuf = 1.0f;
+// Budget scale. On a TV the MB are physical RAM: a 4K drawable (escala 2) must
+// not multiply them by 4 (128 MB became 512 and the TCL hit the LMK at 720 MB).
+// Only the desktop preview (Mac retina) scales, so it mirrors the TV scene.
+static float escalaOrc(void) {
+#if defined(NV_ANDROID) || defined(NV_TPK) || defined(NV_WEBOS)
+  return 1.0f;
+#else
+  return escalaBuf > 0.1f ? escalaBuf : 1.0f;
+#endif
+}
 
 __attribute__((unused)) static int arquivoCacheImagem(const char *nome) {
   const char *p = nome;
@@ -3298,7 +3308,7 @@ void tex_definir_orcamento_mb(int mb) {
       printf("[tex] teto de %d MB pedido em Ajustes; esta TV suporta %d MB (RAM %ld MB)\n", mb, teto, orcMemTotal);
   }
   SDL_LockMutex(mtx);
-  { float e = escalaBuf > 0.1f ? escalaBuf : 1.0f;
+  { float e = escalaOrc();
     orcamento = (long)(aplicado * e * e) * 1024L * 1024L; }
   // Slots so CRESCEM ao vivo: encolher com itens alem do novo nMax deixaria
   // texturas vivas fora do alcance do LRU. O teto absoluto continua valendo.
@@ -3475,7 +3485,7 @@ int tex_iniciar(int max_itens) {
   //
   // Na TV o fator e 1 e nada muda; e exatamente por isso que a conta pode ser
   // esta e nao um numero maior cravado.
-  { float e = escalaBuf > 0.1f ? escalaBuf : 1.0f;
+  { float e = escalaOrc();
     orcamento = (long)(mb * e * e) * 1024L * 1024L; }
 #ifndef __EMSCRIPTEN__
   pthread_mutex_lock(&vidaMtx);
@@ -3907,7 +3917,9 @@ GLuint tex_obter(const char *caminho) {
 // dois caminhos caia no mesmo teto e nao seja promovido a toa.
 static int capDeLargura(float largLayout) {
   int cap;
-  cap = (int)(largLayout * escalaBuf * folgaDaQualidade() + 0.5f);
+  // Convert layer coordinates to output pixels before choosing URL/decode size.
+  // Keep layer scale out of escalaBuf: it must not inflate the byte budget.
+  cap = (int)(largLayout * gfx_escala() * escalaBuf * folgaDaQualidade() + 0.5f);
   // Arredonda para multiplo de 32: sem isso cada largura de desenho vira um
   // teto proprio, e a mesma arte pedida por dois lugares com poucos pixels de
   // diferenca era promovida e RE-DECODIFICADA sem ganho visivel.

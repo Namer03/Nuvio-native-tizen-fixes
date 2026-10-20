@@ -118,6 +118,7 @@ int ajustes_animacoes_reduzidas(void);
 // V_BRILHO_PLAYER (padrao 1 = 80%).
 int ajustes_esmaecer(void);
 int ajustes_brilho_player(void);
+int ajustes_hdr_interface(void); // Experimental Android HDR output; default off.
 int ajustes_hdr_ui(void);   // #205: 1 = Automatico (padrao), 0 = Desligado
 // #202: -1 = ultimo modo usado (padrao); 0..7 = PlrAspecto aplicado ao abrir o video.
 int ajustes_proporcao_padrao(void);
@@ -158,7 +159,8 @@ int ajustes_fonte_manual(void);
 
 // "Fonte automatica" = "Primeira da lista" (issue #130): o automatico toca a
 // primeira fonte na ordem do addon e confere SO ela. 0 = "Melhor fonte", a
-// regra de pontuacao de streams.c. Ver fonteauto.h.
+// regra de pontuacao de streams.c. "Do addon" na prioridade tambem ativa
+// primeira, sem teto de qualidade nem memoria de fonte. Ver fonteauto.h.
 int ajustes_fonte_primeira(void);
 // #400: ordem visual do addon, local; nao altera autoplay.
 int ajustes_fonte_ordem_addon(void);
@@ -193,7 +195,8 @@ int ajustes_fonte_regex_modo(void);
 // "Usar a ordem" dos add-ons (FR_ORDEM_*); 0 tambem quando nao ha ordem.
 int ajustes_fonte_ordem_uso(void);
 int ajustes_fonte_usar_outros(void);
-// R9b: 0 Equilibrio, 1 Qualidade maxima, 2 Começar rápido / 0 Preferir, 1 Indiferente, 2 Evitar HDR e DV.
+// 0 Equilibrio, 1 Qualidade maxima, 2 Começar rápido, 3 Do addon.
+// HDR: 0 Preferir, 1 Indiferente, 2 Evitar HDR e DV.
 int ajustes_fonte_prioridade(void);
 int ajustes_fonte_hdr(void);
 // 1 = a escolha automatica prefere fontes que anunciam o Idioma do audio
@@ -503,6 +506,11 @@ int   ajustes_1080p(void);
 int   ajustes_720p(void);
 // Device-local output choice; applied after restarting, only on a 4K panel.
 int   ajustes_ampliar_app(void);
+// Device-local upscaling algorithm and RCAS sharpness 0..4 (gpun_ampliacao).
+int   ajustes_ampliacao_algo(void);
+int   ajustes_ampliacao_nitidez(void);
+// Actual drawable granted by the platform; controls the output-limit hint.
+void  ajustes_ui_saida(int w, int h);
 // Ilha do relogio (ilha.h). _ligado: 0 = sem pilula em repouso (os avisos
 // continuam saindo dela). _pos: 0 automatica, 1 esquerda, 2 direita.
 int   ajustes_relogio_ligado(void);
@@ -539,7 +547,7 @@ enum { PALCO_CORTINA, PALCO_ATUAL, PALCO_ARTE, PALCO_PRETO, PALCO_AURA, PALCO_TR
 int   ajustes_palco_fundo(void);
 int   ajustes_titulo_fil(void);        // 0 Classico, 1 Ilha, 2 Editorial, 3 Acento
 int   ajustes_abertura_estilo(void);   // 0 Centro (A3), 1 Canto (B3)
-int   ajustes_fundo_din(void);         // #205: fundo da Dinamica, 0 Cinza (padrao), 1 Cor, 2 Imersivo
+int   ajustes_fundo_din(void);         // #205: fundo da Dinamica, 0 Cinza (padrao), 1 Cor, 2 Imersivo, 3 Cinza escuro
 void  ajustes_fundo_din_cor(float rgb[3]);   // #205: a cor escolhida para o fundo "Cor" (sRGB 0..1)
 // #205: tamanho dos cards de episodio (Moderna): 0 pequeno, 1 medio (padrao), 2 grande.
 int   ajustes_menu_cartaz_simples(void); // 0 On (default, enriched card), 1 Off (side list only); this TV only.
@@ -604,6 +612,7 @@ int   ajustes_selo_visto_modo(void);   // 0 desligado, 1 icone (check), 2 escrit
 // #366: oculta filmes vistos so na descoberta, por perfil neste aparelho.
 // Desligado de fabrica; busca, biblioteca e historico nao sao filtrados.
 int   ajustes_ocultar_filmes_vistos(void);
+int   ajustes_bib_home(void);   // #507: Library row on Home
 void  ajustes_definir_ocultar_filmes_vistos(int ligado);
 // MODO SEGURO (seguro.h). Chamar no arranque, DEPOIS de ajustes_dir e de
 // avisos_iniciar: `caiu` = a sessao anterior nao se despediu. Desfaz o ajuste
@@ -691,6 +700,8 @@ int         ajustes_tmdb_ligado(void);          // tmdb_enabled
 const char *ajustes_tmdb_idioma(void);          // "pt-BR", "en-US"… (TMDB)
 // Pais da grade do Guia de TV (#158): "" = automatico, senao "RO", "BR"...
 const char *ajustes_epg_pais(void);
+int ajustes_guia_ordem(void); // 0 category first, 1 account first
+int ajustes_guia_fonte(void); // 0 all, 1 Xtream, 2 M3U, 3 Stalker, 4 add-ons
 int         ajustes_tmdb_arte(void);            // tmdb_use_artwork
 int         ajustes_tmdb_basico(void);          // tmdb_use_basic_info
 int         ajustes_tmdb_ficha(void);           // tmdb_use_details
@@ -762,6 +773,8 @@ void ajustes_perfil_esquecer(void);
 // live under c_settings_v1. Device/display/decoder budgets, local endpoints
 // and credentials are excluded; see ajustePortavel in ajustes_sync.inc.
 int ajustes_mesclar_blob(const char *base, char **saida);
+// Main-thread local edit detector; avoids building the account JSON snapshot.
+unsigned long long ajustes_sync_hash(void);
 // #187: uma linha "[tmdb] idioma dos metadados: ..." com o que a TV pede ao
 // TMDB, de onde vem (ajuste desta TV) e o tmdb_language cru da conta.
 void ajustes_tmdb_idioma_relatar(const char *blob);

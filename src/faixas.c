@@ -5,6 +5,7 @@
 #include "idioma.h"
 #include "player.h"
 #include "video.h"
+#include "xtream.h"
 #include "addons.h"
 #include "gfx.h"
 #include "text.h"
@@ -154,9 +155,9 @@ static int ehAss(const VideoFaixa *f) {
 #else
 #define FX_TEXTO_OVERLAY 1
 #endif
-// PGS: so o .tpk decodifica e desenha (imgsub); as outras plataformas seguem.
+// PGS: o app decodifica e desenha (imgsub) no .tpk e na LG; as outras seguem.
 static int ehPgs(const VideoFaixa *f) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   return f && faixasmkv_imagem_overlay(f->codec);
 #else
   (void)f; return 0;
@@ -173,6 +174,7 @@ static int vaiOverlay(const VideoFaixa *f) {
 // desenhando por cima, o firmware ignorou o setSubtitleEnable, e isso e
 // outro bug (a resposta do uMS sai logo abaixo como "[video] {...}").
 static void overlayAssumir(int i, int ord) {
+  if (xtream_url_limitada(video_url_atual())) { video_escolher_legenda(i); return; }
   const VideoFaixa *f = video_legenda(i);
   int texto = f && f->numero >= 0 && !ehAss(f) && !ehPgs(f);
   // Texto: a TV segura a legenda enquanto a rede ainda nao entregou cues.

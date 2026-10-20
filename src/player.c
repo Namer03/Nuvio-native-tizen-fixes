@@ -120,6 +120,7 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 #include "ajustes.h"
 #include "esmaecer.h"
 #include "proxyts.h"
+#include "xtream.h"
 #include "perfis.h"
 #include "sessao.h"
 #include "legref.h"    // cabecalhos da fonte na leitura da referencia
@@ -404,7 +405,8 @@ static double posLegenda(void) {
   return relogio_ler(&relLeg, monoSeg());
 }
 // Creditos tambem sao pulaveis — e o "Skip Outro" do web.
-static int trechoPulavel(double *fim) { int tipo; return intro_botao_visivel(fim, &tipo); }
+static int skipDisponivel(void), skipLiberado;
+static int trechoPulavel(double *fim) { int tipo; return skipDisponivel() && intro_botao_visivel(fim, &tipo); }
 static float duracaoSeg = PLR_DUR_PADRAO;
 // O fim ZERO do TheIntroDB quer dizer "ate o fim da midia" (intro.c): mirar
 // fim+0.25 ai seria um salto para o COMECO do arquivo — o alvo resolve o nulo.
@@ -732,6 +734,17 @@ static double avLat0 = -1.0, avAtraso;
 static Uint32 avPausaDesde;
 // Indice EPG do canal no ar, resolvido uma vez por abertura (-2 = sem grade).
 static int epgIdx = -1;
+static unsigned epgIdxRev;
+static void pEpgAtualizar(void) {
+  if(epgIdxRev!=epg_revisao()){epgIdxRev=epg_revisao();epgIdx=-1;}
+  if(epgIdx==-1) {
+    epgIdx=epg_match_canal(player_id_canal(),NULL,itemCanal.titulo);
+    if(epgIdx<0) {
+      int estadoFonte=epg_canal_estado(player_id_canal());
+      if(estadoFonte==EPG_PRONTO || estadoFonte==EPG_FALHOU)epgIdx=-2;
+    }
+  }
+}
 // Diagnostico da janela do cartao de proximo episodio. Zerados a cada episodio
 // por player_definir_episodio: um `static int` dentro da funcao registraria a
 // PRIMEIRA reproducao da sessao e ficaria mudo em todas as outras — que e
@@ -896,6 +909,13 @@ int video_tpk_aviso_busca(void);   // video_tpk.c (mkvfix.h)
 // nao chegou, ou formato/decoder (esse sim pode ser app ou TV). Nunca a URL.
 static void erroCausaDoPlayer(void) {
   int http = 0, causa = fontesonda_causa(video_erro_texto(), &http);
+  const char *err = video_erro_texto();
+  if (xtream_url_limitada(video_url_atual()) && err &&
+      (strstr(err, "403") || strstr(err, "458") || strstr(err, "509"))) {
+    snprintf(erroTitulo, sizeof erroTitulo, "%s", i18n("Esta linha está em uso em outra tela"));
+    snprintf(erroDica, sizeof erroDica, "%s", i18n("Feche o Xtream em outro aparelho e tente de novo."));
+    return;
+  }
   if (causa == FS_CAUSA_NENHUMA) return;
   printf("[fonte] causa do erro: %d http=%d\n", causa, http);
   fflush(stdout);
@@ -1728,7 +1748,10 @@ void player_abrir(int indiceCatalogo, const char *url) {
     // na troca — o stream velho segue no ar ate a fonte nova chegar pelo
     // fluxo de sempre. Qualquer outra abertura (OK no guia, filme, serie)
     // volta a tela cheia e para o video do canto.
-    if (ficaMini && canalSessao) { mini = 1; aberto = 0; }
+    // `miniGuia` armado pelo app (player_mini_no_guia) ANTES da busca tambem
+    // manda a sessao nova direto para o preview — inclusive na conta
+    // limitada, onde querMini e 0 (a conexao velha ja foi solta).
+    if ((ficaMini || miniGuia) && canalSessao) { mini = 1; aberto = 0; }
     else if (mini || ficaMini) { mini = 0; miniGuia = 0; video_parar(); }
     else miniGuia = 0;
     janAtiva = 0;
@@ -1794,7 +1817,7 @@ void player_abrir(int indiceCatalogo, const char *url) {
   legsync_auto_habilitar(ajustes_legenda_sync_auto());
   legref_fonte_local(mkvass_referencia);
   legref_fonte_cabecalhos(video_cabecalhos);   // a sincronia le o video com os cabecalhos do addon
-  legsync_iniciar(comVideo ? video_url_atual() : "");   // F05: geracao nova, sem rede nem espera
+  legsync_iniciar(comVideo && !xtream_url_limitada(video_url_atual()) ? video_url_atual() : "");   // F05: geracao nova, sem rede nem espera
   legsync_ui_ligar();   // F05: a linha de AutoSync do seletor de legendas (legendasui.c)
   aspArmar();
   aplicarAspecto();
@@ -1847,7 +1870,7 @@ static int escolherLegendaPrebusca(const char *const *idiomas, int n) {
 static int prebuscaCabe(const char *url) {
   const char *pref = ling_legenda();
   const Stream *s = stream_item(stream_atual());
-  if (mini || ehCanal() || !url || !*url) return 0;
+  if (mini || ehCanal() || !url || !*url || xtream_url_limitada(url)) return 0;
   if (!pref || !*pref || !strcasecmp(pref, "none")) return 0;
   if (s && strcmp(s->url, url)) s = NULL;     // torrent resolvido: a url e outra
   if (s && s->mp4) return 0;
@@ -1883,7 +1906,8 @@ static int preTituloCriar(int indiceCatalogo, int t, int e, const Stream *s, uns
   const CatItem *c = cat_item(indiceCatalogo);
   const char *pref;
   int serie;
-  if (!ajustes_fonte_precarregar() || !token || !c || !s || !s->url[0] || mini || retido) return 0;
+  if (!ajustes_fonte_precarregar() || !token || !c || !s || !s->url[0] || mini || retido ||
+      xtream_url_limitada(s->url)) return 0;
   if (proximo ? (!aberto || !comVideo) : (aberto || video_ativo())) return 0;
   // Na ficha sem video, Original pertence ao titulo que sera aberto. O Next
   // apenas copia a politica atual, sem alterar o idioma da sessao em curso.
@@ -1971,6 +1995,7 @@ static int preTituloLegendaUsar(const char *url) {
 static void tocarFonteInterno(const char *url);
 static void tocarFonteInterno(const char *url) {
   marco("abrir: url ao pipeline");
+  skipLiberado = 0;
   loadEm = SDL_GetTicks();   // #202: do pipeline ao primeiro quadro ("[player] load->1o quadro")
   video_definir_reconexao(!ehCanal());
   video_definir_modo_live(ehCanal() ? guia_modo_do_canal(player_id_canal(), ajustes_livetv_modo()) : 0);
@@ -2662,7 +2687,7 @@ static int podeReter(void) {
   // Desligado; nunca no perfil seguro). Sem ele a saida fecha a sessao na hora
   // e o Retomar reabre pela fonte guardada (fontevolta.h) — exceto o voo da
   // saida no Android, que segura o quadro parado ate pousar (reterSoVoo).
-  return (ajustes_manter_video() || reterSoVoo()) &&
+  return !xtream_url_limitada(video_url_atual()) && (ajustes_manter_video() || reterSoVoo()) &&
          comVideo && !ehCanal() && c && c->imdb[0] && !erroFonte &&
          video_pronto() && video_ativo() && !video_falhou() && !video_terminou() &&
          !video_conflito_recurso() && !video_reconectando() && video_url_atual()[0] &&
@@ -2835,9 +2860,13 @@ static PlrRect miniDestino(void) {
   return o;
 }
 
-int  player_minimizavel(void) { return canalSessao && comVideo; }
+int  player_minimizavel(void) {
+  return canalSessao && comVideo && !(xtream_e_id(player_id_canal()) && xtream_conexoes_limitadas());
+}
 int  player_mini_ativo(void)  { return mini; }
-void player_manter_mini(void) { querMini = 1; }
+void player_manter_mini(void) {
+  querMini = !(xtream_e_id(player_id_canal()) && xtream_conexoes_limitadas());
+}
 
 void player_minimizar(void) {
   PlrRect r;
@@ -2909,7 +2938,8 @@ int  player_mini_no_guia_ativo(void) { return mini && miniGuia; }
 
 void player_minimizar_para_guia(float x, float y, float w, float h) {
   PlrRect de;
-  if (!player_minimizavel()) { player_encerrar(); return; }
+  // The guide reuses this pipeline; connection limits only guard new streams.
+  if (!canalSessao || !comVideo) { player_encerrar(); return; }
   de = telaCheia();
   miniGuiaCaixa = (PlrRect){ x, y, w, h };
   miniGuia = 1;
@@ -3454,10 +3484,7 @@ static void linhasCanal(char *l1, size_t n1, char *l2, size_t n2) {
   // item() ja devolve o canal congelado da sessao — o indice no catalogo pode
   // ter sido remapeado por uma republicacao da descoberta.
   if (!itemCanal.titulo[0]) { if (n1) snprintf(l1, n1, "%s", i18n("AO VIVO")); return; }
-  if (epgIdx == -1 && epg_estado() == EPG_PRONTO) {
-    epgIdx = epg_match(itemCanal.titulo);
-    if (epgIdx < 0) epgIdx = -2;
-  }
+  pEpgAtualizar();
   if (pAgora(epgIdx, agoraT, &ag)) {
     char h1[12], h2[12];
     localtime_r(&ag.ini, &lt); hora_tela(h1, sizeof h1, &lt);
@@ -3605,10 +3632,7 @@ static void avMontarOsd(AoVivoOsd *o) {
     if (sep) snprintf(cat, sizeof cat, "%s", sep + 3);
   }
   o->categoria = cat;
-  if (epgIdx == -1 && epg_estado() == EPG_PRONTO) {
-    epgIdx = epg_match(itemCanal.titulo);
-    if (epgIdx < 0) epgIdx = -2;
-  }
+  pEpgAtualizar();
   if (id[0] && xtream_e_id(id)) { xtepg_querer(id); xtepg_passo(); }
   { EpgProg fx[40]; time_t agT = time(NULL);
     int nf = guia_programa_faixa(id, agT - 4 * 3600, agT + 12 * 3600, fx, 40);
@@ -3738,7 +3762,7 @@ static void recuarAutomatico(double de, double para) {
 // Busca do dono: se substitui uma busca de creditosAuto ainda armada, desarma.
 static void buscarUsuario(double alvo) {
   if (comVideo && !ehCanal() && !strstr(video_url_atual(), "://127.0.0.1") && !strstr(video_url_atual(), "://localhost"))
-    seekprobe_iniciar(video_url_atual(), video_cabecalhos());   // #557: own proxies handle Range
+    if (!xtream_url_limitada(video_url_atual())) seekprobe_iniciar(video_url_atual(), video_cabecalhos());   // #557: own proxies handle Range
   creditosauto_destino(&creditosAuto, alvo);
   video_buscar(alvo);
 }
@@ -4356,7 +4380,7 @@ void player_atualizar(float dt, Uint32 agora) {
       // F06: o ajuste local decide se "Por audio" existe (padrao desligado).
       legsync_auto_habilitar(ajustes_legenda_sync_auto());
       legsync_audio_habilitar(ajustes_legenda_sync_audio());
-      legsync_passo(video_url_atual(), posSeg, bf > 0.5 ? bf - (double)posSeg : -1.0,
+      legsync_passo(xtream_url_limitada(video_url_atual()) ? "" : video_url_atual(), posSeg, bf > 0.5 ? bf - (double)posSeg : -1.0,
                     scrubbing || video_bufferando_ms() > 0, agora); }
     if (d > 1.0) {
       duracaoSeg = (float)d; duracaoReal = 1;
@@ -5340,7 +5364,20 @@ static void ponteiroBuscar(int a, int b) {
     buscarUsuario(posSeg);
   }
 }
-static void ponteiroSkip(int a, int b) { (void)a; (void)b; skipFoco = 1; barraFoco = 1; acordar(); }
+// Marker timing alone cannot prove that the current source is playing. Once it
+// played, pause/scrub keep the button; a new source (tocarFonteInterno) clears it.
+static int skipDisponivel(void) {
+  if (player_carregando() || erroFonte || saindo || cine.veu > 0.01f || dvtela_ativa()) return 0;
+  if (!comVideo) return 1;   // host/screenshot: no pipeline to wait for
+  if (!skipLiberado)
+    skipLiberado = fontePrincipal() && retomadaAplicada && video_tocando() && !video_iniciando() &&
+#ifdef NV_ANDROID
+                   video_quadro_visto() &&
+#endif
+                   !video_bufferando_ms();
+  return skipLiberado && fontePrincipal();
+}
+static void ponteiroSkip(int a, int b) { (void)a; (void)b; if (!skipDisponivel()) return; skipFoco = 1; barraFoco = 1; acordar(); }
 
 static void desenharAcoesEpisodioCorpo(void);
 // O botao de pular e OSD: camada ampliada (escala.h), na tela virtual.
@@ -5351,6 +5388,7 @@ static void desenharAcoesEpisodio(void){
 }
 static void desenharAcoesEpisodioCorpo(void){
   const CatEp *prox=player_proximo_episodio();double fim;int tipo=0;
+  if (!skipDisponivel()) { skipFoco = 0; return; }
   intro_definir_duracao(duracaoReal ? (double)duracaoSeg : 0.0, epE <= 0);
   int trecho=intro_botao(posSeg,monoSeg(),visivel,skipFoco&&visivel,&fim,&tipo);
   // A CAIXA DE "Próximo episódio" QUE FICAVA AQUI FOI APAGADA. Era um retangulo

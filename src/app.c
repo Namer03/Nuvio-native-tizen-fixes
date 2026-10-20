@@ -149,6 +149,7 @@
 #include "vazao.h"
 #include "stalker.h"
 #include "xtream.h"
+#include "m3u.h"
 #include "rede.h"
 #include "ts_sonda.h"
 #include <unistd.h>
@@ -334,7 +335,7 @@ static _Atomic int fonteEscolhida = -2;   // release/acquire entre verificacao e
 // nenhum fio de rede le player_id_canal(), que pode mudar durante um zap.
 static _Atomic unsigned stalkerGeracao;
 enum { FJOB_IDLE, FJOB_RUNNING, FJOB_DONE };
-enum { FJOB_NONE, FJOB_ADDON, FJOB_CANAL, FJOB_STALKER, FJOB_PREPARO, FJOB_PROXIMA_VOD, FJOB_FALHA, FJOB_PREPARO_FALHA };
+enum { FJOB_NONE, FJOB_ADDON, FJOB_CANAL, FJOB_STALKER, FJOB_PREPARO, FJOB_PROXIMA_VOD, FJOB_FALHA, FJOB_PREPARO_FALHA, FJOB_RENOVAR_VOD };
 typedef struct {
   FonteFalhaConfig politica;
   DebridContexto debrid;
@@ -391,6 +392,9 @@ typedef struct {
   int lembrada, catalogo, temporada, episodio, renovar;
   char id[80];
   char url[4096];
+  AddonsConsulta *consulta;
+  Stream renovada;
+  char tipoVod[16];
 } FonteJob;
 static FonteJob fonteJob;
 static _Atomic unsigned preparoGeracao;
@@ -463,6 +467,9 @@ static unsigned fonteFalhaLista;
 static int fonteFalhaEsperando, fonteFalhaN;
 static int fonteFalhaManual = -1;
 static double fonteFalhaPos = -1.0;
+static int vodRenovou;
+static Uint32 vodRenovandoDesde;
+static double vodRenovarPos;
 // TOCAR ENQUANTO CONFERE (fonteantecipa.h): a candidata que o player abriu antes
 // do veredito da conferencia (-1 = nenhuma) e o que valia antes de abrir, para
 // desfazer sem perder a conta das tentativas.
@@ -502,6 +509,7 @@ static void marcarFonteMorta(int indice) {
 // A fonte que vai para o player e outra candidata: a prova recomeca.
 static void definirFonteVOD(const char *url) {
   fonteVODRetentou = 0;
+  vodRenovou = 0;
   provaZerar(); player_definir_fonte(url);
 }
 #define CANAL_FONTE_PRAZO_MS 25000
@@ -626,10 +634,21 @@ static void *escolherProximaVOD(void *u) {
 }
 static int fonteJobCancelado(void *u) {
   FonteJob *job = u;
+  if (job->tipo == FJOB_RENOVAR_VOD && (Sint32)(SDL_GetTicks() - job->prazo) >= 30000) return 1;
   if (!nv_perfil_sessao_atual(job->sessaoPerfil)) return 1;
   if (job->tipo == FJOB_PREPARO || job->tipo == FJOB_PREPARO_FALHA)
     return job->preparoRodada != atomic_load_explicit(&preparoGeracao, memory_order_acquire);
   return job->geracao != atomic_load_explicit(&stalkerGeracao, memory_order_acquire);
+}
+static void *renovarFonteVod(void *u) {
+  FonteJob *job = u;
+  debrid_contexto_entrar(&job->debrid);
+  job->resultado = stream_vod_renovar(job->consulta, job->id, job->tipoVod,
+      job->depoisDe, job->listaGeracao, fonteJobCancelado, job, &job->renovada)
+      ? job->depoisDe : -1;
+  debrid_contexto_sair();
+  atomic_store_explicit(&job->estado, FJOB_DONE, memory_order_release);
+  return NULL;
 }
 static void *escolherFonteFalha(void *u) {
   FonteJob *job = u;
@@ -673,7 +692,9 @@ static void *escolherFonteCanal(void *u) {
 static void *escolherFonteStalker(void *u) {
   FonteJob *job = u;
   char url[4096];
-  int ok = perfis_sessao_atual(job->sessaoPerfil) && stalker_resolver_sessao(job->id, url, sizeof url, job->sessaoPerfil);
+  int ok = perfis_sessao_atual(job->sessaoPerfil) && (m3u_e_id(job->id)
+    ? m3u_resolver_sessao(job->id, url, sizeof url, job->sessaoPerfil, job->renovando)
+    : stalker_resolver_sessao(job->id, url, sizeof url, job->sessaoPerfil));
   // O worker publica somente no seu job. O consumidor confere a geracao e o
   // id depois do acquire; nenhuma resposta velha toca o mailbox da sessao
   // corrente.
@@ -696,6 +717,7 @@ static void limparFonteVOD(void) {
   fonteFalhaEsperando = fonteFalhaN = 0;
   fonteFalhaManual = -1;
   fonteFalhaPos = -1.0; fonteFalhaLista = 0;
+  vodRenovou = 0; vodRenovandoDesde = 0;
   antAberta = -1;
   fonteVODAutomatica = 0;
   voltaAtiva = 0;
@@ -734,6 +756,13 @@ static int iniciarFonteJob(int tipo, unsigned geracao, const char *id, int renov
   job->escolhida = fonteFalhaManual;
   job->renovar = 0;
   job->preparoRodada = 0;
+  job->consulta = NULL;
+  if (tipo == FJOB_RENOVAR_VOD) {
+    const CatItem *c = cat_item(player_indice());
+    if (!c || !(job->consulta = addons_consulta_capturar())) return -1;
+    snprintf(job->tipoVod, sizeof job->tipoVod, "%s", c->tipo);
+    job->prazo = vodRenovandoDesde;
+  }
   if (tipo == FJOB_FALHA) {
     if (!fonteFalha || fonteFalhaLista != job->listaGeracao ||
         !(job->falha = fontefalha_sessao_clonar(fonteFalha))) return -1;
@@ -769,10 +798,12 @@ static int iniciarFonteJob(int tipo, unsigned geracao, const char *id, int renov
       ((tipo == FJOB_PREPARO || tipo == FJOB_PREPARO_FALHA) &&
        job->contexto.sessaoPerfil != job->sessaoPerfil)) {
     fontefalha_sessao_liberar(job->falha); job->falha = NULL;
+    addons_consulta_liberar(job->consulta); job->consulta = NULL;
     return -1;
   }
   atomic_store_explicit(&job->estado, FJOB_RUNNING, memory_order_release);
   if (pthread_create(&fioFonte, NULL,
+                     tipo == FJOB_RENOVAR_VOD ? renovarFonteVod :
                      tipo == FJOB_STALKER ? escolherFonteStalker :
                      tipo == FJOB_CANAL ? escolherFonteCanal :
                      (tipo == FJOB_FALHA || tipo == FJOB_PREPARO_FALHA || job->renovar) ? escolherFonteFalha :
@@ -780,6 +811,7 @@ static int iniciarFonteJob(int tipo, unsigned geracao, const char *id, int renov
                      job) != 0) {
     atomic_store_explicit(&job->estado, FJOB_IDLE, memory_order_release);
     fontefalha_sessao_liberar(job->falha); job->falha = NULL;
+    addons_consulta_liberar(job->consulta); job->consulta = NULL;
     return -1;
   }
   fioFonteVivo = 1;
@@ -1214,6 +1246,7 @@ static void renovarListaDoPlayer(void) {
 static const char *urlCanal(const Stream *s, char *buf, size_t n) {
   const char *id = player_id_canal();
   canalViaProxy = 0;
+  if (s && xtream_url_limitada(s->url)) return s->url;
   if (!s) return "";
   // Toda troca de fonte do guia passa aqui, inclusive a do watchdog.
   video_definir_cabecalhos(s->cabecalhos);
@@ -1240,6 +1273,9 @@ static const char *urlCanal(const Stream *s, char *buf, size_t n) {
 static int tocarFonteGuardada(void) {
   Stream s;
   char alvo[64];
+  // #618: a fresh automatic choice must use the add-on's current order.
+  // Keep the saved link intact for the other selection modes.
+  if (ajustes_fonte_prioridade() == 3) return 0;
   // "Escolher a fonte ao reproduzir": a URL da ultima sessao nao toca
   // sozinha. A folha e quem escolhe (detail_pediu_fontes, e o #62 quando a
   // lista chega). O Retomar do Continuar assistindo pede reproducao e cai
@@ -1373,8 +1409,9 @@ static int montarCanalStalker(const char *id, const char *url) {
   if (!id || !id[0] || !url || !url[0]) return -1;
   memset(&s, 0, sizeof s);
   snprintf(s.url, sizeof s.url, "%s", url);
-  snprintf(s.rotulo, sizeof s.rotulo, "%s", "Portal IPTV");
-  snprintf(s.provedor, sizeof s.provedor, "%s", "stalker");
+  snprintf(s.rotulo, sizeof s.rotulo, "%s", m3u_e_id(id) ? "M3U" : "Portal IPTV");
+  snprintf(s.provedor, sizeof s.provedor, "%s", m3u_e_id(id) ? "m3u" : "stalker");
+  if (m3u_e_id(id)) m3u_cabecalhos(id, s.cabecalhos, sizeof s.cabecalhos);
   s.fileIdx = -1;
   stream_definir_lista(&s, 1);
   return 0;
@@ -1399,7 +1436,7 @@ static int resolverCanalXtream(void) {
   static Stream s[3 * XT_VARIANTES_MAX];
   GuiaVariante v[XT_VARIANTES_MAX], ord[XT_VARIANTES_MAX];
   const char *ext[2];
-  int k = xtream_formatos(ext), i, j, n = 0, nv, no = 0;
+  int k = xtream_formatos_canal(player_id_canal(), ext), i, j, n = 0, nv, no = 0;
   int alvo = nv_res_opcao_altura(ajustes_livetv_resolucao());
   memset(s, 0, sizeof s);
   nv = guia_variantes(player_id_canal(), v, XT_VARIANTES_MAX);
@@ -1418,7 +1455,7 @@ static int resolverCanalXtream(void) {
       // pelo proxy local — HLS (ou .ts que o painel responde com playlist) vira
       // TS continuo; o que ja e TS continuo o proxy redireciona direto. As
       // fontes diretas ficam atras, de reserva.
-      if (!i && ajustes_livetv_proxy() && proxyts_disponivel() && n < (int)(sizeof s / sizeof *s) - 1) {
+      if (!i && !xtream_conexoes_limitadas() && ajustes_livetv_proxy() && proxyts_disponivel() && n < (int)(sizeof s / sizeof *s) - 1) {
         snprintf(s[n].url, sizeof s[n].url, "%s%s", PROXYTS_PREFIXO, url);
         if (strcmp(ord[j].id, player_id_canal()) && ord[j].nome[0])
           snprintf(s[n].rotulo, sizeof s[n].rotulo, "Xtream (%s, proxy) · %s", f, ord[j].nome);
@@ -1475,21 +1512,24 @@ static int resolverCanalM3u(void) {
 static void motivoCanalXtream(char *t, size_t nt, char *d, size_t nd) {
   XtreamConta c;
   const char *err = video_erro_texto();
-  int aviso = xtream_conta(&c) ? xtream_conta_aviso(&c, (long long)time(NULL)) : XA_NADA;
+  int aviso = xtream_conta_canal(player_id_canal(), &c) ? xtream_conta_aviso(&c, (long long)time(NULL)) : XA_NADA;
   // SO UM FORMATO TENTADO (#158, registro 13776): a conta declara
   // allowed_output_formats=["ts"], a lista do canal tem uma fonte so, e o
   // cartao dizia "nao abriu em HLS nem em TS" sem HLS nenhum ter sido pedido.
   const char *ext[2], *umFormato = NULL;
-  if (xtream_formatos(ext) == 1) umFormato = !strcmp(ext[0], "ts") ? "TS" : "HLS";
+  if (xtream_formatos_canal(player_id_canal(), ext) == 1) umFormato = !strcmp(ext[0], "ts") ? "TS" : "HLS";
   if (aviso == XA_EXPIRADA) {
     snprintf(t, nt, "%s", i18n("A assinatura Xtream venceu."));
     snprintf(d, nd, "%s", i18n("Renove com o seu provedor. Os canais voltam sozinhos depois disso."));
   } else if (aviso == XA_DESATIVADA || aviso == XA_RECUSOU) {
     snprintf(t, nt, "%s", i18n("O provedor desativou esta conta Xtream."));
     snprintf(d, nd, "%s", i18n("Fale com o seu provedor ou confira o cadastro em Ajustes."));
+  } else if ((xtream_conexoes_limitadas() && aviso == XA_TELAS_CHEIAS) || (xtream_conexoes_limitadas() && err &&
+             (strstr(err, "403") || strstr(err, "458") || strstr(err, "509")))) {
+    snprintf(t, nt, "%s", i18n("Esta linha está em uso em outra tela"));
+    snprintf(d, nd, "%s", i18n("Feche o Xtream em outro aparelho e tente de novo."));
   } else if (aviso == XA_TELAS_CHEIAS) {
-    snprintf(t, nt, i18n("Todas as telas da conta Xtream estão em uso (%d de %d)."),
-             c.conexoes, c.maxConexoes);
+    snprintf(t, nt, i18n("Todas as telas da conta Xtream estão em uso (%d de %d)."), c.conexoes, c.maxConexoes);
     snprintf(d, nd, "%s", i18n("Feche o Xtream em outro aparelho e tente de novo."));
   } else if (err && err[0]) {
     snprintf(t, nt, "%s", i18n("O provedor não entregou este canal."));
@@ -1558,7 +1598,7 @@ static void sondarCanalXtream(const char *id) {
   static char ultimo[80];
   pthread_t t;
   char *c;
-  if (!id || !id[0] || !strcmp(ultimo, id)) return;
+  if (!id || !id[0] || !strcmp(ultimo, id) || xtream_conexoes_limitadas()) return;
   snprintf(ultimo, sizeof ultimo, "%s", id);
   c = strdup(id);
   if (!c) return;
@@ -1605,6 +1645,7 @@ static void processarFonteJob(void) {
   atomic_store_explicit(&job->estado, FJOB_IDLE, memory_order_release);
   if (!nv_perfil_sessao_atual(job->sessaoPerfil)) {
     fontefalha_sessao_liberar(job->falha); job->falha = NULL;
+    addons_consulta_liberar(job->consulta); job->consulta = NULL;
     goto iniciarPendente;
   }
   if (tipo == FJOB_PREPARO || tipo == FJOB_PREPARO_FALHA) {
@@ -1639,7 +1680,24 @@ static void processarFonteJob(void) {
   aplicar = geracao == fontePedidoGeracao &&
             geracao == atomic_load_explicit(&stalkerGeracao, memory_order_acquire);
   if (tipo == FJOB_PREPARO || tipo == FJOB_PREPARO_FALHA) aplicar = 0;
-  if (tipo == FJOB_FALHA) {
+  if (tipo == FJOB_RENOVAR_VOD) {
+    if (aplicar && vodRenovandoDesde && aguardandoFonte == 2 &&
+        player_aberto() && !player_quer_sair()) {
+      aguardandoFonte = 0; vodRenovandoDesde = 0;
+      if (resultado >= 0 && addons_consulta_atual(job->consulta) &&
+          stream_vod_renovada_aplicar(resultado, job->listaGeracao,
+                                     &job->renovada, job->sessaoPerfil)) {
+        const Stream *s = stream_item(resultado);
+        stream_definir_atual(resultado);
+        video_definir_cabecalhos(s->cabecalhos);
+        player_definir_retomada_fonte(vodRenovarPos);
+        definirFonteVOD(s->url);
+        vodRenovou = 1;
+        fonteVODDesde = fonteManualDesde = SDL_GetTicks() | 1u;
+      } else player_erro_fonte_motivo(i18n("A fonte não respondeu a tempo."), NULL);
+    }
+    addons_consulta_liberar(job->consulta); job->consulta = NULL;
+  } else if (tipo == FJOB_FALHA) {
     aplicar = aplicar && fonteFalha && job->listaGeracao == fonteFalhaLista &&
               job->listaGeracao == stream_lista_geracao() &&
               (player_aberto() || player_mini_ativo()) && !player_quer_sair();
@@ -1722,8 +1780,10 @@ iniciarPendente:
   }
 }
 static void cancelarFonteSeSaiu(void) {
-  int jobSessao = (fioFonteVivo && (fonteJob.tipo == FJOB_STALKER || fonteJob.tipo == FJOB_FALHA)) ||
-                   fontePendenteTipo == FJOB_STALKER || fontePendenteTipo == FJOB_FALHA || fonteFalha;
+  int jobSessao = (fioFonteVivo && (fonteJob.tipo == FJOB_STALKER || fonteJob.tipo == FJOB_FALHA ||
+                                                  fonteJob.tipo == FJOB_RENOVAR_VOD)) ||
+                   fontePendenteTipo == FJOB_STALKER || fontePendenteTipo == FJOB_FALHA ||
+                   fontePendenteTipo == FJOB_RENOVAR_VOD || fonteFalha;
   if (jobSessao &&
       (player_quer_sair() || (!player_aberto() && !player_mini_ativo()))) {
     novaGeracaoFonte();
@@ -2560,7 +2620,7 @@ static void sondarAposRecusa(void) {
   const Stream *s;
   SondaRecusa *p;
   pthread_t t;
-  if (!url || !*url || !fontesonda_erro_conexao(video_erro_texto())) return;
+  if (!url || !*url || xtream_url_limitada(url) || !fontesonda_erro_conexao(video_erro_texto())) return;
   if (!strcmp(url, ultima)) return;
   snprintf(ultima, sizeof ultima, "%s", url);
   s = stream_atual() >= 0 ? stream_item(stream_atual()) : NULL;
@@ -3170,14 +3230,50 @@ static void lembrarTocando(void) {
   if (base[0]) fontepref_tocando(base, s);
 }
 static void guardarPosicaoFonteFalha(void) {
-  // GATE e o AUTOMATICO (nao a sessao fonteFalha): o watchdog arma tambem sem
-  // sessao (fonte aberta "enquanto confere", arming que falhou) e a troca
-  // precisa da posicao mesmo nesse caso. limparFonteVOD/iniciarPoliticaFonte
-  // zeram fonteVODAutomatica e fonteFalhaPos juntos a cada reproducao.
-  if (fonteVODAutomatica && player_aberto() && !player_quer_sair() &&
-      aguardandoFonte == 0 && video_pronto() && !video_falhou() && !player_fonte_falhou()) {
+  // Keep the last valid position for both manual and automatic VOD. A
+  // reopening backend may temporarily report zero, so skip recovery frames.
+  if (player_aberto() && !player_quer_sair() && !player_id_canal()[0] &&
+      aguardandoFonte == 0 && video_pronto() && !video_reconectando() &&
+      !video_falhou() && !player_fonte_falhou()) {
     double pos = video_pos();
     if (pos >= 0.0 && isfinite(pos)) fonteFalhaPos = pos;
+  }
+}
+// One fresh addon query per interrupted VOD; silent workers have a deadline.
+static void renovarVodInterrompido(void) {
+  if (vodRenovandoDesde) {
+    if ((Sint32)(SDL_GetTicks() - vodRenovandoDesde) >= 30000) {
+      novaGeracaoFonte(); limparFontePendente();
+      vodRenovandoDesde = 0; aguardandoFonte = 0;
+      player_erro_fonte_motivo(i18n("A fonte não respondeu a tempo."), NULL);
+    }
+    return;
+  }
+  if (vodRenovou && video_pronto() && !video_falhou() &&
+      video_pos() >= vodRenovarPos + 10.0) vodRenovou = 0;
+  if (vodRenovou || fonteFalhaPos <= 0.0 || !video_falhou() ||
+      !player_aberto() || player_quer_sair() || player_id_canal()[0] ||
+      aguardandoFonte || player_fonte_falhou()) return;
+  int causa = fontesonda_causa(video_erro_texto(), NULL);
+  if (causa != FS_CAUSA_REDE && causa != FS_CAUSA_HTTP) return;
+  char alvo[64]; alvoPlayer(alvo, sizeof alvo);
+  fonteDepoisDe = stream_atual();
+  if (fonteDepoisDe < 0 || !alvo[0] ||
+      partes_sessao_lista() || parteFase != PF_NADA) return;
+  vodRenovou = 1; vodRenovarPos = fonteFalhaPos;
+#ifdef NV_ANDROID
+  // Android retains the exact failure point through failed reopens.
+  if (video_pos() > 0.0) vodRenovarPos = video_pos();
+#endif
+  unsigned geracao = novaGeracaoFonte();
+  vodRenovandoDesde = SDL_GetTicks() | 1u;
+  aguardandoFonte = 2; fontePedidoGeracao = geracao; fonteEscolhida = -2;
+  limparFontePendente();
+  player_voltar_a_esperar();
+  player_toast(i18n("Conexão caiu, reconectando…"), 3000);
+  if (pedirFonteJob(FJOB_RENOVAR_VOD, geracao, alvo, 0) < 0) {
+    vodRenovandoDesde = 0; aguardandoFonte = 0;
+    player_erro_fonte();
   }
 }
 static void recarregarFonteVOD(void) {
@@ -3213,6 +3309,14 @@ static void tentarProximaFonteVOD(void) {
   // (video_reconexao.h). So vira troca de fonte quando ela desistir (falhou).
   if (video_reconectando()) return;
   desde = SDL_GetTicks() - fonteVODDesde;
+  const char *err = video_erro_texto();
+  if (xtream_url_limitada(video_url_atual()) && err &&
+      (strstr(err, "403") || strstr(err, "458") || strstr(err, "509"))) {
+    fonteVODAutomatica = 0;
+    player_erro_fonte();
+    video_parar();
+    return;
+  }
   if (video_falhou() || player_fonte_falhou()) { motivo = 1; sondarAposRecusa(); }
   // Reloading a source that already played (Dolby Vision path handing back
   // to the TV player, track switch) is not a source that never opened: on
@@ -3362,7 +3466,7 @@ static void tocarCanal(const CatItem *it) {
   stalkerRenovando = 0;            // resposta de renovacao antiga sera descartada
   // Canal de portal nao esta em addon nenhum: perguntar seria esperar o prazo
   // de todos eles para receber lista vazia, com a pessoa olhando "carregando".
-  if (!stalker_e_id(it->imdb) && !xtream_e_id(it->imdb) && !guia_e_m3u(it->imdb)) {
+  if (!stalker_e_id(it->imdb) && !xtream_e_id(it->imdb) && !guia_e_m3u(it->imdb) && !m3u_e_id(it->imdb)) {
     // So o addon que publicou o canal responde por ele; ver alvoBase em
     // addons.c e o que o FrostView fora do ar custava.
     addons_definir_origem(guia_canal_origem());
@@ -3403,6 +3507,7 @@ static void guiaComCanalNoAr(void) {
   float x, y, w, h;
   snprintf(id, sizeof id, "%s", player_id_canal());
   guia_preview_rect(&x, &y, &w, &h);
+  // Moving the current stream opens no connection, even on limited accounts.
   if (player_mini_ativo()) player_mini_no_guia(x, y, w, h);
   else player_minimizar_para_guia(x, y, w, h);
   if (tela != TELA_GUIA || !guia_aberta()) {
@@ -4326,7 +4431,27 @@ void app_evento(const SDL_Event *e) {
   // deixar a tecla vazar para a home moveria o foco dela debaixo do cartao.
   if (recintro_aberto()) { recintro_evento(e); return; }
   if (atualizacao_aberta()) { atualizacao_evento(e); return; }
-  if (agendaviso_aberto()) { agendaviso_evento(e); return; }
+  if (agendaviso_aberto()) {
+    agendaviso_evento(e);
+    AgItem aviso;
+    if (agendaviso_tomar_filme(&aviso)) {
+      int i = cat_indice_por_imdb_tipo(aviso.imdb, "movie");
+      if (i < 0) {
+        CatItem ci = {0};
+        snprintf(ci.imdb, sizeof ci.imdb, "%s", aviso.imdb);
+        snprintf(ci.tipo, sizeof ci.tipo, "movie");
+        snprintf(ci.titulo, sizeof ci.titulo, "%s", aviso.titulo);
+        snprintf(ci.poster, sizeof ci.poster, "%s", aviso.poster);
+        i = cat_acrescentar(&ci);
+      }
+      if (i >= 0) {
+        HomeItem it = {0}; it.indice = i;
+        it.rect = (GfxRect){0, 0, NV_TELA_W, NV_TELA_H};
+        abrirTitulo(&it, 0, 1);
+      }
+    }
+    return;
+  }
   if (recomenda_tecla(e)) return;
   // A MODAL DE RECOMENDAR fica acima do detalhe, do menu do cartaz e do
   // painel da tecla AZUL — as tres portas que a abrem. Abaixo do cartao de
@@ -4854,6 +4979,7 @@ void app_atualizar(float dt, Uint32 agora) {
   // Um ciclo por vez, e so quando a conta existe. O passo e barato: sem fio
   // terminado ele nao faz nada.
   sync_passo((unsigned)agora);
+  agenda_filmes_atualizar();
   // SERVIDOR DA CONTA FORA DO AR (#215): um aviso discreto na ilha, uma vez
   // por queda, e retirado quando ele volta. Sem isto a pessoa via a home sem
   // addons (ou com os de ontem) e concluia que o app quebrou — e saia da conta
@@ -5780,7 +5906,7 @@ void app_atualizar(float dt, Uint32 agora) {
       } else if (guia_e_m3u(player_id_canal())) {
         fonteEscolhida = resolverCanalM3u();
         canalFontePrazo = CANAL_FONTE_PRAZO_MS;
-      } else if (stalker_e_id(player_id_canal())) {
+      } else if (stalker_e_id(player_id_canal()) || m3u_e_id(player_id_canal())) {
         // UMA fonte, e ela acabou de nascer: nao ha lista para conferir nem
         // ranking para aplicar. O create_link bloqueia centenas de ms, entao
         // captura o id e deixa a rede fora do fio de desenho. Sem `return` de
@@ -6032,6 +6158,14 @@ void app_atualizar(float dt, Uint32 agora) {
     // longo — o uMS que engole 39 s e nao toca em 45 s esta mesmo travado.
     Uint32 desde = SDL_GetTicks() - canalFonteDesde;
     int xt = xtream_e_id(player_id_canal());
+    const char *limitedError = video_erro_texto();
+    if (xt && xtream_conexoes_limitadas() && limitedError &&
+        (strstr(limitedError, "403") || strstr(limitedError, "458") || strstr(limitedError, "509"))) {
+      canalFonteIdx = -1;
+      erroCanalXtream();
+      video_parar();
+      return;
+    }
     // ESPERA DE AJUSTES (Live TV > Espera para abrir o canal, ou o "Aplicar"
     // do diagnostico da Live TV): 25 ou 45 s no lugar dos 15 s do Xtream sem
     // decoder e dos 25 s da fonte viva sem dado. O prazo curto da fonte MUDA
@@ -6121,7 +6255,7 @@ void app_atualizar(float dt, Uint32 agora) {
     { static char tocouUrl[64];
       if (xt && video_pronto() && strncmp(tocouUrl, player_id_canal(), sizeof tocouUrl - 1)) {
         snprintf(tocouUrl, sizeof tocouUrl, "%s", player_id_canal());
-        xtream_formato_funcionou(video_url_atual());
+        xtream_formato_canal_funcionou(player_id_canal(), video_url_atual());
       }
       if (!video_pronto()) tocouUrl[0] = 0; }
     if (morta) {
@@ -6162,7 +6296,7 @@ void app_atualizar(float dt, Uint32 agora) {
       // Com teto: `stalkerTentativas` impede que um portal fora do ar vire um
       // laco de create_link a cada 12 s para sempre. O teto zera quando o canal
       // troca (canalFonteIdx = -1 em tocarCanal).
-      if (stalker_e_id(player_id_canal())) {
+      if (stalker_e_id(player_id_canal()) || m3u_e_id(player_id_canal())) {
         if (stalkerRenovando) return;
         if (stalkerTentativas < CANAL_STALKER_TENTATIVAS) {
           unsigned geracao = novaGeracaoFonte();
@@ -6256,6 +6390,7 @@ void app_atualizar(float dt, Uint32 agora) {
       }
     }
   }
+  renovarVodInterrompido();
   tentarProximaFonteVOD();
   lembrarAutomatica();
   bingeDaFonteAtual();
@@ -6388,11 +6523,20 @@ void app_atualizar(float dt, Uint32 agora) {
 
   // CANAL ESCOLHIDO NO GUIA — tela cheia ou faixa, mesma acao: toca direto.
   { CatItem it;
-    if (aguardandoFonte != 2 && guia_pediu_canal(&it)) tocarCanal(&it); }
+    if (aguardandoFonte != 2 && guia_pediu_canal(&it)) {
+      // OK num canal que nao e o do preview abre em tela cheia: a sessao do
+      // preview sai antes (miniGuia armado mandaria o canal novo para o preview).
+      if (player_mini_no_guia_ativo()) player_fechar_mini();
+      tocarCanal(&it);
+    } }
   // O PREVIEW DO GUIA e uma sessao "mini no guia" do player: mesma busca de
   // fonte, mesmo watchdog, e o OK nele depois so faz a janela crescer.
   { CatItem it;
     if (aguardandoFonte != 2 && guia_pediu_preview(&it)) {
+      // UMA conexao por vez (conta limitada ou nao): o preview novo so abre
+      // depois de a sessao anterior estar fechada — nunca duas no ar.
+      if (player_mini_no_guia_ativo() && strcmp(player_id_canal(), it.imdb))
+        player_fechar_mini();
       float x, y, w, h;
       guia_preview_rect(&x, &y, &w, &h);
       player_mini_no_guia(x, y, w, h);
@@ -6520,7 +6664,11 @@ void app_atualizar(float dt, Uint32 agora) {
   // VOLTAR NUM CANAL ABERTO PELO GUIA: o video encolhe para o preview do guia,
   // na hora (sem esperar o fade da interface do player) e sem recarregar. O
   // PiP de canto ficou para os canais abertos fora do guia.
-  if (player_quer_sair() && player_minimizavel() && tela == TELA_GUIA && guia_aberta())
+  // player_minimizavel exclui a conta Xtream limitada, mas AQUI o fluxo ja
+  // esta no ar: encolher para o preview nao abre conexao nenhuma, e BACK tem
+  // de se comportar como o botao GUIA (mesmo pipeline, sem recarregar).
+  if (player_quer_sair() && player_eh_canal() && player_com_video() &&
+      tela == TELA_GUIA && guia_aberta())
     guiaComCanalNoAr();
   if (player_quer_sair() && !player_minimizavel() && ajustes_saida_player_home())
     player_preparar_retencao();
@@ -7340,6 +7488,7 @@ void app_encerrar(void) {
     pthread_join(fioFonte, NULL);
     fioFonteVivo = 0;
     fontefalha_sessao_liberar(fonteJob.falha); fonteJob.falha = NULL;
+    addons_consulta_liberar(fonteJob.consulta); fonteJob.consulta = NULL;
     atomic_store_explicit(&fonteJob.estado, FJOB_IDLE, memory_order_release);
   }
   aguardandoFonte = 0;

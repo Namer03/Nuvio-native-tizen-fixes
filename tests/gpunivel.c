@@ -8,6 +8,7 @@
 #include "gfx.h"
 #include "dados.h"
 #include "perfiltv.h"
+#include <SDL2/SDL.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,9 +16,12 @@
 
 void gpun_teste_reiniciar(void);
 int  gpun_teste_decidido(void);
+const char *gpun_teste_upscale(int sw, int sh, int iw, int ih, int app);
 
 // --- dubles ------------------------------------------------------------------
+SDL_GLContext SDL_GL_GetCurrentContext(void) { return NULL; }
 float gfx_tex_aspect_atual, gfx_opacidade_grupo = 1.0f;
+int gfx_hdr_output;
 static int leves = -1;
 void gfx_definir_efeitos_leves(int l) { leves = l; }
 static int minimos = -1;
@@ -49,6 +53,8 @@ void glGetIntegerv(GLenum e, GLint *v) { (void)e; *v = 0; }
 #undef glTexImage2D
 void glGenTextures(GLsizei n, GLuint *v) { while (n--) *v++ = 1; }
 void glGenFramebuffers(GLsizei n, GLuint *v) { while (n--) *v++ = 2; }
+void glDeleteTextures(GLsizei n, const GLuint *v) { (void)n; (void)v; }
+void glDeleteFramebuffers(GLsizei n, const GLuint *v) { (void)n; (void)v; }
 void glBindTexture(GLenum t, GLuint v) { (void)t; (void)v; }
 void glBindFramebuffer(GLenum t, GLuint v) { (void)t; (void)v; }
 void glTexImage2D(GLenum t, GLint l, GLint f, GLsizei w, GLsizei h, GLint b, GLenum fmt, GLenum ty, const GLvoid *p) {
@@ -250,6 +256,30 @@ static void maliLight(void) {
   }
   puts("ok  saved Light: Mali-400/450/470 level 2, Mali-G52 level 1");
 }
+// Settings > This TV > Upscaling algorithm picks the pass gpun_quadro_fim draws.
+static void upscaleEscolha(void) {
+  #define UP(a, n, sw, sh, iw, ih, app, nome) \
+    do { gpun_ampliacao(a, n); assert(!strcmp(gpun_teste_upscale(sw, sh, iw, ih, app), nome)); } while (0)
+  // Automatic keeps the original rule: fractional SGSR, integer Sharp-Bilinear.
+  UP(0, 2, 1920, 1080, 1280, 720, 1, "sgsr");
+  UP(0, 2, 3840, 2160, 1920, 1080, 1, "sharp-bilinear");
+  UP(1, 2, 3840, 2160, 1920, 1080, 1, "sgsr");
+  UP(2, 2, 1920, 1080, 1280, 720, 1, "sgsr+rcas");
+  UP(2, 0, 1920, 1080, 1280, 720, 1, "sgsr");
+  UP(3, 4, 3840, 2160, 1920, 1080, 1, "easu+rcas");
+  UP(3, 0, 1920, 1080, 1280, 720, 1, "easu");
+  UP(4, 2, 1920, 1080, 1280, 720, 1, "lanczos");
+  UP(5, 2, 1920, 1080, 1280, 720, 1, "bilinear");
+  // No app upscaling: every choice is the plain copy.
+  for (int a = 0; a <= 5; a++) {
+    UP(a, 2, 1920, 1080, 1280, 720, 0, "bilinear");
+    UP(a, 2, 1920, 1080, 1920, 1080, 1, "bilinear");
+  }
+  #undef UP
+  gpun_ampliacao(0, 0);
+  puts("ok  upscaling algorithm selects the drawn pass; Automatic unchanged");
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "mali-light")) { maliLight(); return 0; }
   if (argc == 2 && !strcmp(argv[1], "gpu1080")) { gpu1080(); return 0; }
@@ -385,6 +415,7 @@ int main(int argc, char **argv) {
   legadoInterrompido();
   referenciaAlternada();
   gpu1080(); combinations(); maliLight();
+  upscaleEscolha();
   puts("gpunivel: tudo ok");
   return 0;
 }
