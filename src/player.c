@@ -235,7 +235,6 @@ static SaltoEst scrubSalto;   // rajada do teclado (salto.h)
 // remembered step; the memory lives until the seek commits (terminarSalto).
 static SeekGesto gesto;
 static const SeekParams seekPar = SEEKG_PADRAO;
-static int gestoSegurava;      // to log the moment a hold ends
 // SEEK IN FLIGHT. The host only updates its position cache once
 // SetPlayPositionAsync finishes, so for a while after a seek video_pos() is
 // the OLD position. Copying it into posSeg made the bar slide back to where
@@ -257,13 +256,6 @@ static unsigned vooFalhas, vooGer;
 static Uint32 vooDecorrido(Uint32 agora, Uint32 desde) {
   Sint32 d = (Sint32)(agora - desde);
   return d > 0 ? (Uint32)d : 0u;
-}
-static const char *gestoModo(int m) {
-  switch (m) {
-    case SEEKG_TOQUE: return "tap"; case SEEKG_SEGURA_INICIO: return "hold-start";
-    case SEEKG_REPETICAO: return "repeat"; case SEEKG_REP_IGNORADA: return "repeat-throttled";
-    case SEEKG_VIRADA: return "flip"; default: return "?";
-  }
 }
 #endif
 // BUSCA SUAVE: o que a BARRA mostra durante o avanco. posSeg anda em degraus
@@ -1773,7 +1765,7 @@ void player_abrir(int indiceCatalogo, const char *url) {
   scrubbing = 0; scrubPassos = 0; scrubTocava = 0; scrubDir = 0; scrubToque = 0; scrubInicio = 0.0;
   posVis = 0.0f; posVisV = 0.0f; posVisSolto = 0;
 #ifdef NV_TPK
-  seekgesto_zerar(&gesto); gestoSegurava = 0;
+  seekgesto_zerar(&gesto);
   vooAtivo = 0; vooRetryEm = 0;
 #endif
   encolhe = 1.0f; encolheAlvo = 0.0f; encolheT = 0.0f; encolheEm = 0;
@@ -3837,8 +3829,6 @@ static void buscarUsuario(double alvo) {
   creditosauto_destino(&creditosAuto, alvo);
   video_buscar(alvo);
 #ifdef NV_TPK
-  printf("[seek] seek sent target=%.1f from=%.1f%s\n", alvo, video_pos(), vooAtivo ? " (replaces one in flight)" : "");
-  fflush(stdout);
   vooAtivo = 1; vooAlvo = alvo; vooDesde = SDL_GetTicks(); vooLivreEm = vooRetryEm = 0;
   vooTentativas = 0; vooFalhas = video_busca_falhas(); vooGer = fonteAcaoGeracao;
 #endif
@@ -3895,9 +3885,6 @@ static void vooPasso(Uint32 agora) {
   if (!vooLivreEm) vooLivreEm = agora | 1u;
   p = video_pos();
   if (fabs(p - vooAlvo) < VOO_PERTO_S || vooDecorrido(agora, vooLivreEm) >= VOO_LIVRE_MS) {
-    printf("[seek] landed target=%.1f pos=%.1f after %u ms%s\n", vooAlvo, p, (unsigned)vooDecorrido(agora, vooDesde),
-           fabs(p - vooAlvo) < VOO_PERTO_S ? "" : " (TV settled away from the target)");
-    fflush(stdout);
     vooAtivo = 0;
   }
 }
@@ -3909,7 +3896,7 @@ static void iniciarSalto(int toque) {
   // A seek still in flight: start from where the person sent it, not from the
   // stale position the TV is still reporting (the second half of the bug).
   if (vooAtivo) { scrubInicio = vooAlvo; posSeg = (float)scrubInicio; }
-  seekgesto_zerar(&gesto); gestoSegurava = 0;
+  seekgesto_zerar(&gesto);
 #endif
   scrubToque = toque;
   scrubbing = 1;
@@ -3934,9 +3921,7 @@ static void saltar(int dir, int repeticao) {
   Uint32 agora = SDL_GetTicks();
 #ifdef NV_TPK
   { const SeekParams *sp = &seekPar;
-    int modo = 0;
-    unsigned gap = gesto.ativo ? agora - gesto.ultTecla : 0;
-    float s = seekgesto_tecla(&gesto, sp, dir, agora, duracaoSeg, &modo);
+    float s = seekgesto_tecla(&gesto, sp, dir, agora, duracaoSeg, NULL);
     (void)novo; (void)repeticao;
     scrubUltimo = agora;
     if (s != 0.0f) {
@@ -3945,11 +3930,6 @@ static void saltar(int dir, int repeticao) {
       posSeg = anim_clamp(posSeg + s, 0.0f, duracaoSeg);
       recuarAutomatico(de, posSeg);
     }
-    gestoSegurava = gesto.segurando;
-    printf("[seek] key %s gap=%ums %s jump=%+.1f step=%.1f speed=%.0fs/s pos=%.1f%s\n",
-           dir > 0 ? "right" : "left", gap, gestoModo(modo), s, gesto.passo, seekgesto_vel(&gesto, sp),
-           posSeg, vooAtivo ? " (seek in flight)" : "");
-    fflush(stdout);
     return; }
 #endif
   // Repeticao de tecla segurada entre dois passos: so mantem o avanco vivo (scrubUltimo), nao anda.
@@ -3975,9 +3955,7 @@ static void terminarSalto(void) {
   pausao_fechar();
   seekr_ocioso();   // solta a folha decodificada (~22 MB), fica o JPEG
 #ifdef NV_TPK
-  printf("[seek] commit target=%.1f from=%.1f presses=%d step=%.1f\n", posSeg, scrubInicio, gesto.contadas, gesto.passo);
-  fflush(stdout);
-  seekgesto_zerar(&gesto); gestoSegurava = 0;   // the memory lives until the commit
+  seekgesto_zerar(&gesto);   // the memory lives until the commit
 #endif
   if (comVideo) {
     if (posSeg >= scrubInicio) creditosauto_buscar(&creditosAuto, posSeg);
@@ -4070,14 +4048,6 @@ void player_evento(const SDL_Event *e) {
   if (reacao_evento(e, visivel)) return;
   { int r = posplay_evento(e);
     if (r) { if (r == 2) acordar(); return; } }
-#ifdef NV_TPK
-  if (aberto && e->type == SDL_KEYUP && gesto.ativo &&
-      (e->key.keysym.sym == SDLK_LEFT || e->key.keysym.sym == SDLK_RIGHT)) {
-    printf("[seek] keyup %s %ums after the last keydown\n", e->key.keysym.sym == SDLK_RIGHT ? "right" : "left",
-           (unsigned)(SDL_GetTicks() - gesto.ultTecla));
-    fflush(stdout);
-  }
-#endif
   if (!aberto || saindo || e->type != SDL_KEYDOWN) return;
   SDL_Keycode k = e->key.keysym.sym;
   if (e->key.repeat && confirmacaoTransporteRetida &&
@@ -4690,11 +4660,6 @@ void player_atualizar(float dt, Uint32 agora) {
     double de = posSeg;
 #ifdef NV_TPK
     posSeg = anim_clamp(posSeg + seekgesto_quadro(&gesto, &seekPar, agora, dt), 0.0f, duracaoSeg);
-    if (gestoSegurava && !gesto.segurando) {
-      printf("[seek] hold released: remembered step=%.1f pos=%.1f\n", gesto.passo, posSeg);
-      fflush(stdout);
-    }
-    gestoSegurava = gesto.segurando;
 #else
     posSeg = anim_clamp(posSeg + salto_quadro(&scrubSalto, scrubDir, agora, dt, duracaoSeg),
                         0.0f, duracaoSeg);
