@@ -163,6 +163,8 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 // — foi a queixa — mas a primeira versao disparava a ~20 min/s e "ja voava pro
 // final". A regra e os degraus estao em salto.h.
 #include "salto.h"
+#include "seektune.h"     // .tpk: seek gesture + tuning panel (seekgesto.h)
+#include "video_seekretry.h"
 // Sem tecla por este tempo, o avanco termina: manda a posicao ao pipeline e
 // retoma. 420 ms e maior que o intervalo de repeticao do controle (que na C9
 // fica perto de 100 ms) e menor que o tempo de reacao de quem soltou de
@@ -221,13 +223,41 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 // IDs estaveis: a ordem visual e de navegacao vem de transporteAcoes.
 // Na serie, Anterior/Proximo ficam ao lado do Play; o restante conserva a ordem.
 enum { PLR_PLAY, PLR_CC, PLR_AUDIO, PLR_ASPECTO,
-       PLR_FONTES, PLR_EPISODIOS, PLR_PROXIMO, PLR_REINICIAR, PLR_NBTNS };
+       PLR_FONTES, PLR_EPISODIOS, PLR_PROXIMO, PLR_REINICIAR,
+       PLR_SEEKAJ,   // .tpk only: "Seek tuning" panel (seektune.h), TEMPORARY
+       PLR_NBTNS };
 
 // Avanco em curso: enquanto vale, posSeg e do DONO e nao do pipeline.
 static int    scrubbing, scrubPassos, scrubTocava, scrubDir, scrubToque;
 static double scrubInicio;
 static Uint32 scrubUltimo;
 static SaltoEst scrubSalto;   // rajada do teclado (salto.h)
+#ifdef NV_TPK
+// .tpk SEEK GESTURE (seekgesto.h, owner 20/10): taps and holds share one
+// remembered step; the memory lives until the seek commits (terminarSalto).
+static SeekGesto gesto;
+static int gestoSegurava;      // to log the moment a hold ends
+// SEEK IN FLIGHT. The host only updates its position cache once
+// SetPlayPositionAsync finishes, so for a while after a seek video_pos() is
+// the OLD position. Copying it into posSeg made the bar slide back to where
+// the video was, and a press in that window scrubbed from the old spot. While
+// `vooAtivo` the bar, the clock and a new scrub use the target instead.
+static int    vooAtivo, vooTentativas, vooFila;
+static double vooAlvo, vooFilaAlvo;
+static Uint32 vooDesde, vooLivreEm, vooRetryEm;
+static unsigned vooFalhas, vooGer;
+#define VOO_PRAZO_MS   20000u   // the host gives up at 15 s and reconnects
+#define VOO_PERTO_S    3.0      // landed: position within this of the target
+#define VOO_LIVRE_MS   1500u    // or this long after the TV stopped seeking
+static double vooAlvoVisivel(void) { return vooFila ? vooFilaAlvo : vooAlvo; }
+static const char *gestoModo(int m) {
+  switch (m) {
+    case SEEKG_TOQUE: return "tap"; case SEEKG_SEGURA_INICIO: return "hold-start";
+    case SEEKG_REPETICAO: return "repeat"; case SEEKG_REP_IGNORADA: return "repeat-throttled";
+    case SEEKG_VIRADA: return "flip"; default: return "?";
+  }
+}
+#endif
 // BUSCA SUAVE: o que a BARRA mostra durante o avanco. posSeg anda em degraus
 // (10 s, 30 s, 60 s, 120 s por passo, ~3 passos por segundo) e desenhar direto dele fazia
 // o preenchimento saltar aos trancos. posVis persegue posSeg por mola de
@@ -1734,6 +1764,11 @@ void player_abrir(int indiceCatalogo, const char *url) {
   // pipeline novo assim que o silencio vencesse.
   scrubbing = 0; scrubPassos = 0; scrubTocava = 0; scrubDir = 0; scrubToque = 0; scrubInicio = 0.0;
   posVis = 0.0f; posVisV = 0.0f; posVisSolto = 0;
+#ifdef NV_TPK
+  seekgesto_zerar(&gesto); gestoSegurava = 0;
+  vooAtivo = vooFila = 0; vooRetryEm = 0;
+  seektune_fechar();
+#endif
   encolhe = 1.0f; encolheAlvo = 0.0f; encolheT = 0.0f; encolheEm = 0;
   posplay_fechar();   // titulo novo, painel do anterior nao vale mais
   reacao_fechar();
@@ -3136,6 +3171,9 @@ static int transporteAcoes(PlrAcao a[PLR_NBTNS]) {
   a[n++] = (PlrAcao){PLR_ASPECTO, 1};
   a[n++] = (PlrAcao){PLR_FONTES, 1};
   if (temUltimoBotao()) a[n++] = (PlrAcao){PLR_EPISODIOS, 1};
+#ifdef NV_TPK
+  if (!ehCanal()) a[n++] = (PlrAcao){PLR_SEEKAJ, 1};
+#endif
   return n;
 }
 static int transporteHabilitado(int id) {
@@ -3794,10 +3832,88 @@ static void buscarUsuario(double alvo) {
     if (!xtream_url_limitada(video_url_atual())) seekprobe_iniciar(video_url_atual(), video_cabecalhos());   // #557: own proxies handle Range
   creditosauto_destino(&creditosAuto, alvo);
   video_buscar(alvo);
+#ifdef NV_TPK
+  printf("[seek] seek sent target=%.1f from=%.1f%s\n", alvo, video_pos(), vooAtivo ? " (replaces one in flight)" : "");
+  fflush(stdout);
+  vooAtivo = 1; vooAlvo = alvo; vooDesde = SDL_GetTicks(); vooLivreEm = vooRetryEm = 0;
+  vooTentativas = 0; vooFalhas = video_busca_falhas(); vooGer = fonteAcaoGeracao;
+#endif
 }
+
+#ifdef NV_TPK
+// Once per frame, before the position is read: follow the seek in flight
+// until the TV confirms it, retry a refused one (0.5 / 1.5 / 3 s, like the
+// webOS seekretry) and only then tell the person it failed.
+static void vooPasso(Uint32 agora) {
+  unsigned f;
+  double p;
+  if (!vooAtivo) return;
+  if (vooGer != fonteAcaoGeracao || !comVideo) {
+    printf("[seek] in-flight seek dropped (source changed)\n"); fflush(stdout);
+    vooAtivo = vooFila = 0; vooRetryEm = 0;
+    return;
+  }
+  f = video_busca_falhas();
+  if (f != vooFalhas) {
+    vooFalhas = f;
+    if (vooTentativas < NV_SEEK_MAX) {
+      vooTentativas++;
+      vooRetryEm = (agora + nv_seek_espera_ms(vooTentativas)) | 1u;
+      printf("[seek] retry %d/%d in %u ms (TV refused the seek to %.1f)\n", vooTentativas, NV_SEEK_MAX,
+             nv_seek_espera_ms(vooTentativas), vooAlvo);
+      fflush(stdout);
+    } else {
+      printf("[seek] failed: TV refused the seek to %.1f %d times, staying at %.1f\n", vooAlvo,
+             NV_SEEK_MAX + 1, video_pos());
+      fflush(stdout);
+      player_toast_ex("Seek failed", 3500u, "pl_triangle-alert", 1);
+      vooAtivo = vooFila = 0; vooRetryEm = 0;
+      return;
+    }
+  }
+  if (vooRetryEm) {
+    if ((Sint32)(agora - vooRetryEm) < 0) return;
+    vooRetryEm = 0; vooLivreEm = 0;
+    printf("[seek] retry sent target=%.1f\n", vooAlvo); fflush(stdout);
+    video_buscar(vooAlvo);
+    return;
+  }
+  if (video_busca_em_voo()) {
+    vooLivreEm = 0;
+    if (agora - vooDesde > VOO_PRAZO_MS) {
+      printf("[seek] gave up waiting: no confirmation in %u ms, staying at %.1f\n", VOO_PRAZO_MS, video_pos());
+      fflush(stdout);
+      player_toast_ex("Seek failed", 3500u, "pl_triangle-alert", 1);
+      vooAtivo = vooFila = 0;
+    }
+    return;
+  }
+  if (!vooLivreEm) vooLivreEm = agora | 1u;
+  p = video_pos();
+  if (fabs(p - vooAlvo) < VOO_PERTO_S || agora - vooLivreEm >= VOO_LIVRE_MS) {
+    printf("[seek] landed target=%.1f pos=%.1f after %u ms%s\n", vooAlvo, p, (unsigned)(agora - vooDesde),
+           fabs(p - vooAlvo) < VOO_PERTO_S ? "" : " (TV settled away from the target)");
+    fflush(stdout);
+    vooAtivo = 0;
+    if (vooFila) {
+      double a = vooFilaAlvo;
+      vooFila = 0;
+      printf("[seek] queued seek now sent\n"); fflush(stdout);
+      buscarUsuario(a);
+      posSeg = (float)a;
+    }
+  }
+}
+#endif
 
 static void iniciarSalto(int toque) {
   scrubInicio = comVideo ? video_pos() : posSeg;
+#ifdef NV_TPK
+  // A seek still in flight: start from where the person sent it, not from the
+  // stale position the TV is still reporting (the second half of the bug).
+  if (vooAtivo) { scrubInicio = vooAlvoVisivel(); posSeg = (float)scrubInicio; }
+  seekgesto_zerar(&gesto); gestoSegurava = 0;
+#endif
   scrubToque = toque;
   scrubbing = 1;
   scrubPassos = 0;
@@ -3819,6 +3935,26 @@ static void saltar(int dir, int repeticao) {
   scrubToque = 0;
   scrubDir = dir;
   Uint32 agora = SDL_GetTicks();
+#ifdef NV_TPK
+  { const SeekParams *sp = seektune_params();
+    int modo = 0;
+    unsigned gap = gesto.ativo ? agora - gesto.ultTecla : 0;
+    float s = seekgesto_tecla(&gesto, sp, dir, agora, duracaoSeg, &modo);
+    (void)novo; (void)repeticao;
+    scrubUltimo = agora;
+    if (s != 0.0f) {
+      double de = posSeg;
+      scrubPassos++;
+      posSeg = anim_clamp(posSeg + s, 0.0f, duracaoSeg);
+      recuarAutomatico(de, posSeg);
+    }
+    gestoSegurava = gesto.segurando;
+    printf("[seek] key %s gap=%ums %s jump=%+.1f step=%.1f speed=%.0fs/s pos=%.1f%s\n",
+           dir > 0 ? "right" : "left", gap, gestoModo(modo), s, gesto.passo, seekgesto_vel(&gesto, sp),
+           posSeg, vooAtivo ? " (seek in flight)" : "");
+    fflush(stdout);
+    return; }
+#endif
   // Repeticao de tecla segurada entre dois passos: so mantem o avanco vivo (scrubUltimo), nao anda.
   float passo = salto_tecla(&scrubSalto, novo, repeticao, agora, duracaoSeg);
   scrubUltimo = agora;
@@ -3841,8 +3977,19 @@ static void terminarSalto(void) {
   retomandoSalto = scrubTocava;
   pausao_fechar();
   seekr_ocioso();   // solta a folha decodificada (~22 MB), fica o JPEG
+#ifdef NV_TPK
+  printf("[seek] commit target=%.1f from=%.1f presses=%d step=%.1f\n", posSeg, scrubInicio, gesto.contadas, gesto.passo);
+  fflush(stdout);
+  seekgesto_zerar(&gesto); gestoSegurava = 0;   // the memory lives until the commit
+#endif
   if (comVideo) {
     if (posSeg >= scrubInicio) creditosauto_buscar(&creditosAuto, posSeg);
+#ifdef NV_TPK
+    if (vooAtivo && seektune_params()->fila) {
+      vooFila = 1; vooFilaAlvo = posSeg;
+      printf("[seek] queued target=%.1f until the seek to %.1f lands\n", posSeg, vooAlvo); fflush(stdout);
+    } else
+#endif
     buscarUsuario(posSeg);
     if (scrubTocava) { video_pausar(0); tocando = 1; }
   }
@@ -3895,6 +4042,9 @@ static int ativarBotao(int i, int repetiu) {
     }
     case PLR_PLAY: alternarTocando(); break;
     case PLR_ASPECTO: player_aspecto_ciclar(); break;
+#ifdef NV_TPK
+    case PLR_SEEKAJ: if (!repetiu) seektune_abrir(); break;
+#endif
     case PLR_CC: pedFaixas = 2; break;
     case PLR_AUDIO: pedFaixas = 1; break;
     case PLR_FONTES: pedFontes = 1; break;
@@ -3932,8 +4082,19 @@ void player_evento(const SDL_Event *e) {
   if (reacao_evento(e, visivel)) return;
   { int r = posplay_evento(e);
     if (r) { if (r == 2) acordar(); return; } }
+#ifdef NV_TPK
+  if (aberto && e->type == SDL_KEYUP && gesto.ativo &&
+      (e->key.keysym.sym == SDLK_LEFT || e->key.keysym.sym == SDLK_RIGHT)) {
+    printf("[seek] keyup %s %ums after the last keydown\n", e->key.keysym.sym == SDLK_RIGHT ? "right" : "left",
+           (unsigned)(SDL_GetTicks() - gesto.ultTecla));
+    fflush(stdout);
+  }
+#endif
   if (!aberto || saindo || e->type != SDL_KEYDOWN) return;
   SDL_Keycode k = e->key.keysym.sym;
+#ifdef NV_TPK
+  if (seektune_aberto()) { seektune_tecla(k, e->key.repeat); acordar(); return; }
+#endif
   if (e->key.repeat && confirmacaoTransporteRetida &&
       (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE)) return;
 
@@ -4375,7 +4536,13 @@ void player_atualizar(float dt, Uint32 agora) {
     scrubbing = 1; posVisSolto = 1; scrubUltimo = agora;
   }
 #endif
+#ifdef NV_TPK
+  { int c = seektune_params()->commitMs;
+    unsigned fim = c > 0 ? (unsigned)c : salto_fim_ms(ajustes_seekr_ligado());
+    if (scrubbing && agora - scrubUltimo > fim) terminarSalto(); }
+#else
   if (scrubbing && agora - scrubUltimo > salto_fim_ms(ajustes_seekr_ligado())) terminarSalto();
+#endif
 
   medirAssistido();
     { static Uint32 vodPosEm; static double vodPos; static int vodBuf;
@@ -4393,10 +4560,18 @@ void player_atualizar(float dt, Uint32 agora) {
                  itens, bytes / 1048576.0, mem); }
         fflush(stdout);
       } }
+#ifdef NV_TPK
+  vooPasso(agora);
+#endif
   if (fontePrincipal() && video_ativo()) {
     double d = video_duracao();
     // AVANCANDO, a posicao e a que o dono escolheu. Ler video_pos() aqui era o
     // que fazia a barra pular de volta a cada repeticao de tecla.
+#ifdef NV_TPK
+    // Seek in flight: the target, never the stale position (vooAtivo).
+    if (!scrubbing && vooAtivo) posSeg = (float)vooAlvoVisivel();
+    else
+#endif
     if (!scrubbing) posSeg = (float)video_pos();
     // Move a janela de colheita da legenda ASS embutida (#92). Barato: so
     // acorda o fio quando a posicao andou meio segundo.
@@ -4534,8 +4709,17 @@ void player_atualizar(float dt, Uint32 agora) {
   if (scrubbing) {
     posVisSolto = 1;
     double de = posSeg;
+#ifdef NV_TPK
+    posSeg = anim_clamp(posSeg + seekgesto_quadro(&gesto, seektune_params(), agora, dt), 0.0f, duracaoSeg);
+    if (gestoSegurava && !gesto.segurando) {
+      printf("[seek] hold released: remembered step=%.1f pos=%.1f\n", gesto.passo, posSeg);
+      fflush(stdout);
+    }
+    gestoSegurava = gesto.segurando;
+#else
     posSeg = anim_clamp(posSeg + salto_quadro(&scrubSalto, scrubDir, agora, dt, duracaoSeg),
                         0.0f, duracaoSeg);
+#endif
     if (!scrubToque) recuarAutomatico(de, posSeg);
   }
   if (posVisSolto) {
@@ -4732,7 +4916,11 @@ void player_atualizar(float dt, Uint32 agora) {
   { Uint32 mov = ponteiro_last_motion();
     if (mov && (Sint32)(mov - ultimoInput) > 0) ultimoInput = mov; }
   if (visivel && tocando && !player_carregando() && !episodios_aberto() &&
-      !stream_folha_aberta() && !faixas_aberta() && agora - ultimoInput > PLR_ESCONDE_MS) visivel = 0;
+      !stream_folha_aberta() && !faixas_aberta() && agora - ultimoInput > PLR_ESCONDE_MS
+#ifdef NV_TPK
+      && !seektune_aberto() && !vooAtivo   // the bar stays while seeking / tuning
+#endif
+      ) visivel = 0;
   if (epE > 0 && !strstr(linhaEp, " · ")) player_definir_episodio(epT, epE);
   introTmdbTardio(agora);
 
@@ -4970,6 +5158,7 @@ static const char *iconeBotao(int i) {
     case PLR_FONTES:    return "pl_layers";
     case PLR_PROXIMO:   return "pl_chevron-right";
     case PLR_REINICIAR: return "pl_rotate-ccw";
+    case PLR_SEEKAJ:    return "pl_skip-forward";
     default:            return epE > 0 ? "pl_list-video" : "pl_film";
   }
 }
@@ -4982,6 +5171,7 @@ static const char *rotuloBotao(int i) {
     case PLR_FONTES:    return "Fontes";
     case PLR_PROXIMO:   return "Próximo episódio";
     case PLR_REINICIAR: return "Assistir do começo";
+    case PLR_SEEKAJ:    return "Seek tuning";
     default:            return ehCanal() ? "Guia" : epE > 0 ? "Epis\xc3\xb3""dios" : "Relacionados";
   }
 }
@@ -6315,6 +6505,10 @@ void player_desenhar(Uint32 agora) {
     cena.pos = posSeg; cena.dur = ehCanal() ? 0.0f : duracaoSeg;
     corFocoPlayer(&cena.fr, &cena.fg, &cena.fb);
     pausao_desenhar(agora, &cena); }
+#ifdef NV_TPK
+  // The seek tuning panel (seektune.h) on the OSD's virtual screen.
+  if (seektune_aberto()) { ESCALA_INI(); seektune_desenhar(agora, 1.0f); ESCALA_FIM(); }
+#endif
 
   // O PAINEL DE POS-REPRODUCAO DESENHA AQUI, e o lugar importa.
   //
@@ -6746,6 +6940,9 @@ static void desenharOsdCorpo(Uint32 agora, float a, float ac, const CatItem *c) 
         float xr = cx + cw - l2.w, y = cyTempo - (float)l1.h * 0.5f;
         txt_desenhar_alpha(l2, xr, y, a * cheio);
         txt_desenhar_alpha(l1, xr - 8.0f - l1.w, y, a * cheio);
+#ifdef NV_TPK
+        if (vooAtivo && !scrubbing) plrui_anel(xr - 8.0f - l1.w - 24.0f, cyTempo, 24.0f, 0, agora, a * cheio);
+#endif
       }
       if (cheio < 0.99f) {
         char r[32];
@@ -6754,6 +6951,10 @@ static void desenharOsdCorpo(Uint32 agora, float a, float ac, const CatItem *c) 
         else { char f[24]; plrui_tempo(f, sizeof f, duracaoSeg - posSeg); snprintf(r, sizeof r, "\xe2\x88\x92%s", f); }
         l2 = txt_linha(TXT_ILHA_NOME, r, 243, 242, 239, 128);
         txt_desenhar_alpha(l1, cx, yBarra + 32.0f, a * (1.0f - cheio));
+#ifdef NV_TPK
+        if (vooAtivo && !scrubbing)
+          plrui_anel(cx + l1.w + 26.0f, yBarra + 32.0f + l1.h * 0.5f, 24.0f, 0, agora, a * (1.0f - cheio));
+#endif
         txt_desenhar_alpha(l2, cx + cw - l2.w, yBarra + 32.0f, a * (1.0f - cheio));
       }
     }
