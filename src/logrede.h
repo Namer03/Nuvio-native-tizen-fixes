@@ -3,7 +3,7 @@
 // do computador, por que a escolha da fonte saiu como saiu, sem Tizen Studio.
 //
 // Regras:
-//   - desligado por padrao (.tpk: painel "Seek tuning" do player); ligado, sobe
+//   - desligado por padrao (Ajustes > Sobre e ajuda > Registro); ligado, sobe
 //     um servidor HTTP minimo num fio proprio, que nunca toca o fio de desenho;
 //   - so responde a enderecos da rede local (10/8, 172.16/12, 192.168/16) e ao
 //     proprio aparelho; so GET; so /log (a pagina) e /log.txt (o texto);

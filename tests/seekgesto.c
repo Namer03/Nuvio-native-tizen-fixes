@@ -28,7 +28,7 @@ static float segurar(SeekGesto *g, const SeekParams *p, int dir, unsigned t0, un
 
 int main(void) {
   const float ep = 24 * 60.0f;
-  SeekParams p = SEEKG_PADRAO;
+  SeekParams p = { 10, 5, 130, 200, 10, 50 };   // mechanism checks; the shipped values are below
   SeekGesto g;
   int m;
 
@@ -102,6 +102,27 @@ int main(void) {
   seekgesto_zerar(&g);
   CHECK(PERTO(seekgesto_tecla(&g, &p, 1, 1000, 60.0f, NULL), 10.0f), "60 s clip: tap 10 s");
   CHECK(PERTO(seekgesto_tecla(&g, &p, 1, 1600, 60.0f, NULL), 10.0f), "60 s clip: no growth past the tap step");
+
+  // THE SHIPPED VALUES (owner, 20/10): replay of the TV log. Smart Remote held
+  // (repeats ~100-117 ms) = a press each, +30%, never a glide.
+  { SeekParams d = SEEKG_PADRAO; const float ep2 = 10215.6f;
+    float esperado[] = { 5.0f, 6.5f, 8.45f, 10.985f, 14.2805f };
+    unsigned t = 1000;
+    seekgesto_zerar(&g);
+    for (int i = 0; i < 5; i++, t += (i == 1 ? 362 : 100)) {
+      float s2 = seekgesto_tecla(&g, &d, 1, t, ep2, &m);
+      CHECK(m == SEEKG_TOQUE && PERTO(s2, esperado[i]), "press %d = %.2f s (got %.2f, mode %d)", i, esperado[i], s2, m);
+      CHECK(PERTO(deslizar(&g, &d, t, t + 100), 0.0f), "no glide with the owner's values");
+    }
+    for (int i = 0; i < 60; i++, t += 100) seekgesto_tecla(&g, &d, 1, t, ep2, NULL);
+    CHECK(PERTO(g.passo, ep2 * 0.04f), "cap 4%% of the length = %.1f s, got %.1f", ep2 * 0.04f, g.passo);
+    { float antes = g.passo, s3 = seekgesto_tecla(&g, &d, -1, t + 300, ep2, &m);
+      CHECK(m == SEEKG_VIRADA && PERTO(s3, -antes * 0.65f), "flip x0.65"); }
+    // A frame clock taken BEFORE the key stamp must not end anything.
+    { SeekParams h = d; h.holdGapMs = 500;
+      seekgesto_zerar(&g);
+      seekgesto_tecla(&g, &h, 1, 5000, ep2, NULL); seekgesto_tecla(&g, &h, 1, 5100, ep2, NULL);
+      CHECK(g.segurando && seekgesto_quadro(&g, &h, 5090, 0.016f) > 0.0f, "frame clock 10 ms behind the key: still gliding"); } }
 
   if (falhas) { printf("seekgesto: %d falha(s)\n", falhas); return 1; }
   printf("seekgesto: ok\n");

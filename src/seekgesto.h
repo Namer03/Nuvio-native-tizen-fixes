@@ -15,7 +15,12 @@
 //  - DIRECTION FLIP: the remembered step is multiplied by flipPct (homing in).
 //  - The memory lives until the seek commits (seekgesto_zerar).
 //
-// All the numbers are live-tunable from the player (seektune.h).
+// THE NUMBERS (SEEKG_PADRAO) are the owner's, tuned on the TV with a live
+// panel (20/10/2026): tap 5 s, +30% per press, cap 4% of the length, flip
+// x0.65. With hold detection at 80 ms and the Smart Remote repeating every
+// ~100-117 ms, a held key never enters the glide: every repeat is a press that
+// jumps the step and grows it 30% — stremio-web's discrete feel, which is what
+// felt right. The glide stays for remotes that repeat faster than 80 ms.
 #ifndef NV_SEEKGESTO_H
 #define NV_SEEKGESTO_H
 
@@ -26,11 +31,9 @@ typedef struct {
   int holdGapMs;   // keydown this close to the previous one = held key
   int capPct;      // step never above this percent of the duration
   int flipPct;     // direction change: step *= flipPct/100
-  int commitMs;    // 0 = automatic (420 ms, 1000 ms with Seekr thumbnails)
-  int fila;        // press while a seek is in flight: 0 continue from target, 1 queue
 } SeekParams;
 
-#define SEEKG_PADRAO { 10, 5, 130, 200, 10, 50, 0, 0 }
+#define SEEKG_PADRAO { 5, 30, 40, 80, 4, 65 }
 #define SEEKG_MIN_S  1.0f
 
 typedef struct {
@@ -92,7 +95,7 @@ static inline float seekgesto_tecla(SeekGesto *g, const SeekParams *p, int dir, 
   }
   gap = agora - g->ultTecla;
   g->ultTecla = agora;
-  if (g->segurando && gap > seekgesto_vivo_ms(p)) g->segurando = 0;   // quadro nao rodou
+  if (g->segurando && gap > seekgesto_vivo_ms(p)) g->segurando = 0;   // frame didn't run
   if (g->segurando) {
     if (agora - g->ultContada < (unsigned)p->throttleMs) m = SEEKG_REP_IGNORADA;
     else {
@@ -105,7 +108,7 @@ static inline float seekgesto_tecla(SeekGesto *g, const SeekParams *p, int dir, 
     if (modo) *modo = m;
     return 0.0f;
   }
-  if (gap <= (unsigned)p->holdGapMs) {
+  if (p->holdGapMs > 0 && gap <= (unsigned)p->holdGapMs) {
     g->segurando = 1; g->ultContada = agora; g->contadas++;
     g->passo = seekgesto_crescer(p, g->passo, dur);
     if (modo) *modo = SEEKG_SEGURA_INICIO;
@@ -121,7 +124,8 @@ static inline float seekgesto_tecla(SeekGesto *g, const SeekParams *p, int dir, 
 // Glide for this frame (seconds, signed). Ends the hold after SEEKG vivo time.
 static inline float seekgesto_quadro(SeekGesto *g, const SeekParams *p, unsigned agora, float dt) {
   if (!g->ativo || !g->segurando || dt <= 0.0f) return 0.0f;
-  if (agora - g->ultTecla > seekgesto_vivo_ms(p)) { g->segurando = 0; return 0.0f; }
+  // Signed: a key stamped after the frame clock must not read as ~49 days ago.
+  if ((int)(agora - g->ultTecla) > (int)seekgesto_vivo_ms(p)) { g->segurando = 0; return 0.0f; }
   if (dt > 0.05f) dt = 0.05f;
   return g->dir * g->passo * 1000.0f / (float)(p->throttleMs > 0 ? p->throttleMs : 130) * dt;
 }

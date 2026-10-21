@@ -341,3 +341,4 @@
   0, /* experimental HDR menus: Off */
   0, /* clear cache action */
   0, /* tunneled playback: Off */
+  1, /* log page on the local network (logrede.h): Desligado */

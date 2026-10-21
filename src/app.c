@@ -872,7 +872,6 @@ static int armarPoliticaFonteAberta(int indice, int servico, const char *url) {
 #include "servidores.h"
 #include "partes.h"
 #include "logrede.h"
-#include "seektune.h"
 #include <stdio.h>
 
 static Tela tela = TELA_HOME;
@@ -4787,11 +4786,8 @@ void app_atualizar(float dt, Uint32 agora) {
   // "Preferir o mesmo grupo de fonte" governa as duas memorias: a escolha a
   // mao (o titulo inteiro, 180 dias) e a do automatico.
   fontepref_configurar(ajustes_fonte_grupo(), 0, ajustes_fonte_grupo(), ajustes_fonte_grupo_sessoes());
-#ifdef NV_TPK
-  // Network log page (logrede.h), switched from the player's "Seek tuning"
-  // panel (seektune.h) while the seek gesture is being tuned. TEMPORARY switch.
-  logrede_configurar(seektune_log_rede(), registro_arquivo());
-#endif
+  // Pagina de registro na rede local (logrede.h): Ajustes > Sobre e ajuda > Registro.
+  logrede_configurar(ajustes_log_rede(), registro_arquivo());
   fontevolta_configurar(ajustes_link_reusar(), ajustes_link_prazo_s());
   // Pausa entre quadros medida uma vez, antes de qualquer tela perguntar se o
   // OK segurado venceu (segurar.h, #387).

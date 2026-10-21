@@ -141,8 +141,8 @@ static const char *const F_TOCAR[] = {
   "[dts]", "[audio]", "[mkv]", "[tv] ", "reconex", "reconect", "failover", "escolha manual",
   "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[partes]", "[mkvfix]", "[logrede]", NULL
 };
-// 4 Seek — the .tpk seek rework (seekgesto.h / seektune.h, owner 20/10). TEMPORARY:
-// goes away with the tuning panel.
+// 4 Seek — the .tpk seek rework (seekgesto.h, owner 20/10): the [seek] lines of
+// player.c. TEMPORARY: goes away once the snap-back fix is confirmed on the TV.
 static const char *const F_SEEK[] = {
   "[seek", "[video] tpk evento 11", "[video] tpk evento 12", "[video] tpk evento 9", "[logrede]", NULL
 };
