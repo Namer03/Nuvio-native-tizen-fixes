@@ -12,7 +12,8 @@ TMPDIR="${TMPDIR%/}"
 #                   converter needs: TrueHD/MLP
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core; and for the
 #                   seek-bar thumbnails made on the TV (src/miniatura*.c): h264/hevc decoders
-#                   (keyframes only, decoded one at a time) and the mjpeg encoder (320x180 tiles).
+#                   (keyframes only, decoded one at a time), the mjpeg encoder (320x180 tiles) and
+#                   the mpegts demuxer (.m2ts / .ts remuxes).
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -22,6 +23,7 @@ TARGET=${NUVIO_DTS_TARGET:-webos}
 DECODERS=dca,dvdsub,pgssub,ass,ssa,subrip,movtext,webvtt
 ENCODERS=aac,ac3
 MUXERS=
+DEMUXERS=matroska,mov
 PARSERS=dca,h264,hevc,aac
 BSFS=h264_mp4toannexb,hevc_mp4toannexb,dca_core
 ZLIB=
@@ -32,6 +34,8 @@ if [ "$TARGET" = tpk ]; then
   DECODERS=$DECODERS,truehd,mlp,h264,hevc
   ENCODERS=$ENCODERS,mjpeg
   MUXERS=mpegts,matroska,mp4
+  # mpegts demuxer: thumbnails for Blu-ray remuxes kept as .m2ts / .ts (miniatura_motor.c).
+  DEMUXERS=$DEMUXERS,mpegts
   PARSERS=$PARSERS,mlp,ac3
   BSFS=$BSFS,truehd_core
   # zlib: Matroska tracks stored zlib-compressed (ContentCompression) and MP4
@@ -72,7 +76,7 @@ fi
   --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
   --enable-avcodec --enable-avformat --enable-avutil --enable-swresample \
   --enable-decoder="$DECODERS" --enable-encoder="$ENCODERS" \
-  --enable-demuxer=matroska,mov --enable-parser="$PARSERS" \
+  --enable-demuxer="$DEMUXERS" --enable-parser="$PARSERS" \
   --enable-bsf="$BSFS" \
   --extra-cflags="${CFLAGS:--O2}"
 make -j"${NUVIO_DTS_JOBS:-2}"

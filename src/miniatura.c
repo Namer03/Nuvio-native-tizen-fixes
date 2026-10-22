@@ -6,9 +6,14 @@
 // While a title plays, a low-priority thread makes one 320x180 JPEG per 10 s
 // of the film from the nearest keyframe (miniatura_motor.c), in this order:
 //   1. where the person scrubs;
-//   2. +-5% of the runtime around the playhead, ahead first;
-//   3. one every 60 s over the whole film;
-//   4. the rest, every 10 s.
+//   2. +-1 min around the playhead;
+//   3. one every 5 min over the whole film (a 4K tile takes ~0.75 s on the
+//      S95C, so this coarse pass is what makes scrubbing far away show
+//      something within the first minute);
+//   4. the rest of +-5% of the runtime around the playhead, ahead first;
+//   5. one every 60 s; 6. the rest, every 10 s.
+// While a slot is not made yet, the seek bar shows the nearest made tile
+// (up to 5 min away) with ITS own time, dimmed as "still loading".
 // A keyframe that serves several 10 s slots is decoded once.
 //
 // MEMORY (owner: never run the TV out of memory, at all costs). Before every
@@ -45,7 +50,10 @@
 #define GRADE_MS 10000L
 #define TOL_MS 5000L
 #define PISO_KB (250L * 1024)      // MemAvailable kept free for the player and the app
-#define FOLGA_2T_KB (200L * 1024)  // above floor + need + this: 2 decoding threads
+#define FOLGA_2T_KB (40L * 1024)   // above floor + need(2 threads) + this: 2 decoding threads
+#define PERTO_SLOTS 6              // +-1 min around the playhead first
+#define GROSSO_SLOTS 30            // then one every 5 min
+#define VIZINHO_SLOTS 30           // seek bar: nearest made tile up to 5 min away
 #define FATIA 0.05                 // +-5% of the runtime around the playhead
 #define SLOTS 4
 
@@ -164,18 +172,29 @@ static int proximo(const Job *j, long phMs, int *classe) {
       if (d && livre(j, k0 - d)) { *classe = 1; return k0 - d; }
     }
   }
-  // 2. +-5% of the runtime around the playhead, ahead first at equal distance
-  w = (int)(j->dur * FATIA / GRADE_MS) + 1;
-  for (int d = 0; d <= w; d++) {
+  // 2. +-1 min around the playhead, ahead first at equal distance
+  for (int d = 0; d <= PERTO_SLOTS; d++) {
     if (livre(j, ph + d)) { *classe = 2; return ph + d; }
     if (d && livre(j, ph - d)) { *classe = 2; return ph - d; }
   }
-  // 3. one every 60 s, then 4. the rest, nearest to the playhead first
+  // 3. one every 5 min over the whole film, nearest to the playhead first
+  for (int d = 0; d < j->n; d++) {
+    int a = ph + d, b = ph - d;
+    if (a % GROSSO_SLOTS == 0 && livre(j, a)) { *classe = 3; return a; }
+    if (d && b >= 0 && b % GROSSO_SLOTS == 0 && livre(j, b)) { *classe = 3; return b; }
+  }
+  // 4. the rest of +-5% of the runtime around the playhead
+  w = (int)(j->dur * FATIA / GRADE_MS) + 1;
+  for (int d = 0; d <= w; d++) {
+    if (livre(j, ph + d)) { *classe = 4; return ph + d; }
+    if (d && livre(j, ph - d)) { *classe = 4; return ph - d; }
+  }
+  // 5. one every 60 s, then 6. the rest, nearest to the playhead first
   for (int passo = 6; passo >= 1; passo -= 5) {
     for (int d = 0; d < j->n; d++) {
       int a = ph + d, b = ph - d;
-      if (a % passo == 0 && livre(j, a)) { *classe = passo == 6 ? 3 : 4; return a; }
-      if (d && b >= 0 && b % passo == 0 && livre(j, b)) { *classe = passo == 6 ? 3 : 4; return b; }
+      if (a % passo == 0 && livre(j, a)) { *classe = passo == 6 ? 5 : 6; return a; }
+      if (d && b >= 0 && b % passo == 0 && livre(j, b)) { *classe = passo == 6 ? 5 : 6; return b; }
     }
   }
   return -1;
@@ -256,7 +275,7 @@ static void *trabalhar(void *u) {
 
   // Let the player settle first.
   for (int k = 0; k < 30 && !j->parar && !video_pronto(); k++) dormirJ(j, 500);
-  dormirJ(j, 1500);
+  dormirJ(j, 500);
   if (j->parar) goto fim;
 
   // Fingerprint: two 64 KiB reads.
@@ -584,7 +603,7 @@ static int vizinho(const Job *j, int k, int raio) {
 }
 
 int seekr_quadros(double posSeg, int n, GLuint *texs, double *cueSeg) {
-  int quer[3], nq = 0, i, achou = 0, atualK = -1, antes = -1, depois = -1;
+  int quer[3], nq = 0, i, achou = 0, atualK = -1, antes = -1, depois = -1, longe = 0;
   unsigned g = 0;
   if (n < 1) return 0;
   if (n > 3) n = 3;
@@ -597,9 +616,12 @@ int seekr_quadros(double posSeg, int n, GLuint *texs, double *cueSeg) {
   g = job->g;
   int k = (int)((pos + GRADE_MS / 2) / GRADE_MS);
   if (k >= job->n) k = job->n - 1;
-  atualK = vizinho(job, k, 1);                       // within +-10 s
+  atualK = vizinho(job, k, VIZINHO_SLOTS);          // nearest made tile, up to 5 min away
+  longe = atualK >= 0 && abs(atualK - k) > 1;
   if (atualK >= 0) {
-    antes = vizinho(job, atualK - 1, 0); depois = vizinho(job, atualK + 1, 0);
+    // Strip neighbours: the nearest made tile on each side.
+    for (int d = 1; d <= VIZINHO_SLOTS && antes < 0; d++) if (pronto(job, atualK - d)) antes = atualK - d;
+    for (int d = 1; d <= VIZINHO_SLOTS && depois < 0; d++) if (pronto(job, atualK + d)) depois = atualK + d;
     quer[nq++] = atualK;
     if (n > 1 && antes >= 0) quer[nq++] = antes;
     if (n > 1 && depois >= 0) quer[nq++] = depois;
@@ -615,7 +637,7 @@ int seekr_quadros(double posSeg, int n, GLuint *texs, double *cueSeg) {
   pthread_mutex_unlock(&mu);
   // At most one JPEG decode per call (320x180: a few ms): the current one first.
   for (i = 0; i < nq; i++) if (slotTex(quer[i], g) < 0) { subir(quer[i], g, quer, nq); break; }
-  quadroVelho = 0;
+  quadroVelho = longe;                               // not this spot's own tile yet: shown dimmed
   if (atualK >= 0) {
     int ordem[3] = { n == 1 ? atualK : antes, atualK, depois };
     int no = n == 1 ? 1 : 3;

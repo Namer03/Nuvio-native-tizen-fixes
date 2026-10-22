@@ -35,8 +35,8 @@ typedef struct {
   int hdr;              // 1 = PQ or HLG (tonemapped to SDR)
   int bits;             // 8 / 10
   char codec[16];       // "h264" / "hevc"
-  char formato[16];     // "matroska" / "mp4"
-  int chaves;           // keyframes in the container index (0 = none known)
+  char formato[16];     // "matroska" / "mp4" / "mpegts"
+  int chaves;           // keyframes in the container index (0 = none known; mpegts seeks by byte)
 } MiniInfo;
 
 typedef struct {

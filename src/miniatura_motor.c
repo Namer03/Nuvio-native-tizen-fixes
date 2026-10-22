@@ -17,6 +17,9 @@
 #define LER_ADIANTE 4                // up to 1 MiB per range request
 #define MAX_PACOTE (8 * 1024 * 1024) // a keyframe bigger than this is skipped
 #define MAX_PACOTES 400              // packets read per frame before giving up
+#define TS_CAUDA (4 << 20)           // MPEG-TS: bytes read at the end for the duration
+#define TS_ANTES_MS 1000L            // MPEG-TS: aim this far before the target (read forward to a keyframe)
+#define TS_MAX_LER (24 << 20)        // MPEG-TS: bytes read looking for one keyframe before giving up
 
 typedef struct { int64_t bloco; int n; unsigned uso; unsigned char *dados; } Bloco;
 
@@ -38,6 +41,9 @@ struct MiniMotor {
   int64_t jpts;
   int buffersNoPacote;              // get_buffer2 calls since the packet was sent
   AVFrame *cinza;                   // the ONE buffer every placeholder reference shares
+  int semIndice;                    // MPEG-TS / M2TS: no keyframe index, seek by byte position
+  unsigned char cabeca[16];         // first bytes of the file (logged when it can't be opened)
+  int ncabeca;
 };
 
 static unsigned agoraMs(void) {
@@ -110,6 +116,19 @@ static int64_t seekIo(void *u, int64_t off, int whence) {
   return m->pos;
 }
 
+// First bytes as hex, for the log when the container is not recognised.
+static void anotarCabeca(MiniMotor *m, char *erro, size_t nerro, const char *motivo) {
+  char hex[16 * 3 + 1] = "";
+  unsigned char b[16];
+  int n = 0;
+  if (m->ler && m->tamanho > 0) {
+    long got = m->ler(m->usuario, 0, m->tamanho < 16 ? m->tamanho - 1 : 15, b);
+    n = got > 0 ? (int)got : 0;
+  }
+  for (int i = 0; i < n; i++) snprintf(hex + 3 * i, 4, "%02x%s", b[i], i + 1 < n ? " " : "");
+  if (erro && nerro) snprintf(erro, nerro, "%s (first bytes: %s)", motivo, n ? hex : "unreadable");
+}
+
 // ------------------------------------------------------------------ open
 static void erroDe(char *erro, size_t n, const char *s) { if (erro && n) snprintf(erro, n, "%s", s); }
 
@@ -119,6 +138,66 @@ static long msDe(const MiniMotor *m, int64_t ts) {
 }
 static int64_t tsDe(const MiniMotor *m, long ms) {
   return av_rescale_q(ms, (AVRational){1, 1000}, m->st->time_base) + m->inicio;
+}
+
+// MPEG-TS: first and last video timestamps give the start and the duration
+// (no find_stream_info, which would decode). Reads the head and the last few MB.
+static int64_t tsPacote(const AVPacket *p) { return p->pts != AV_NOPTS_VALUE ? p->pts : p->dts; }
+static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
+  int64_t primeiro = AV_NOPTS_VALUE, ultimo = AV_NOPTS_VALUE;
+  AVPacket *p = av_packet_alloc();
+  if (!p) { erroDe(erro, nerro, "memory"); return -1; }
+  for (int i = 0; i < 3000 && primeiro == AV_NOPTS_VALUE; i++) {
+    if (av_read_frame(m->fc, p) < 0) break;
+    if (p->stream_index == m->vs) primeiro = tsPacote(p);
+    av_packet_unref(p);
+  }
+  int64_t de = m->tamanho - TS_CAUDA;
+  if (primeiro != AV_NOPTS_VALUE && av_seek_frame(m->fc, -1, de > 0 ? de : 0, AVSEEK_FLAG_BYTE) >= 0) {
+    for (int i = 0; i < 6000; i++) {
+      if (av_read_frame(m->fc, p) < 0) break;
+      int64_t t = p->stream_index == m->vs ? tsPacote(p) : AV_NOPTS_VALUE;
+      if (t != AV_NOPTS_VALUE && (ultimo == AV_NOPTS_VALUE || t > ultimo)) ultimo = t;
+      av_packet_unref(p);
+    }
+  }
+  av_packet_free(&p);
+  if (primeiro == AV_NOPTS_VALUE || ultimo == AV_NOPTS_VALUE || ultimo <= primeiro) {
+    erroDe(erro, nerro, "MPEG-TS: no video timestamps"); return -1;
+  }
+  m->inicio = primeiro;
+  m->info.duracaoMs = msDe(m, ultimo);
+  return m->info.duracaoMs > 0 ? 0 : -1;
+}
+
+// MPEG-TS: jump to a byte position proportional to the time, read forward to
+// the next keyframe packet, correct the position from its timestamp (up to 3
+// tries; a binary search over an 80 GB file would read ~30 MB per frame).
+// Leaves the keyframe packet in m->pkt.
+static int chaveTs(MiniMotor *m, long alvoMs, long tolMs, volatile int *cancelar, int *pacotes, char *erro, size_t nerro) {
+  double bpm = (double)m->tamanho / (double)m->info.duracaoMs;   // bytes per ms, average
+  long mira = alvoMs - TS_ANTES_MS;                               // land a little before: we read forward
+  for (int tentativa = 0; tentativa < 3; tentativa++) {
+    int64_t pos = (int64_t)((double)(mira < 0 ? 0 : mira) * bpm);
+    if (pos > m->tamanho - TS_CAUDA / 4) pos = m->tamanho - TS_CAUDA / 4;
+    if (pos < 0) pos = 0;
+    if (av_seek_frame(m->fc, -1, pos, AVSEEK_FLAG_BYTE) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
+    long long lidos0 = m->lidos;
+    for (;;) {
+      if (cancelar && *cancelar) { erroDe(erro, nerro, "cancelled"); return -1; }
+      if (*pacotes >= MAX_PACOTES || m->lidos - lidos0 > TS_MAX_LER) { erroDe(erro, nerro, "no keyframe found near the target"); return -1; }
+      int rr = av_read_frame(m->fc, m->pkt);
+      if (rr < 0) { erroDe(erro, nerro, rr == AVERROR(EIO) ? "source read failed" : "end of file before the keyframe"); return -1; }
+      (*pacotes)++;
+      if (m->pkt->stream_index == m->vs && (m->pkt->flags & AV_PKT_FLAG_KEY) && tsPacote(m->pkt) != AV_NOPTS_VALUE) break;
+      av_packet_unref(m->pkt);
+    }
+    long achado = msDe(m, tsPacote(m->pkt));
+    if (labs(achado - alvoMs) <= tolMs || tentativa == 2) return 0;
+    av_packet_unref(m->pkt);
+    mira += alvoMs - achado;      // the bitrate is not constant: shift by the miss and try again
+  }
+  return -1;
 }
 
 MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *erro, size_t nerro) {
@@ -141,14 +220,18 @@ MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *e
   // The demuxer never opens anything itself (external references in a hostile file).
   av_dict_set(&op, "protocol_whitelist", "none", 0);
   if (avformat_open_input(&m->fc, NULL, NULL, &op) < 0) {
-    av_dict_free(&op); m->fc = NULL; erroDe(erro, nerro, "not a video container"); mini_motor_fechar(m); return NULL;
+    av_dict_free(&op); m->fc = NULL; anotarCabeca(m, erro, nerro, "not a video container"); mini_motor_fechar(m); return NULL;
   }
   av_dict_free(&op);
   const char *nome = m->fc->iformat ? m->fc->iformat->name : "";
-  if (!strstr(nome, "matroska") && !strstr(nome, "mp4") && !strstr(nome, "mov")) {
-    erroDe(erro, nerro, "container not supported"); mini_motor_fechar(m); return NULL;
+  m->semIndice = strcmp(nome, "mpegts") == 0;     // .ts and Blu-ray .m2ts (192-byte packets) alike
+  if (!m->semIndice && !strstr(nome, "matroska") && !strstr(nome, "mp4") && !strstr(nome, "mov")) {
+    char motivo[64];
+    snprintf(motivo, sizeof motivo, "container not supported: %s", nome);
+    anotarCabeca(m, erro, nerro, motivo); mini_motor_fechar(m); return NULL;
   }
-  snprintf(m->info.formato, sizeof m->info.formato, "%s", strstr(nome, "matroska") ? "matroska" : "mp4");
+  snprintf(m->info.formato, sizeof m->info.formato, "%s",
+           m->semIndice ? "mpegts" : strstr(nome, "matroska") ? "matroska" : "mp4");
   // No avformat_find_stream_info: it decodes frames to probe (with frame threads
   // on a 4K stream that is ~150 MB). The MKV/MP4 header already has what we use.
   m->vs = av_find_best_stream(m->fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -158,7 +241,12 @@ MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *e
   if (par->codec_id != AV_CODEC_ID_H264 && par->codec_id != AV_CODEC_ID_HEVC) {
     erroDe(erro, nerro, "codec not supported (only H.264 / HEVC)"); mini_motor_fechar(m); return NULL;
   }
-  if (par->width <= 0 || par->height <= 0 || par->width > 4096 || par->height > 2304) {
+  // MPEG-TS carries no picture size in its header (only the stream type): it is
+  // known after the first decode. Until then plan memory for the worst case.
+  if (m->semIndice && (par->width <= 0 || par->height <= 0)) {
+    m->info.largura = par->codec_id == AV_CODEC_ID_HEVC ? 3840 : 1920;
+    m->info.altura = par->codec_id == AV_CODEC_ID_HEVC ? 2160 : 1080;
+  } else if (par->width <= 0 || par->height <= 0 || par->width > 4096 || par->height > 2304) {
     erroDe(erro, nerro, "picture size not supported (above 4K)"); mini_motor_fechar(m); return NULL;
   }
   m->codec = avcodec_find_decoder(par->codec_id);
@@ -166,17 +254,23 @@ MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *e
   for (unsigned i = 0; i < m->fc->nb_streams; i++)
     if ((int)i != m->vs) m->fc->streams[i]->discard = AVDISCARD_ALL;   // never parse audio/subs packets we skip
   m->inicio = m->st->start_time != AV_NOPTS_VALUE ? m->st->start_time : 0;
+  if (m->semIndice) {
+    if (pontasTs(m, erro, nerro) < 0) { mini_motor_fechar(m); return NULL; }
+    goto pronto;
+  }
   int64_t dur = m->fc->duration > 0 ? av_rescale_q(m->fc->duration, AV_TIME_BASE_Q, (AVRational){1, 1000}) :
                 m->st->duration > 0 ? av_rescale_q(m->st->duration, m->st->time_base, (AVRational){1, 1000}) : 0;
   if (dur <= 0) { erroDe(erro, nerro, "unknown duration"); mini_motor_fechar(m); return NULL; }
   m->info.duracaoMs = (long)dur;
   m->info.largura = par->width; m->info.altura = par->height;
+pronto:
   m->info.hdr = par->color_trc == AVCOL_TRC_SMPTE2084 || par->color_trc == AVCOL_TRC_ARIB_STD_B67;
   const AVPixFmtDescriptor *d = av_pix_fmt_desc_get((enum AVPixelFormat)par->format);
   m->info.bits = d && d->comp[0].depth > 8 ? d->comp[0].depth : 8;
   // Without probing, an HEVC stream's pixel format can be unknown: plan for 10-bit.
   if (!d && par->codec_id == AV_CODEC_ID_HEVC) m->info.bits = 10;
   snprintf(m->info.codec, sizeof m->info.codec, "%s", par->codec_id == AV_CODEC_ID_HEVC ? "hevc" : "h264");
+  if (m->semIndice) goto alocar;
   // Matroska loads its Cues on the first seek: one seek to the middle fills the index.
   if (avformat_index_get_entries_count(m->st) <= 1)
     av_seek_frame(m->fc, m->vs, tsDe(m, m->info.duracaoMs / 2), AVSEEK_FLAG_BACKWARD);
@@ -187,6 +281,7 @@ MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *e
   }
   m->info.chaves = k;
   if (k < 2) { erroDe(erro, nerro, "no keyframe index (file can't be skipped through)"); mini_motor_fechar(m); return NULL; }
+alocar:
   m->quadro = av_frame_alloc(); m->saida = av_frame_alloc();
   m->pkt = av_packet_alloc(); m->jpkt = av_packet_alloc();
   if (!m->quadro || !m->saida || !m->pkt || !m->jpkt) { erroDe(erro, nerro, "memory"); mini_motor_fechar(m); return NULL; }
@@ -469,17 +564,24 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads, volati
   if (threads < 1) threads = 1;
   if (threads > 3) threads = 3;
   lidos0 = m->lidos;
-  if (entradaChave(m, alvoMs, tolMs, &ts) < 0) { erroDe(erro, nerro, "no keyframe for this time"); return -1; }
   if (abrirDecoder(m, threads) < 0) { erroDe(erro, nerro, "decoder failed to open"); return -1; }
-  if (av_seek_frame(m->fc, m->vs, ts, AVSEEK_FLAG_BACKWARD) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
+  if (m->semIndice) {
+    if (chaveTs(m, alvoMs, tolMs, cancelar, &pacotes, erro, nerro) < 0) goto fim;
+    ts = tsPacote(m->pkt);
+  } else {
+    if (entradaChave(m, alvoMs, tolMs, &ts) < 0) { erroDe(erro, nerro, "no keyframe for this time"); return -1; }
+    if (av_seek_frame(m->fc, m->vs, ts, AVSEEK_FLAG_BACKWARD) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
+  }
   avcodec_flush_buffers(m->cc);
   while (pacotes < MAX_PACOTES) {
     if (cancelar && *cancelar) { erroDe(erro, nerro, "cancelled"); goto fim; }
-    int rr = av_read_frame(m->fc, m->pkt);
-    if (rr < 0) { erroDe(erro, nerro, rr == AVERROR(EIO) ? "source read failed" : "end of file before the keyframe"); goto fim; }
-    pacotes++;
-    if (m->pkt->stream_index != m->vs) { av_packet_unref(m->pkt); continue; }
-    if (!(m->pkt->flags & AV_PKT_FLAG_KEY)) { av_packet_unref(m->pkt); continue; }
+    if (!m->semIndice) {
+      int rr = av_read_frame(m->fc, m->pkt);
+      if (rr < 0) { erroDe(erro, nerro, rr == AVERROR(EIO) ? "source read failed" : "end of file before the keyframe"); goto fim; }
+      pacotes++;
+      if (m->pkt->stream_index != m->vs) { av_packet_unref(m->pkt); continue; }
+      if (!(m->pkt->flags & AV_PKT_FLAG_KEY)) { av_packet_unref(m->pkt); continue; }
+    }
     if (m->pkt->size > MAX_PACOTE) { av_packet_unref(m->pkt); erroDe(erro, nerro, "keyframe too big"); goto fim; }
     q->bytesPacote = m->pkt->size;
     unsigned d0 = agoraMs();
@@ -491,6 +593,8 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads, volati
     int rf = avcodec_receive_frame(m->cc, m->quadro);
     td = agoraMs() - d0;
     if (rf < 0) { erroDe(erro, nerro, "keyframe did not decode"); goto fim; }
+    if (m->quadro->width > 4096 || m->quadro->height > 2304) { erroDe(erro, nerro, "picture size not supported (above 4K)"); goto fim; }
+    if (m->semIndice) { m->info.largura = m->quadro->width; m->info.altura = m->quadro->height; }  // TS: now known
     break;
   }
   if (pacotes >= MAX_PACOTES) { erroDe(erro, nerro, "no keyframe found near the target"); goto fim; }
