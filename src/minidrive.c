@@ -159,7 +159,15 @@ static void *fluxo(void *u) {
   snprintf(corpo, sizeof corpo, "client_id=%s&scope=%s", id, esc);
   char *r = postarForm("https://oauth2.googleapis.com/device/code", corpo, &st);
   if (!r || st != 200) {
-    printf("[miniatura] google drive: code request failed http=%d\n", st); fflush(stdout);
+    // Google's short error code only (invalid_client, unauthorized_client...): never the body or keys.
+    char ge[64] = "";
+    if (r) js_texto(r, NULL, "error", ge, sizeof ge);
+    const char *sufixo = ".apps.googleusercontent.com";
+    size_t ni = strlen(NV_GDRIVE_CLIENT_ID), ns = strlen(sufixo);
+    int idOk = ni > ns + 10 && !strcmp(NV_GDRIVE_CLIENT_ID + ni - ns, sufixo);
+    printf("[miniatura] google drive: code request failed http=%d error=%s%s\n", st, ge[0] ? ge : "-",
+           idOk ? "" : " (the built-in client id does not look like a Google OAuth client id)");
+    fflush(stdout);
     definir(GDR_ERRO, "Não foi possível agora. Tente novamente.");
     free(r); goto fim;
   }
@@ -211,7 +219,7 @@ static void *fluxo(void *u) {
     if (!strcmp(e, "access_denied")) { definir(GDR_ERRO, "Não foi possível agora. Tente novamente."); goto fim; }
     if (!strcmp(e, "expired_token")) break;
     if (st == 0 || st >= 500) continue;     // network blip: keep polling until the code expires
-    printf("[miniatura] google drive: sign-in failed http=%d\n", st); fflush(stdout);
+    printf("[miniatura] google drive: sign-in failed http=%d error=%s\n", st, e[0] ? e : "-"); fflush(stdout);
     definir(GDR_ERRO, "Não foi possível agora. Tente novamente.");
     goto fim;
   }
