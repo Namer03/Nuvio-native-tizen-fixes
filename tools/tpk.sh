@@ -171,7 +171,9 @@ ctr_run --rm --platform "$TPK_PLATFORM" --env-file "$ENVF" $P2P_VOL $DTS_VOL \
     # de resposta um espaco cru separa argumentos (uma chave colada com espaco
     # virava "arquivo inexistente" e o make saia com 2). (Sem aspa simples aqui:
     # este trecho vive dentro do sh -c '...'.)
-    v=$(printf "%s" "$v" | sed "s/[\\\\\" ]/\\\\&/g")
+    # Nenhuma chave tem espaco nas pontas: um colado no segredo LOCAL_PROPERTIES
+    # e tirado aqui (e o que sobrar no meio vai escapado).
+    v=$(printf "%s" "$v" | sed "s/^[[:space:]]*//;s/[[:space:]]*\$//" | sed "s/[\\\\\" ]/\\\\&/g")
     printf "%s\n" "-D$k=\\\"$v\\\""
   done > /tmp/flags
   # p2pmotor_motor.c usa dladdr (Dl_info), que o glibc so declara com _GNU_SOURCE, e o
