@@ -167,8 +167,11 @@ ctr_run --rm --platform "$TPK_PLATFORM" --env-file "$ENVF" $P2P_VOL $DTS_VOL \
            NV_REC_URL NV_DISCORD_CLIENT_ID NV_GDRIVE_CLIENT_ID NV_GDRIVE_CLIENT_SECRET NV_VERSAO; do
     eval "v=\${$k:-}"
     # No arquivo de resposta o gcc tira aspas e barras como o shell: a aspa
-    # da string C tem de ir escapada (-DX=\"valor\").
-    v=$(printf "%s" "$v" | sed "s/[\\\\\"]/\\\\&/g")
+    # da string C tem de ir escapada (-DX=\"valor\"). Espaco tambem: no arquivo
+    # de resposta um espaco cru separa argumentos (uma chave colada com espaco
+    # virava "arquivo inexistente" e o make saia com 2). (Sem aspa simples aqui:
+    # este trecho vive dentro do sh -c '...'.)
+    v=$(printf "%s" "$v" | sed "s/[\\\\\" ]/\\\\&/g")
     printf "%s\n" "-D$k=\\\"$v\\\""
   done > /tmp/flags
   # p2pmotor_motor.c usa dladdr (Dl_info), que o glibc so declara com _GNU_SOURCE, e o

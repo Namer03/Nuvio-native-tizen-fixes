@@ -58,8 +58,10 @@ DSC=$(valor DISCORD_CLIENT_ID)
 # Google Drive for the seek-bar thumbnails made on the Samsung .tpk (src/minidrive.h):
 # an OAuth client of type "TVs and Limited Input devices", scope drive.appdata.
 # Empty = the Settings row says "unavailable in this version". Only the .tpk reads it.
-GDI=$(valor GOOGLE_DRIVE_CLIENT_ID)
-GDS=$(valor GOOGLE_DRIVE_CLIENT_SECRET)
+# Spaces around the value (a paste into the GitHub secret) are dropped: a
+# client id never contains one, and a stray space split the compiler flag.
+GDI=$(valor GOOGLE_DRIVE_CLIENT_ID | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+GDS=$(valor GOOGLE_DRIVE_CLIENT_SECRET | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 # A versao do app sai do appinfo.json — FONTE UNICA. Ela ja vivia em tres
 # lugares (appinfo.json, tizen-config.xml e um #define em ajustes.c) e o
 # terceiro ficou parado em 1.0.44 por nove releases: a tela de Ajustes mentia
