@@ -18,8 +18,9 @@
 #define MAX_PACOTE (8 * 1024 * 1024) // a keyframe bigger than this is skipped
 #define MAX_PACOTES 400              // packets read per frame before giving up
 #define TS_CAUDA (4 << 20)           // MPEG-TS: bytes read at the end for the duration
-#define TS_ANTES_MS 1000L            // MPEG-TS: aim this far before the target (read forward to a keyframe)
+#define TS_ANTES_MS 300L             // MPEG-TS: aim this far before the target (read forward to a keyframe)
 #define TS_MAX_LER (24 << 20)        // MPEG-TS: bytes read looking for one keyframe before giving up
+#define TS_MAPA 1024                 // MPEG-TS: keyframe positions remembered (16 KB)
 
 typedef struct { int64_t bloco; int n; unsigned uso; unsigned char *dados; } Bloco;
 
@@ -42,6 +43,11 @@ struct MiniMotor {
   int buffersNoPacote;              // get_buffer2 calls since the packet was sent
   AVFrame *cinza;                   // the ONE buffer every placeholder reference shares
   int semIndice;                    // MPEG-TS / M2TS: no keyframe index, seek by byte position
+  // MPEG-TS: (byte position, time) of every keyframe found so far, sorted by
+  // position. Byte guesses interpolate between the two nearest, so the map gets
+  // sharper with every tile (the bitrate of a remux varies a lot).
+  struct { int64_t pos; long ms; } mapa[TS_MAPA];
+  int nMapa;
   unsigned char cabeca[16];         // first bytes of the file (logged when it can't be opened)
   int ncabeca;
 };
@@ -143,6 +149,30 @@ static int64_t tsDe(const MiniMotor *m, long ms) {
 // MPEG-TS: first and last video timestamps give the start and the duration
 // (no find_stream_info, which would decode). Reads the head and the last few MB.
 static int64_t tsPacote(const AVPacket *p) { return p->pts != AV_NOPTS_VALUE ? p->pts : p->dts; }
+
+static void mapaAnotar(MiniMotor *m, int64_t pos, long ms) {
+  if (pos < 0 || ms < 0) return;
+  int i = 0;
+  while (i < m->nMapa && m->mapa[i].pos < pos) i++;
+  if (i < m->nMapa && m->mapa[i].pos == pos) return;
+  // Keep it monotonic: a point whose time contradicts its neighbours is noise.
+  if (i > 0 && m->mapa[i - 1].ms > ms) return;
+  if (i < m->nMapa && m->mapa[i].ms < ms) return;
+  if (m->nMapa >= TS_MAPA) return;
+  memmove(&m->mapa[i + 1], &m->mapa[i], (size_t)(m->nMapa - i) * sizeof m->mapa[0]);
+  m->mapa[i].pos = pos; m->mapa[i].ms = ms;
+  m->nMapa++;
+}
+// Byte position for a time: straight line between the two known points around it.
+static int64_t mapaPosicao(const MiniMotor *m, long ms) {
+  int i = 0;
+  if (m->nMapa < 2) return (int64_t)((double)ms * (double)m->tamanho / (double)m->info.duracaoMs);
+  while (i + 2 < m->nMapa && m->mapa[i + 1].ms <= ms) i++;
+  int64_t p0 = m->mapa[i].pos, p1 = m->mapa[i + 1].pos;
+  long t0 = m->mapa[i].ms, t1 = m->mapa[i + 1].ms;
+  if (t1 <= t0) return p0;
+  return p0 + (int64_t)((double)(ms - t0) * (double)(p1 - p0) / (double)(t1 - t0));
+}
 static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
   int64_t primeiro = AV_NOPTS_VALUE, ultimo = AV_NOPTS_VALUE;
   AVPacket *p = av_packet_alloc();
@@ -152,12 +182,13 @@ static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
     if (p->stream_index == m->vs) primeiro = tsPacote(p);
     av_packet_unref(p);
   }
+  int64_t posUltimo = -1;
   int64_t de = m->tamanho - TS_CAUDA;
   if (primeiro != AV_NOPTS_VALUE && av_seek_frame(m->fc, -1, de > 0 ? de : 0, AVSEEK_FLAG_BYTE) >= 0) {
     for (int i = 0; i < 6000; i++) {
       if (av_read_frame(m->fc, p) < 0) break;
       int64_t t = p->stream_index == m->vs ? tsPacote(p) : AV_NOPTS_VALUE;
-      if (t != AV_NOPTS_VALUE && (ultimo == AV_NOPTS_VALUE || t > ultimo)) ultimo = t;
+      if (t != AV_NOPTS_VALUE && (ultimo == AV_NOPTS_VALUE || t > ultimo)) { ultimo = t; posUltimo = p->pos; }
       av_packet_unref(p);
     }
   }
@@ -167,6 +198,8 @@ static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
   }
   m->inicio = primeiro;
   m->info.duracaoMs = msDe(m, ultimo);
+  mapaAnotar(m, 0, 0);
+  mapaAnotar(m, posUltimo > 0 ? posUltimo : m->tamanho, m->info.duracaoMs);
   return m->info.duracaoMs > 0 ? 0 : -1;
 }
 
@@ -175,10 +208,9 @@ static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
 // tries; a binary search over an 80 GB file would read ~30 MB per frame).
 // Leaves the keyframe packet in m->pkt.
 static int chaveTs(MiniMotor *m, long alvoMs, long tolMs, volatile int *cancelar, int *pacotes, char *erro, size_t nerro) {
-  double bpm = (double)m->tamanho / (double)m->info.duracaoMs;   // bytes per ms, average
-  long mira = alvoMs - TS_ANTES_MS;                               // land a little before: we read forward
+  long mira = alvoMs - TS_ANTES_MS;
   for (int tentativa = 0; tentativa < 3; tentativa++) {
-    int64_t pos = (int64_t)((double)(mira < 0 ? 0 : mira) * bpm);
+    int64_t pos = mapaPosicao(m, mira < 0 ? 0 : mira);
     if (pos > m->tamanho - TS_CAUDA / 4) pos = m->tamanho - TS_CAUDA / 4;
     if (pos < 0) pos = 0;
     if (av_seek_frame(m->fc, -1, pos, AVSEEK_FLAG_BYTE) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
@@ -193,9 +225,12 @@ static int chaveTs(MiniMotor *m, long alvoMs, long tolMs, volatile int *cancelar
       av_packet_unref(m->pkt);
     }
     long achado = msDe(m, tsPacote(m->pkt));
+    mapaAnotar(m, m->pkt->pos, achado);
     if (labs(achado - alvoMs) <= tolMs || tentativa == 2) return 0;
     av_packet_unref(m->pkt);
-    mira += alvoMs - achado;      // the bitrate is not constant: shift by the miss and try again
+    // Missed: the map now has this keyframe, the next guess interpolates closer.
+    // Overshot by less than a few seconds: aim a bit earlier than the map says.
+    if (achado > alvoMs) mira -= (achado - alvoMs) / 2;
   }
   return -1;
 }

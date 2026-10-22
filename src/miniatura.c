@@ -49,8 +49,15 @@
 
 #define GRADE_MS 10000L
 #define TOL_MS 5000L
-#define PISO_KB (250L * 1024)      // MemAvailable kept free for the player and the app
-#define FOLGA_2T_KB (40L * 1024)   // above floor + need(2 threads) + this: 2 decoding threads
+// MemAvailable kept free for the player and the app. 200 MB: the DTS converter
+// alone has taken this TV (Tizen 9, 1774 MB) down to 201 MB with no trouble.
+#define PISO_KB (200L * 1024)
+// Measured on the TV (logs of 22/10): one 4K tile costs 35-45 MB of
+// MemAvailable, the static estimate said 83. After the first tiles the need is
+// the largest recent measured cost x 1.25 (never under MEDIDA_MIN_KB).
+#define MEDIDAS 8
+#define MEDIDA_MIN_KB (20L * 1024)
+#define PAUSA_MEM_MS 1500          // re-check memory this often while paused
 #define PERTO_SLOTS 6              // +-1 min around the playhead first
 #define GROSSO_SLOTS 30            // then one every 5 min
 #define VIZINHO_SLOTS 30           // seek bar: nearest made tile up to 5 min away
@@ -262,8 +269,12 @@ static void *trabalhar(void *u) {
   MiniMotor *m = NULL;
   MiniMeta meta; memset(&meta, 0, sizeof meta);
   char id[128] = "", erro[128] = "";
+  // One decoding thread: on the TV 2 threads were no faster while the player
+  // decodes 4K (log 4: 451/744 ms vs 1 thread 286-622 ms) and cost more memory.
   int threads = 1, seguidas = 0, feitosAqui = 0;
   unsigned long somaMs = 0;
+  long medidas[MEDIDAS] = {0}; int nMedidas = 0;
+  Uint32 ultimaPausaLog = 0; int pausasCaladas = 0;
   if (!l) goto fim;
   l->j = j;
   snprintf(l->url, sizeof l->url, "%s", w->url);
@@ -327,15 +338,26 @@ static void *trabalhar(void *u) {
     // Memory before every frame.
     long disp = memDisponivelKB();
     long precisa = (long)(mini_motor_memoria(m, 1) / 1024);
+    if (nMedidas >= 2) {
+      long maior = 0;
+      for (int i = 0; i < nMedidas && i < MEDIDAS; i++) if (medidas[i] > maior) maior = medidas[i];
+      maior = maior * 5 / 4;
+      if (maior < MEDIDA_MIN_KB) maior = MEDIDA_MIN_KB;
+      if (maior < precisa) precisa = maior;      // never above the static estimate
+    }
     if (disp >= 0 && disp < PISO_KB + precisa) {
       mini_motor_soltar_decoder(m);
-      printf("[miniatura] paused: low memory (free %ld MB, needs %ld MB + floor %ld MB)\n",
-             disp / 1024, precisa / 1024, PISO_KB / 1024);
-      fflush(stdout);
-      dormirJ(j, 5000);
+      // One line when it starts, then at most one every 30 s (the TV checks every 1.5 s).
+      if (!ultimaPausaLog || SDL_GetTicks() - ultimaPausaLog > 30000) {
+        printf("[miniatura] paused: low memory (free %ld MB, needs %ld MB + floor %ld MB)%s\n",
+               disp / 1024, precisa / 1024, PISO_KB / 1024, pausasCaladas ? ", still waiting" : "");
+        fflush(stdout);
+        ultimaPausaLog = SDL_GetTicks(); pausasCaladas = 0;
+      } else pausasCaladas++;
+      dormirJ(j, PAUSA_MEM_MS);
       continue;
     }
-    threads = disp < 0 || disp >= PISO_KB + (long)(mini_motor_memoria(m, 2) / 1024) + FOLGA_2T_KB ? 2 : 1;
+    ultimaPausaLog = 0; pausasCaladas = 0;
 
     int classe = 0, k;
     long ph = (long)(video_pos() * 1000.0);
@@ -396,8 +418,11 @@ static void *trabalhar(void *u) {
              k, alvo / 1000, classe, q.ptsMs / 1000, q.decodMs, q.totalMs, q.threads, q.bytesLidos / 1024,
              antes / 1024, depois / 1024, rssKB() / 1024, f, n);
     fflush(stdout);
-    // Tight memory: give everything back between frames.
-    if (depois >= 0 && depois < PISO_KB + 2 * precisa) mini_motor_soltar_decoder(m);
+    // What this tile really cost (MemAvailable before -> after, decoder still open).
+    if (antes >= 0 && depois >= 0 && antes > depois) medidas[nMedidas++ % MEDIDAS] = antes - depois;
+    // Give everything back between frames: nothing of ours stays in memory while
+    // the player runs (opening the decoder again costs a few ms).
+    mini_motor_soltar_decoder(m);
     if (f >= n) break;
     usleep(30000);   // yield
   }
