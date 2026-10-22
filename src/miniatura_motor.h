@@ -46,7 +46,24 @@ typedef struct {
   long bytesLidos;      // bytes read from the source for this frame
   long bytesPacote;     // keyframe packet size
   int threads;
+  int pedidos;          // range requests on the demuxer path
+  long adiantadoKB;     // prefetched for the NEXT frame during this decode (not in bytesLidos)
+  int sondas;           // MPEG-TS probe windows read
+  long sondaKB;         // bytes of those windows (included in bytesLidos)
+  int achouSonda;       // a probe found the keyframe start
 } MiniQuadro;
+
+// Test knobs (the thumbnail lab in the player). Defaults: mini_motor_config_padrao.
+typedef struct {
+  int lerBlocos;        // 256 KiB blocks per range request, 1..7 (default 4 = 1 MiB)
+  int exato;            // 1 = request only the blocks the demuxer asked for
+  int prefetch;         // 1 = fetch the next keyframe (mini_motor_proximo) during a decode
+  int tsBlocos;         // MPEG-TS: blocks per request while reading forward (default 7)
+  int tsSonda;          // 1 = MPEG-TS: probe small windows for the keyframe start (default 0)
+  int tsJanelaKB;       // probe window (default 64)
+  int tsPassoKB;        // distance between probe windows (default 512)
+  int tsSondasMax;      // windows per try (default 12)
+} MiniConfig;
 
 // Opens the container. `tamanho` = total file size. NULL on failure, with a
 // short English reason in `erro` (never a URL).
@@ -68,6 +85,11 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads,
                       MiniQuadro *q, char *erro, size_t nerro);
 // Frees the decoder and its buffer pools (the container stays open).
 void mini_motor_soltar_decoder(MiniMotor *m);
+void mini_motor_config_padrao(MiniConfig *c);
+void mini_motor_config(MiniMotor *m, const MiniConfig *c);
+// The frame the caller will ask for next (-1 = unknown): its keyframe's bytes
+// are prefetched during the next mini_motor_quadro decode (MiniConfig.prefetch).
+void mini_motor_proximo(MiniMotor *m, long alvoMs, long tolMs);
 // Bytes read from the source so far.
 long long mini_motor_lidos(const MiniMotor *m);
 void mini_motor_fechar(MiniMotor *m);

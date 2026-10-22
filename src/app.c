@@ -15,6 +15,9 @@
 #include "celbotao.h"
 #include "central.h"
 #include "estatvivoui.h"
+#ifdef NV_TPK
+#include "minilab.h"
+#endif
 #include "teclado.h"
 #include "ponteiro.h"
 #include "app.h"
@@ -4223,6 +4226,10 @@ void app_evento(const SDL_Event *e) {
   // A CENTRAL DE CONTROLE (central.h, CH+ segurado) e uma camada: aberta, come
   // o teclado todo, por cima do player, das folhas e das ilhas.
   if (central_aberta()) { central_evento(e); return; }
+#ifdef NV_TPK
+  // The thumbnail lab (minilab.h, opened from the Control Center): modal while open.
+  if (minilab_evento(e)) return;
+#endif
   // Statistics owns input while focused. UP enters a pinned panel; Back/DOWN
   // return to the player. OK resizes, LEFT/RIGHT move it, UP unpins.
   // Com uma folha/aviso/overlay de pe ou foco no player que usa CIMA (barra,
@@ -7077,6 +7084,9 @@ static void desenharTelas(Uint32 agora) {
   // dela (streams.c) e por isso nao a esconde mais.
   if (player_aberto()) {
     estatvivo_desenhar(agora);
+#ifdef NV_TPK
+    minilab_desenhar(agora);
+#endif
 #ifdef NV_TOUCH_UI
     if (telefoneui_ativo()) { CAMADA_SE(central_aberta()); }
 #endif

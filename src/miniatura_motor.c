@@ -7,6 +7,7 @@
 #include <libavutil/sha.h>
 #include <libavutil/pixdesc.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,7 @@
 
 #define BLOCO (256 * 1024)
 #define BLOCOS 8                     // read cache: 2 MiB
-#define LER_ADIANTE 4                // up to 1 MiB per range request
+#define LER_ADIANTE 4                // default: up to 1 MiB per range request (MiniConfig.lerBlocos)
 #define MAX_PACOTE (8 * 1024 * 1024) // a keyframe bigger than this is skipped
 #define MAX_PACOTES 400              // packets read per frame before giving up
 #define TS_CAUDA (4 << 20)           // MPEG-TS: bytes read at the end for the duration
@@ -50,7 +51,40 @@ struct MiniMotor {
   int nMapa;
   unsigned char cabeca[16];         // first bytes of the file (logged when it can't be opened)
   int ncabeca;
+  MiniConfig cfg;
+  int pedidos;                      // range requests made by the demuxer path
+  // Prefetch: bytes of the NEXT frame's keyframe fetched by a helper thread
+  // while this frame decodes (nothing reads the source then).
+  int64_t proxPos;                  // -1 = no target
+  pthread_t preT; int preVivo;
+  int64_t preIni; long preQuer, preGot; unsigned char *preBuf;
+  // MPEG-TS probe
+  int tsPac, tsSync;                // 188/192 bytes per packet, offset of the 0x47 in it
+  int sondaFalhas;                  // tiles in a row where no probe found a keyframe start
+  int sondaDesligada;
+  int sondasQuadro; long bytesSondaQuadro; int achouSonda;
 };
+
+void mini_motor_config_padrao(MiniConfig *c) {
+  memset(c, 0, sizeof *c);
+  c->lerBlocos = LER_ADIANTE; c->exato = 0; c->prefetch = 1;
+  c->tsBlocos = BLOCOS - 1;
+  c->tsSonda = 0; c->tsJanelaKB = 64; c->tsPassoKB = 512; c->tsSondasMax = 12;
+}
+void mini_motor_config(MiniMotor *m, const MiniConfig *c) {
+  if (!m || !c) return;
+  m->cfg = *c;
+  if (m->cfg.lerBlocos < 1) m->cfg.lerBlocos = 1;
+  if (m->cfg.lerBlocos > BLOCOS - 1) m->cfg.lerBlocos = BLOCOS - 1;
+  if (m->cfg.tsBlocos < 1) m->cfg.tsBlocos = 1;
+  if (m->cfg.tsBlocos > BLOCOS - 1) m->cfg.tsBlocos = BLOCOS - 1;
+  if (m->cfg.tsJanelaKB < 8) m->cfg.tsJanelaKB = 8;
+  if (m->cfg.tsJanelaKB > 1024) m->cfg.tsJanelaKB = 1024;
+  if (m->cfg.tsPassoKB < m->cfg.tsJanelaKB) m->cfg.tsPassoKB = m->cfg.tsJanelaKB;
+  if (m->cfg.tsSondasMax < 1) m->cfg.tsSondasMax = 1;
+  if (m->cfg.tsSondasMax > 64) m->cfg.tsSondasMax = 64;
+  if (!m->cfg.tsSonda) m->sondaDesligada = 0;   // a new test starts clean
+}
 
 static unsigned agoraMs(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -72,9 +106,11 @@ static Bloco *vago(MiniMotor *m) {
 }
 // Fetch block b plus up to LER_ADIANTE-1 following blocks not cached yet, in
 // ONE range request.
-static int buscar(MiniMotor *m, int64_t b) {
-  int n = 1;
-  while (n < LER_ADIANTE && (b + n) * BLOCO < m->tamanho && !achar(m, b + n)) n++;
+static int buscar(MiniMotor *m, int64_t b, int quer) {
+  int n = 1, max = m->semIndice ? m->cfg.tsBlocos : m->cfg.lerBlocos;
+  // Exact: only the blocks the demuxer asked for (it asks for a whole packet at once).
+  if (m->cfg.exato) { max = (quer + BLOCO - 1) / BLOCO; if (max < 1) max = 1; if (max > BLOCOS - 1) max = BLOCOS - 1; }
+  while (n < max && (b + n) * BLOCO < m->tamanho && !achar(m, b + n)) n++;
   int64_t ini = b * BLOCO, fim = (b + n) * (int64_t)BLOCO - 1;
   if (fim >= m->tamanho) fim = m->tamanho - 1;
   size_t tam = (size_t)(fim - ini + 1);
@@ -82,7 +118,7 @@ static int buscar(MiniMotor *m, int64_t b) {
   if (!buf) return -1;
   long got = m->ler(m->usuario, ini, fim, buf);
   if (got <= 0) { free(buf); return -1; }
-  m->lidos += got;
+  m->lidos += got; m->pedidos++;
   for (int k = 0; k < n && (int64_t)k * BLOCO < got; k++) {
     Bloco *v = vago(m);
     int nb = (int)((got - (long)k * BLOCO) < BLOCO ? got - (long)k * BLOCO : BLOCO);
@@ -100,7 +136,7 @@ static int lerIo(void *u, uint8_t *dst, int quer) {
   if (m->pos >= m->tamanho) return AVERROR_EOF;
   int64_t b = m->pos / BLOCO;
   Bloco *k = achar(m, b);
-  if (!k) { if (buscar(m, b) < 0) return AVERROR(EIO); k = achar(m, b); }
+  if (!k) { if (buscar(m, b, (int)(m->pos - b * BLOCO) + quer) < 0) return AVERROR(EIO); k = achar(m, b); }
   k->uso = ++m->relogio;
   int off = (int)(m->pos - b * BLOCO);
   int n = k->n - off;
@@ -110,6 +146,57 @@ static int lerIo(void *u, uint8_t *dst, int quer) {
   m->pos += n;
   return n;
 }
+// Prefetched bytes (block-aligned) into the cache, as if read now.
+static void guardarBlocos(MiniMotor *m, int64_t ini, const unsigned char *d, long got) {
+  int64_t b0 = ini / BLOCO;
+  for (long k = 0; (long)k * BLOCO < got; k++) {
+    if (achar(m, b0 + k)) continue;
+    int nb = (int)((got - k * (long)BLOCO) < BLOCO ? got - k * (long)BLOCO : BLOCO);
+    unsigned char *c = malloc((size_t)nb);
+    if (!c) break;
+    memcpy(c, d + (size_t)k * BLOCO, (size_t)nb);
+    Bloco *v = vago(m);
+    free(v->dados);
+    *v = (Bloco){ b0 + k, nb, ++m->relogio, c };
+  }
+}
+static void *preTrabalho(void *u) {
+  MiniMotor *m = u;
+  m->preGot = m->ler(m->usuario, m->preIni, m->preIni + m->preQuer - 1, m->preBuf);
+  return NULL;
+}
+// Starts fetching the next keyframe's blocks (if not cached already).
+static void preIniciar(MiniMotor *m) {
+  int64_t b, ini;
+  int n = 0;
+  if (!m->cfg.prefetch || m->proxPos < 0 || m->preVivo) return;
+  b = m->proxPos / BLOCO;
+  while (n < BLOCOS / 2 && achar(m, b)) { b++; n++; }       // skip what is cached
+  int quer = m->semIndice ? m->cfg.tsBlocos : m->cfg.lerBlocos;
+  if (n >= quer) return;
+  ini = b * BLOCO;
+  if (ini >= m->tamanho) return;
+  m->preQuer = (long)(quer - n) * BLOCO;
+  if (ini + m->preQuer > m->tamanho) m->preQuer = (long)(m->tamanho - ini);
+  m->preBuf = malloc((size_t)m->preQuer);
+  if (!m->preBuf) return;
+  m->preIni = ini; m->preGot = 0;
+  if (pthread_create(&m->preT, NULL, preTrabalho, m) == 0) m->preVivo = 1;
+  else { free(m->preBuf); m->preBuf = NULL; }
+}
+// Waits for the prefetch (it ran during the decode) and caches what came.
+static long preTerminar(MiniMotor *m) {
+  long got = 0;
+  if (!m->preVivo) return 0;
+  pthread_join(m->preT, NULL);
+  m->preVivo = 0;
+  got = m->preGot;
+  if (got > 0) { guardarBlocos(m, m->preIni, m->preBuf, got); m->lidos += got; }
+  free(m->preBuf); m->preBuf = NULL;
+  m->proxPos = -1;
+  return got > 0 ? got : 0;
+}
+
 static int64_t seekIo(void *u, int64_t off, int whence) {
   MiniMotor *m = u;
   if (whence & AVSEEK_SIZE) return m->tamanho;
@@ -175,6 +262,15 @@ static int64_t mapaPosicao(const MiniMotor *m, long ms) {
 }
 static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
   int64_t primeiro = AV_NOPTS_VALUE, ultimo = AV_NOPTS_VALUE;
+  {
+    unsigned char h[1024];
+    long got = m->ler(m->usuario, 0, sizeof h - 1, h);
+    m->tsPac = 0;
+    if (got >= 600) {
+      if (h[0] == 0x47 && h[188] == 0x47 && h[376] == 0x47) { m->tsPac = 188; m->tsSync = 0; }
+      else if (h[4] == 0x47 && h[196] == 0x47 && h[388] == 0x47) { m->tsPac = 192; m->tsSync = 4; }
+    }
+  }
   AVPacket *p = av_packet_alloc();
   if (!p) { erroDe(erro, nerro, "memory"); return -1; }
   for (int i = 0; i < 3000 && primeiro == AV_NOPTS_VALUE; i++) {
@@ -207,12 +303,81 @@ static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
 // the next keyframe packet, correct the position from its timestamp (up to 3
 // tries; a binary search over an 80 GB file would read ~30 MB per frame).
 // Leaves the keyframe packet in m->pkt.
+static int64_t lerTempo(const unsigned char *p) {
+  return ((int64_t)((p[0] >> 1) & 7) << 30) | ((int64_t)p[1] << 22) | ((int64_t)(p[2] >> 1) << 15) |
+         ((int64_t)p[3] << 7) | (int64_t)(p[4] >> 1);
+}
+// MPEG-TS PROBE (lab knob, OFF by default): instead of reading forward through
+// a whole GOP (~9 MB on a UHD remux), read small windows `tsPassoKB` apart and
+// look for the TS packet that starts a keyframe of the video PID
+// (random_access_indicator). Every video PES start seen on the way (its DTS)
+// also sharpens the time->byte map. Returns the byte position of that packet,
+// or -1. MEASURED on the host: a keyframe starts in ONE packet per GOP, so
+// windows covering 1/8 of the bytes find it in ~1 tile of 4; after 3 misses in
+// a row the file goes back to reading forward.
+static int64_t sondarTs(MiniMotor *m, int64_t pos, volatile int *cancelar) {
+  int pac = m->tsPac, sync = m->tsSync, vpid = m->st->id;
+  long jan = (long)m->cfg.tsJanelaKB * 1024, passo = (long)m->cfg.tsPassoKB * 1024;
+  unsigned char *buf;
+  int64_t achado = -1;
+  if (!pac || vpid <= 0) return -1;
+  buf = malloc((size_t)jan);
+  if (!buf) return -1;
+  for (int s = 0; s < m->cfg.tsSondasMax && achado < 0; s++) {
+    int64_t p = pos + (int64_t)s * passo;
+    if (cancelar && *cancelar) break;
+    if (p + jan > m->tamanho) break;
+    long got = m->ler(m->usuario, p, p + jan - 1, buf);
+    m->sondasQuadro++;
+    if (got <= 0) break;
+    m->lidos += got; m->bytesSondaQuadro += got;
+    // Align on the packet grid: three sync bytes one packet apart.
+    long i0 = -1;
+    for (long i = 0; i + 2 * pac + sync < got && i < pac; i++)
+      if (buf[i + sync] == 0x47 && buf[i + sync + pac] == 0x47 && buf[i + sync + 2 * pac] == 0x47) { i0 = i; break; }
+    if (i0 < 0) continue;
+    for (long i = i0; i + pac <= got; i += pac) {
+      const unsigned char *t = buf + i + sync;
+      if (t[0] != 0x47) break;
+      int pid = ((t[1] & 0x1f) << 8) | t[2];
+      if (pid != vpid || !(t[1] & 0x40)) continue;          // video, payload unit start
+      int afc = (t[3] >> 4) & 3, rai = 0, ini = 4;
+      if (afc & 2) { int al = t[4]; if (al > 0 && (t[5] & 0x40)) rai = 1; ini = 5 + al; }
+      if (!(afc & 1) || ini + 14 > 188) continue;
+      const unsigned char *pe = t + ini;
+      if (pe[0] || pe[1] || pe[2] != 1) continue;
+      int fl = pe[7];
+      int64_t ts = AV_NOPTS_VALUE;
+      if ((fl & 0xC0) == 0xC0 && ini + 19 <= 188) ts = lerTempo(pe + 14);   // DTS
+      else if (fl & 0x80) ts = lerTempo(pe + 9);                            // PTS
+      if (ts != AV_NOPTS_VALUE) mapaAnotar(m, p + i, msDe(m, ts));
+      if (rai) { achado = p + i; break; }
+    }
+  }
+  free(buf);
+  return achado;
+}
+
+// MPEG-TS: jump to the byte position the map gives for the time, find the next
+// keyframe packet (probe windows, or read forward), correct from its timestamp
+// (up to 3 tries; a binary search over an 80 GB file would read ~30 MB per
+// frame). Leaves the keyframe packet in m->pkt.
 static int chaveTs(MiniMotor *m, long alvoMs, long tolMs, volatile int *cancelar, int *pacotes, char *erro, size_t nerro) {
   long mira = alvoMs - TS_ANTES_MS;
   for (int tentativa = 0; tentativa < 3; tentativa++) {
     int64_t pos = mapaPosicao(m, mira < 0 ? 0 : mira);
     if (pos > m->tamanho - TS_CAUDA / 4) pos = m->tamanho - TS_CAUDA / 4;
     if (pos < 0) pos = 0;
+    if (m->cfg.tsSonda && !m->sondaDesligada) {
+      int64_t k = sondarTs(m, pos, cancelar);
+      if (k >= 0) { pos = k; m->achouSonda = 1; m->sondaFalhas = 0; }
+      else if (++m->sondaFalhas >= 3) {
+        // This file never marks keyframe starts (or the windows are too sparse): stop paying for probes.
+        m->sondaDesligada = 1;
+        printf("[miniatura] mpegts: no keyframe start found by probing 3 times: reading forward for this file\n");
+        fflush(stdout);
+      }
+    }
     if (av_seek_frame(m->fc, -1, pos, AVSEEK_FLAG_BYTE) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
     long long lidos0 = m->lidos;
     for (;;) {
@@ -243,6 +408,8 @@ MiniMotor *mini_motor_abrir(MiniLer ler, void *usuario, int64_t tamanho, char *e
   m = calloc(1, sizeof *m);
   if (!m) { erroDe(erro, nerro, "memory"); return NULL; }
   m->ler = ler; m->usuario = usuario; m->tamanho = tamanho; m->vs = -1;
+  mini_motor_config_padrao(&m->cfg);
+  m->proxPos = -1;
   av_log_set_level(AV_LOG_QUIET);
   buf = av_malloc(65536);
   m->io = buf ? avio_alloc_context(buf, 65536, 0, m, lerIo, NULL, seekIo) : NULL;
@@ -327,7 +494,7 @@ const MiniInfo *mini_motor_info(const MiniMotor *m) { return m ? &m->info : NULL
 long long mini_motor_lidos(const MiniMotor *m) { return m ? m->lidos : 0; }
 
 // ------------------------------------------------------------------ keyframes
-static int entradaChave(MiniMotor *m, long alvoMs, long tolMs, int64_t *ts) {
+static int entradaChave(MiniMotor *m, long alvoMs, long tolMs, int64_t *ts, int64_t *pos) {
   int n = avformat_index_get_entries_count(m->st);
   int64_t alvo = tsDe(m, alvoMs);
   int i = av_index_search_timestamp(m->st, alvo, AVSEEK_FLAG_BACKWARD);
@@ -347,12 +514,25 @@ static int entradaChave(MiniMotor *m, long alvoMs, long tolMs, int64_t *ts) {
   if (!e) e = depois;
   if (!e) return -1;
   *ts = e->timestamp;
+  if (pos) *pos = e->pos;
   return 0;
+}
+
+void mini_motor_proximo(MiniMotor *m, long alvoMs, long tolMs) {
+  int64_t ts, pos = -1;
+  if (!m) return;
+  m->proxPos = -1;
+  if (alvoMs < 0) return;
+  // MPEG-TS: no prefetch. The map's guess is rarely where the forward read
+  // starts after its corrections (host: 1108 ms with, 970 ms without).
+  if (m->semIndice) pos = -1;
+  else if (entradaChave(m, alvoMs, tolMs, &ts, &pos) < 0) pos = -1;
+  m->proxPos = pos >= 0 && pos < m->tamanho ? pos : -1;
 }
 
 long mini_motor_chave(MiniMotor *m, long alvoMs, long tolMs) {
   int64_t ts;
-  if (!m || entradaChave(m, alvoMs, tolMs, &ts) < 0) return -1;
+  if (!m || entradaChave(m, alvoMs, tolMs, &ts, NULL) < 0) return -1;
   return msDe(m, ts);
 }
 
@@ -599,12 +779,15 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads, volati
   if (threads < 1) threads = 1;
   if (threads > 3) threads = 3;
   lidos0 = m->lidos;
+  int pedidos0 = m->pedidos;
+  long preKB = 0;
+  m->sondasQuadro = 0; m->bytesSondaQuadro = 0; m->achouSonda = 0;
   if (abrirDecoder(m, threads) < 0) { erroDe(erro, nerro, "decoder failed to open"); return -1; }
   if (m->semIndice) {
     if (chaveTs(m, alvoMs, tolMs, cancelar, &pacotes, erro, nerro) < 0) goto fim;
     ts = tsPacote(m->pkt);
   } else {
-    if (entradaChave(m, alvoMs, tolMs, &ts) < 0) { erroDe(erro, nerro, "no keyframe for this time"); return -1; }
+    if (entradaChave(m, alvoMs, tolMs, &ts, NULL) < 0) { erroDe(erro, nerro, "no keyframe for this time"); return -1; }
     if (av_seek_frame(m->fc, m->vs, ts, AVSEEK_FLAG_BACKWARD) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
   }
   avcodec_flush_buffers(m->cc);
@@ -621,6 +804,7 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads, volati
     q->bytesPacote = m->pkt->size;
     unsigned d0 = agoraMs();
     m->buffersNoPacote = 0;
+    preIniciar(m);                              // the next keyframe downloads while this one decodes
     int s1 = avcodec_send_packet(m->cc, m->pkt);
     av_packet_unref(m->pkt);
     if (s1 < 0 && s1 != AVERROR(EAGAIN)) { erroDe(erro, nerro, "decode failed"); goto fim; }
@@ -645,13 +829,18 @@ fim:
   if (m->cc) avcodec_flush_buffers(m->cc);       // leaves draining mode and drops every reference
   q->decodMs = td;
   q->totalMs = agoraMs() - t0;
-  q->bytesLidos = (long)(m->lidos - lidos0);
+  preKB = preTerminar(m) / 1024;
+  q->bytesLidos = (long)(m->lidos - lidos0) - preKB * 1024;
   q->threads = threads;
+  q->pedidos = m->pedidos - pedidos0;
+  q->adiantadoKB = preKB;
+  q->sondas = m->sondasQuadro; q->sondaKB = m->bytesSondaQuadro / 1024; q->achouSonda = m->achouSonda;
   return r;
 }
 
 void mini_motor_fechar(MiniMotor *m) {
   if (!m) return;
+  preTerminar(m);
   avcodec_free_context(&m->cc);
   av_frame_free(&m->cinza);
   avcodec_free_context(&m->jc);

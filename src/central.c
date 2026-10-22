@@ -10,6 +10,9 @@
 #include "escala.h"
 #include "estatvivo.h"
 #include "estatvivoui.h"
+#ifdef NV_TPK
+#include "minilab.h"
+#endif
 #include "gfx.h"
 #include "horafmt.h"
 #include "idioma.h"
@@ -64,7 +67,7 @@ static int foco;                // botao em foco; == nBotoes e "Editar atalhos"
 static int focoEd;              // item do catalogo em foco na edicao
 // FOCO E INTERRUPTOR EM MOLA por botao (0..1): o anel nao salta de botao em
 // botao e o realce do atalho liga/desliga em ~120 ms em vez de num quadro.
-static float animFoco[CENTRAL_MAX + 1], animLig[CENTRAL_MAX + 1];
+static float animFoco[CENTRAL_MAX + 3], animLig[CENTRAL_MAX + 3];
 static void centralPassoFoco(float dt);
 static float rolaEd;            // rolagem da lista de edicao (px)
 static float rolaBotoes, quadroDt;
@@ -113,6 +116,9 @@ static void gravar(void) {
 // uma opcao de Ajustes nem mora na lista da pessoa: e uma acao, e so existe
 // enquanto ha o que medir. op = CC_OP_ESTAT, item = -1.
 #define CC_OP_ESTAT (-2)
+// .tpk with FFmpeg: the THUMBNAIL LAB (minilab.h), right after the statistics,
+// also only while there is video. op = CC_OP_MINI, item = -1.
+#define CC_OP_MINI (-3)
 #ifdef CENTRAL_TESTE
 static int testeEstat;
 #endif
@@ -130,6 +136,13 @@ static int botoes(int *op, int *item) {
     if (op) op[n] = CC_OP_ESTAT;
     if (item) item[n] = -1;
     n++;
+#ifdef NV_TPK
+    if (mini_lab_disponivel() && !previa) {
+      if (op) op[n] = CC_OP_MINI;
+      if (item) item[n] = -1;
+      n++;
+    }
+#endif
   }
   for (i = 0; i < lista.n; i++) {
     const CentralItem *c = central_catalogo(lista.item[i]);
@@ -143,7 +156,7 @@ static int botoes(int *op, int *item) {
 }
 // (ver o comentario nas variaveis, no topo do arquivo)
 static void centralPassoFoco(float dt) {
-  int op[CENTRAL_MAX + 1], item[CENTRAL_MAX + 1], n = botoes(op, item), i;
+  int op[CENTRAL_MAX + 3], item[CENTRAL_MAX + 3], n = botoes(op, item), i;
   int red = ajustes_animacoes_reduzidas();
   for (i = 0; i <= n; i++) {
     float aF = i == foco ? 1.0f : 0.0f, aL = 0.0f;
@@ -200,7 +213,7 @@ static int ehCh(const SDL_Event *e) {
 }
 
 static void ativarBotao(int i) {
-  int op[CENTRAL_MAX + 1], n = botoes(op, NULL);
+  int op[CENTRAL_MAX + 3], n = botoes(op, NULL);
   if (i == n) {
     int it[64], m = ofertas(it), j;
     editando = 1; focoEd = 0; rolaEd = 0;
@@ -222,6 +235,13 @@ static void ativarBotao(int i) {
     estatvivo_abrir();
     return;
   }
+#ifdef NV_TPK
+  if (op[i] == CC_OP_MINI) {
+    central_fechar();
+    minilab_abrir();
+    return;
+  }
+#endif
   if (ajustes_rapido_passo(op[i], 1))
     printf("[central] %s -> %s\n", ajustes_rapido_rotulo(op[i]), ajustes_rapido_valor(op[i]));
   else avisar("Não foi possível salvar. O valor anterior foi mantido.");
@@ -619,7 +639,7 @@ static float rolagemBotoes(float h) {
 }
 
 static void desenhaBotoes(float x, float y, float w, float h, float a) {
-  int op[CENTRAL_MAX + 1], item[CENTRAL_MAX + 1], n = botoes(op, item), i;
+  int op[CENTRAL_MAX + 3], item[CENTRAL_MAX + 3], n = botoes(op, item), i;
   float bw = (w - CC_GAP * (CC_COLS - 1)) / CC_COLS;
   float scroll = 0;
   if (foco > n) foco = n;
@@ -639,6 +659,9 @@ static void desenhaBotoes(float x, float y, float w, float h, float a) {
                   bw, CC_BOTAO_H };
     if (r.y + r.h < y || r.y > y + h) continue;
     if (i < n && op[i] == CC_OP_ESTAT) botao(r, "aj_gauge", "Estatísticas", "", -1, 0.0f, animFoco[i], a);
+#ifdef NV_TPK
+    else if (i < n && op[i] == CC_OP_MINI) botao(r, "aj_sliders-horizontal", "Thumbnail lab", "", -1, 0.0f, animFoco[i], a);
+#endif
     else if (i < n) {
       const CentralItem *c = central_catalogo(item[i]);
       int lig = ajustes_rapido_ligado(op[i]);
