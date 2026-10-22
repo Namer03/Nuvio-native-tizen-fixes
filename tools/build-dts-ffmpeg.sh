@@ -2,7 +2,7 @@
 export TMPDIR="${TMPDIR:-/tmp}"
 TMPDIR="${TMPDIR%/}"
 # Minimal static LGPL FFmpeg: DTS decode, stereo AAC and AC3 5.1 encode (no GPL/nonfree). No FFmpeg
-# network/TLS protocols or software video decoders enter the TV executable.
+# network/TLS protocols enter the TV executable. Software video decoders only on the .tpk (below).
 #
 # NUVIO_DTS_TARGET picks the build:
 #   webos (default) cross build with the LG SDK (tools/Dockerfile); output unchanged.
@@ -10,7 +10,9 @@ TMPDIR="${TMPDIR%/}"
 #                   container, from the source tree tpk.sh already downloaded and checked on the
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
 #                   converter needs: TrueHD/MLP
-#                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core.
+#                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core; and for the
+#                   seek-bar thumbnails made on the TV (src/miniatura*.c): h264/hevc decoders
+#                   (keyframes only, decoded one at a time) and the mjpeg encoder (320x180 tiles).
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -18,6 +20,7 @@ PREFIX=${NUVIO_DTS_ROOT:-/opt/nuvio-dts}
 BUILD=${NUVIO_DTS_BUILD:-${TMPDIR:-/tmp}/nuvio-dts-build}
 TARGET=${NUVIO_DTS_TARGET:-webos}
 DECODERS=dca,dvdsub,pgssub,ass,ssa,subrip,movtext,webvtt
+ENCODERS=aac,ac3
 MUXERS=
 PARSERS=dca,h264,hevc,aac
 BSFS=h264_mp4toannexb,hevc_mp4toannexb,dca_core
@@ -26,7 +29,8 @@ mkdir -p "$BUILD" "$PREFIX"
 if [ "$TARGET" = tpk ]; then
   SRC=${NUVIO_DTS_SRC:?tools/tpk.sh passes the extracted ffmpeg-$VERSION source}
   CC=${CC:-gcc}
-  DECODERS=$DECODERS,truehd,mlp
+  DECODERS=$DECODERS,truehd,mlp,h264,hevc
+  ENCODERS=$ENCODERS,mjpeg
   MUXERS=mpegts,matroska,mp4
   PARSERS=$PARSERS,mlp,ac3
   BSFS=$BSFS,truehd_core
@@ -67,7 +71,7 @@ fi
   --disable-programs --disable-doc --disable-debug --disable-network \
   --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
   --enable-avcodec --enable-avformat --enable-avutil --enable-swresample \
-  --enable-decoder="$DECODERS" --enable-encoder=aac,ac3 \
+  --enable-decoder="$DECODERS" --enable-encoder="$ENCODERS" \
   --enable-demuxer=matroska,mov --enable-parser="$PARSERS" \
   --enable-bsf="$BSFS" \
   --extra-cflags="${CFLAGS:--O2}"

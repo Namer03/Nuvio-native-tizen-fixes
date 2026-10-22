@@ -1,3 +1,6 @@
+// The Samsung .tpk makes its thumbnails on the TV (miniatura.c serves the same
+// seekr_* calls there); the Seekr API is not built into it.
+#ifndef NV_TPK
 #include "seekrquota.h"
 #include "dados.h"
 #include <pthread.h>
@@ -172,3 +175,6 @@ int seekrquota_reservar(long long utc) {
   pthread_mutex_unlock(&quotaTrava);
   return resultado;
 }
+#else
+typedef int seekrquota_fora_do_tpk;   // ISO C: a translation unit must not be empty
+#endif

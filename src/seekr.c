@@ -1,3 +1,6 @@
+// The Samsung .tpk makes its thumbnails on the TV (miniatura.c serves the same
+// seekr_* calls there); the Seekr API is not built into it.
+#ifndef NV_TPK
 #include "seekr.h"
 #include "seekrvtt.h"
 #include "rede.h"
@@ -602,3 +605,6 @@ int seekr_validar(const char *c) {
   free(corpo);
   return r;
 }
+#else
+typedef int seekr_fora_do_tpk;   // ISO C: a translation unit must not be empty
+#endif
