@@ -701,7 +701,7 @@ static void rSeekr(int op) {
         if (k <= 0.5f) ajc_icone("aj_loader", 320, 193, 26, 0.95f); }
       ajcChaveCanto(k);
       return; }
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
     case AJ_SEEKR_CHAVE: {   // the TV hands its thumbnails to Google Drive
       float f = ajc_fase(3.6f), p = rK(f / 0.7f);
       ajc_ladrilho("aj_tv-minimal-play", 120, 170, 84, 0, 1);

@@ -1,7 +1,10 @@
 // Seek-bar thumbnails made on the TV: the decoding engine. See miniatura_motor.h.
 #include "miniatura_motor.h"
+#include "miniplat.h"
 
-#if defined(NV_TPK) && defined(NV_DTS_FFMPEG)
+// FFmpeg: the .tpk 6+ and LG link it for the DTS converter (NV_DTS_FFMPEG),
+// Android links a thumbnail-only build (NV_MINI_FFMPEG).
+#if defined(NV_MINIATURAS) && (defined(NV_DTS_FFMPEG) || defined(NV_MINI_FFMPEG))
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/sha.h>
@@ -58,18 +61,11 @@ struct MiniMotor {
   int64_t proxPos;                  // -1 = no target
   pthread_t preT; int preVivo;
   int64_t preIni; long preQuer, preGot; unsigned char *preBuf;
-  // MPEG-TS probe
-  int tsPac, tsSync;                // 188/192 bytes per packet, offset of the 0x47 in it
-  int sondaFalhas;                  // tiles in a row where no probe found a keyframe start
-  int sondaDesligada;
-  int sondasQuadro; long bytesSondaQuadro; int achouSonda;
 };
 
 void mini_motor_config_padrao(MiniConfig *c) {
   memset(c, 0, sizeof *c);
-  c->lerBlocos = LER_ADIANTE; c->exato = 0; c->prefetch = 1;
-  c->tsBlocos = BLOCOS - 1;
-  c->tsSonda = 0; c->tsJanelaKB = 64; c->tsPassoKB = 512; c->tsSondasMax = 12;
+  c->lerBlocos = LER_ADIANTE; c->prefetch = 1; c->tsBlocos = BLOCOS - 1;
 }
 void mini_motor_config(MiniMotor *m, const MiniConfig *c) {
   if (!m || !c) return;
@@ -78,12 +74,6 @@ void mini_motor_config(MiniMotor *m, const MiniConfig *c) {
   if (m->cfg.lerBlocos > BLOCOS - 1) m->cfg.lerBlocos = BLOCOS - 1;
   if (m->cfg.tsBlocos < 1) m->cfg.tsBlocos = 1;
   if (m->cfg.tsBlocos > BLOCOS - 1) m->cfg.tsBlocos = BLOCOS - 1;
-  if (m->cfg.tsJanelaKB < 8) m->cfg.tsJanelaKB = 8;
-  if (m->cfg.tsJanelaKB > 1024) m->cfg.tsJanelaKB = 1024;
-  if (m->cfg.tsPassoKB < m->cfg.tsJanelaKB) m->cfg.tsPassoKB = m->cfg.tsJanelaKB;
-  if (m->cfg.tsSondasMax < 1) m->cfg.tsSondasMax = 1;
-  if (m->cfg.tsSondasMax > 64) m->cfg.tsSondasMax = 64;
-  if (!m->cfg.tsSonda) m->sondaDesligada = 0;   // a new test starts clean
 }
 
 static unsigned agoraMs(void) {
@@ -108,8 +98,7 @@ static Bloco *vago(MiniMotor *m) {
 // ONE range request.
 static int buscar(MiniMotor *m, int64_t b, int quer) {
   int n = 1, max = m->semIndice ? m->cfg.tsBlocos : m->cfg.lerBlocos;
-  // Exact: only the blocks the demuxer asked for (it asks for a whole packet at once).
-  if (m->cfg.exato) { max = (quer + BLOCO - 1) / BLOCO; if (max < 1) max = 1; if (max > BLOCOS - 1) max = BLOCOS - 1; }
+  (void)quer;
   while (n < max && (b + n) * BLOCO < m->tamanho && !achar(m, b + n)) n++;
   int64_t ini = b * BLOCO, fim = (b + n) * (int64_t)BLOCO - 1;
   if (fim >= m->tamanho) fim = m->tamanho - 1;
@@ -262,15 +251,6 @@ static int64_t mapaPosicao(const MiniMotor *m, long ms) {
 }
 static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
   int64_t primeiro = AV_NOPTS_VALUE, ultimo = AV_NOPTS_VALUE;
-  {
-    unsigned char h[1024];
-    long got = m->ler(m->usuario, 0, sizeof h - 1, h);
-    m->tsPac = 0;
-    if (got >= 600) {
-      if (h[0] == 0x47 && h[188] == 0x47 && h[376] == 0x47) { m->tsPac = 188; m->tsSync = 0; }
-      else if (h[4] == 0x47 && h[196] == 0x47 && h[388] == 0x47) { m->tsPac = 192; m->tsSync = 4; }
-    }
-  }
   AVPacket *p = av_packet_alloc();
   if (!p) { erroDe(erro, nerro, "memory"); return -1; }
   for (int i = 0; i < 3000 && primeiro == AV_NOPTS_VALUE; i++) {
@@ -303,61 +283,6 @@ static int pontasTs(MiniMotor *m, char *erro, size_t nerro) {
 // the next keyframe packet, correct the position from its timestamp (up to 3
 // tries; a binary search over an 80 GB file would read ~30 MB per frame).
 // Leaves the keyframe packet in m->pkt.
-static int64_t lerTempo(const unsigned char *p) {
-  return ((int64_t)((p[0] >> 1) & 7) << 30) | ((int64_t)p[1] << 22) | ((int64_t)(p[2] >> 1) << 15) |
-         ((int64_t)p[3] << 7) | (int64_t)(p[4] >> 1);
-}
-// MPEG-TS PROBE (lab knob, OFF by default): instead of reading forward through
-// a whole GOP (~9 MB on a UHD remux), read small windows `tsPassoKB` apart and
-// look for the TS packet that starts a keyframe of the video PID
-// (random_access_indicator). Every video PES start seen on the way (its DTS)
-// also sharpens the time->byte map. Returns the byte position of that packet,
-// or -1. MEASURED on the host: a keyframe starts in ONE packet per GOP, so
-// windows covering 1/8 of the bytes find it in ~1 tile of 4; after 3 misses in
-// a row the file goes back to reading forward.
-static int64_t sondarTs(MiniMotor *m, int64_t pos, volatile int *cancelar) {
-  int pac = m->tsPac, sync = m->tsSync, vpid = m->st->id;
-  long jan = (long)m->cfg.tsJanelaKB * 1024, passo = (long)m->cfg.tsPassoKB * 1024;
-  unsigned char *buf;
-  int64_t achado = -1;
-  if (!pac || vpid <= 0) return -1;
-  buf = malloc((size_t)jan);
-  if (!buf) return -1;
-  for (int s = 0; s < m->cfg.tsSondasMax && achado < 0; s++) {
-    int64_t p = pos + (int64_t)s * passo;
-    if (cancelar && *cancelar) break;
-    if (p + jan > m->tamanho) break;
-    long got = m->ler(m->usuario, p, p + jan - 1, buf);
-    m->sondasQuadro++;
-    if (got <= 0) break;
-    m->lidos += got; m->bytesSondaQuadro += got;
-    // Align on the packet grid: three sync bytes one packet apart.
-    long i0 = -1;
-    for (long i = 0; i + 2 * pac + sync < got && i < pac; i++)
-      if (buf[i + sync] == 0x47 && buf[i + sync + pac] == 0x47 && buf[i + sync + 2 * pac] == 0x47) { i0 = i; break; }
-    if (i0 < 0) continue;
-    for (long i = i0; i + pac <= got; i += pac) {
-      const unsigned char *t = buf + i + sync;
-      if (t[0] != 0x47) break;
-      int pid = ((t[1] & 0x1f) << 8) | t[2];
-      if (pid != vpid || !(t[1] & 0x40)) continue;          // video, payload unit start
-      int afc = (t[3] >> 4) & 3, rai = 0, ini = 4;
-      if (afc & 2) { int al = t[4]; if (al > 0 && (t[5] & 0x40)) rai = 1; ini = 5 + al; }
-      if (!(afc & 1) || ini + 14 > 188) continue;
-      const unsigned char *pe = t + ini;
-      if (pe[0] || pe[1] || pe[2] != 1) continue;
-      int fl = pe[7];
-      int64_t ts = AV_NOPTS_VALUE;
-      if ((fl & 0xC0) == 0xC0 && ini + 19 <= 188) ts = lerTempo(pe + 14);   // DTS
-      else if (fl & 0x80) ts = lerTempo(pe + 9);                            // PTS
-      if (ts != AV_NOPTS_VALUE) mapaAnotar(m, p + i, msDe(m, ts));
-      if (rai) { achado = p + i; break; }
-    }
-  }
-  free(buf);
-  return achado;
-}
-
 // MPEG-TS: jump to the byte position the map gives for the time, find the next
 // keyframe packet (probe windows, or read forward), correct from its timestamp
 // (up to 3 tries; a binary search over an 80 GB file would read ~30 MB per
@@ -368,16 +293,6 @@ static int chaveTs(MiniMotor *m, long alvoMs, long tolMs, volatile int *cancelar
     int64_t pos = mapaPosicao(m, mira < 0 ? 0 : mira);
     if (pos > m->tamanho - TS_CAUDA / 4) pos = m->tamanho - TS_CAUDA / 4;
     if (pos < 0) pos = 0;
-    if (m->cfg.tsSonda && !m->sondaDesligada) {
-      int64_t k = sondarTs(m, pos, cancelar);
-      if (k >= 0) { pos = k; m->achouSonda = 1; m->sondaFalhas = 0; }
-      else if (++m->sondaFalhas >= 3) {
-        // This file never marks keyframe starts (or the windows are too sparse): stop paying for probes.
-        m->sondaDesligada = 1;
-        printf("[miniatura] mpegts: no keyframe start found by probing 3 times: reading forward for this file\n");
-        fflush(stdout);
-      }
-    }
     if (av_seek_frame(m->fc, -1, pos, AVSEEK_FLAG_BYTE) < 0) { erroDe(erro, nerro, "seek failed"); return -1; }
     long long lidos0 = m->lidos;
     for (;;) {
@@ -525,6 +440,8 @@ void mini_motor_proximo(MiniMotor *m, long alvoMs, long tolMs) {
   if (alvoMs < 0) return;
   // MPEG-TS: no prefetch. The map's guess is rarely where the forward read
   // starts after its corrections (host: 1108 ms with, 970 ms without).
+  // (Probing small windows for the keyframe start was tried on the TV, 22/10:
+  // on a UHD Blu-ray M2TS it never found one, so TS reads forward.)
   if (m->semIndice) pos = -1;
   else if (entradaChave(m, alvoMs, tolMs, &ts, &pos) < 0) pos = -1;
   m->proxPos = pos >= 0 && pos < m->tamanho ? pos : -1;
@@ -781,7 +698,6 @@ int mini_motor_quadro(MiniMotor *m, long alvoMs, long tolMs, int threads, volati
   lidos0 = m->lidos;
   int pedidos0 = m->pedidos;
   long preKB = 0;
-  m->sondasQuadro = 0; m->bytesSondaQuadro = 0; m->achouSonda = 0;
   if (abrirDecoder(m, threads) < 0) { erroDe(erro, nerro, "decoder failed to open"); return -1; }
   if (m->semIndice) {
     if (chaveTs(m, alvoMs, tolMs, cancelar, &pacotes, erro, nerro) < 0) goto fim;
@@ -834,7 +750,6 @@ fim:
   q->threads = threads;
   q->pedidos = m->pedidos - pedidos0;
   q->adiantadoKB = preKB;
-  q->sondas = m->sondasQuadro; q->sondaKB = m->bytesSondaQuadro / 1024; q->achouSonda = m->achouSonda;
   return r;
 }
 

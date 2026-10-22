@@ -1,7 +1,8 @@
 // Seek-bar thumbnail sets in the owner's Google Drive. See minidrive.h.
 #include "minidrive.h"
+#include "miniplat.h"
 
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
 #include "dados.h"
 #include "js.h"
 #include "rede.h"

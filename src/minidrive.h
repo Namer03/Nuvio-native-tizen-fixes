@@ -1,4 +1,4 @@
-// SEEK-BAR THUMBNAILS IN THE OWNER'S GOOGLE DRIVE (.tpk).
+// SEEK-BAR THUMBNAILS IN THE OWNER'S GOOGLE DRIVE (.tpk, LG, Android: miniplat.h).
 //
 // The TV makes the thumbnails (miniatura.c) and keeps them in RAM only. When a
 // title's set is done (or at Back), the set goes to Google Drive as ONE file in

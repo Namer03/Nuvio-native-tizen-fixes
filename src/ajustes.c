@@ -92,7 +92,7 @@
 #include "rede.h"
 #include "debrid.h"
 #include "seekr.h"
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
 #include "minidrive.h"
 #endif
 #include "selospacote.h"
@@ -1605,7 +1605,7 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Posição do relógio",              V_RELOGIO_POS, 3),   // local: relogioPosLocal
   ESC("Selo de assistido nos pôsteres",  V_SELO_VISTO, 3),    // local: seloVistoLocal
   ESC("Miniaturas na barra de tempo",    V_LIGA, 2),          // local: seekrLocal
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   ACAO("Google Drive"),                  // .tpk: thumbnails made on the TV, saved in Drive (minidrive.h)
 #else
   ACAO("Chave do Seekr"),
@@ -2732,7 +2732,7 @@ static void desenhaFolhaHeroCat(void);
 static char seekrChave[96];
 static int lig(int op) {
   if (op == AJ_FALHA_PROVEDORES || op == AJ_FALHA_ADDONS) return ajFalhaValor(op) == 0;
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   return valor[op] == 0;   // the .tpk makes its own thumbnails: no Seekr key
 #else
   return valor[op] == 0 && (op != AJ_SEEKR_LIGADO || seekrChave[0]);
@@ -4680,7 +4680,7 @@ void ajustes_dir(const char *dir) {
   fonteregra_carregar();
   fanartCarregar();
   seekrCarregar();
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   minidrive_carregar();
 #endif
   p2pCarregar();
@@ -6409,8 +6409,9 @@ static int foraDestaPlataforma(int op) {
 #endif
 #ifndef NV_TPK
   if (op == AJ_TRAILER_ZOOM_TPK || op == AJ_AUDIO_OFFSET) return 1;
-#else
-  // Thumbnails made on the TV from the file itself: no key to test, no sync offset.
+#endif
+#ifdef NV_MINIATURAS
+  // Thumbnails made on the device from the file itself: no key to test, no sync offset.
   if (op == AJ_SEEKR_TESTAR || op == AJ_SEEKR_AJUSTE) return 1;
 #endif
   // Botao de microfone das buscas: so onde ha o teclado da Samsung por tras
@@ -6865,7 +6866,7 @@ static const char *textoLeitura(int op) {
       return bufConta; }
   }
   if (op == AJ_FANART_CHAVE) return fanartMascarada();
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   if (op == AJ_SEEKR_CHAVE) {
     if (!minidrive_disponivel()) return i18n("indisponível nesta versão");
     switch (minidrive_estado()) {
@@ -7803,7 +7804,7 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_TMDB_CW: return "Usa o TMDB para preencher os cartazes da fileira de retomada.";
     case AJ_MDB_LIGADO: return "O MDBList junta notas de várias fontes na página do título. Desligar esconde a fileira inteira.";
     case AJ_MDB_CHAVE: return "A chave vem da sua conta Nuvio ou do arquivo do pacote. Não dá para digitar nesta TV.";
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
     case AJ_SEEKR_LIGADO:
       return "A TV faz as miniaturas enquanto o vídeo toca: primeiro onde você procura, depois perto da posição atual e então o filme todo. Pausa sozinha se faltar memória.";
     case AJ_SEEKR_CHAVE:
@@ -9242,7 +9243,7 @@ static int definirValorDireto(int op, int novo) {
     if(ok && op==AJ_IPTV_ATIVA)guia_recarregar(1);
     return ok;
   }
-#ifndef NV_TPK
+#ifndef NV_MINIATURAS
   if (op == AJ_SEEKR_LIGADO && novo == 0 && !seekrChave[0]) {
     uxNotificar(seekrPedirChave());
     return 0;
@@ -9393,7 +9394,7 @@ static void eventoTela(const SDL_Event *e) {
     int smkAtivo = (sa == SMK_PEDINDO || sa == SMK_AGUARDANDO || sa == SMK_ERRO);
     DisEstado da = discord_estado();
     int disAtivo = (da == DIS_PEDINDO || da == DIS_AGUARDANDO || da == DIS_ERRO);
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
     GdrEstado ga = minidrive_estado();
     int gdrAtivo = ga == GDR_PEDINDO || ga == GDR_AGUARDANDO || ga == GDR_ERRO;
 #else
@@ -9403,12 +9404,12 @@ static void eventoTela(const SDL_Event *e) {
       if (k == SDLK_ESCAPE || k == SDLK_AC_BACK || k == SDLK_BACKSPACE) {
         if (traAtivo) traktauth_cancelar();
         else if (smkAtivo) simklauth_cancelar();
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
         else if (gdrAtivo) minidrive_cancelar();
 #endif
         else discord_cancelar();
       } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
         if (gdrAtivo && ga == GDR_ERRO) minidrive_comecar();
 #endif
         if (disAtivo && da == DIS_ERRO) discord_comecar();
@@ -9579,7 +9580,7 @@ static void eventoTela(const SDL_Event *e) {
     }
     // A grade curta guardada era da conta que saiu (#158).
     if (focoOp == AJ_XTREAM_LIMPAR) { xtream_esquecer(); xtepg_limpar(); guia_fonte_esquecer("xt"); return; }
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
     if (focoOp == AJ_SEEKR_CHAVE) {
       if (!minidrive_disponivel()) { uxNotificar(i18n("indisponível nesta versão")); return; }
       if (minidrive_ligado()) minidrive_desconectar();
@@ -9932,7 +9933,7 @@ static const char *textoValor(int op) {
   }
   const Opcao *o = &OPCOES[op];
   if (o->tipo == OP_LEITURA || o->tipo == OP_ACAO) return textoLeitura(op);
-#ifndef NV_TPK
+#ifndef NV_MINIATURAS
   if (op == AJ_SEEKR_LIGADO && !seekrChave[0]) return i18n("Desligado");
 #endif
   if (op == AJ_HERO_TRAILER_ESPERA) {
@@ -10565,7 +10566,7 @@ static void ajDesenharTudo(Uint32 agora) {
       desenhaVinculo("Simkl", simklauth_codigo(), simklauth_url(),
                      simklauth_erro(), sa == SMK_AGUARDANDO);
     else { DisEstado da = discord_estado();
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
       GdrEstado ga = minidrive_estado();
       if (ga == GDR_PEDINDO || ga == GDR_AGUARDANDO || ga == GDR_ERRO)
         desenhaVinculo("Google Drive", minidrive_codigo(), minidrive_url(),
@@ -10590,7 +10591,7 @@ int ajustes_relogio_cabe(void) {
   if (teclado_aberto() || (ajModalAberto() && !filAberta)) return 0;
   if (!traktauth_aguardando() && (ta == TRA_PEDINDO || ta == TRA_AGUARDANDO || ta == TRA_ERRO)) return 0;
   if (sa == SMK_PEDINDO || sa == SMK_AGUARDANDO || sa == SMK_ERRO) return 0;
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   { GdrEstado ga = minidrive_estado();
     if (ga == GDR_PEDINDO || ga == GDR_AGUARDANDO || ga == GDR_ERRO) return 0; }
 #endif

@@ -1,38 +1,41 @@
-// SEEK-BAR THUMBNAILS MADE ON THE TV (.tpk only). Replaces the Seekr API on
-// the Samsung .tpk: it serves the same seekr_* calls player.c and ajustes.c
-// already make (seekr.h), so the drawing code stays as it is. seekr.c and
-// seekrquota.c are not built into the .tpk.
+// SEEK-BAR THUMBNAILS MADE ON THE DEVICE (Samsung .tpk, LG webOS, Android;
+// miniplat.h). Replaces the Seekr API there: it serves the same seekr_* calls
+// player.c and ajustes.c already make (seekr.h), so the drawing code stays as
+// it is. seekr.c and seekrquota.c are not built into those targets.
 //
-// While a title plays, a low-priority thread makes one 320x180 JPEG per 10 s
-// of the film from the nearest keyframe (miniatura_motor.c), in this order:
-//   1. where the person scrubs;
-//   2. +-1 min around the playhead;
-//   3. one every 5 min over the whole film (a 4K tile takes ~0.75 s on the
-//      S95C, so this coarse pass is what makes scrubbing far away show
-//      something within the first minute);
-//   4. the rest of +-5% of the runtime around the playhead, ahead first;
-//   5. one every 60 s; 6. the rest, every 10 s.
+// While a title plays, a low-priority thread makes 320x180 JPEGs from the
+// nearest keyframes (miniatura_motor.c). Slots are every 5 s; the GRID decides
+// which are made (owner, 23/10):
+//   5 s  - picture up to 1080p and runtime up to 90:00, or above 1080p and
+//          under 70:00 on a device with 2 GB of RAM or more;
+//   10 s - everything else, and every MPEG-TS / M2TS file.
+// Order on the 10 s grid: scrub point +-30 s -> +-1 min around the playhead ->
+// one every 5 min -> +-5% of the runtime -> one every 60 s -> every 10 s.
+// Order on the 5 s grid: scrub point +-30 s every 5 s -> +-1 min every 10 s ->
+// one every 5 min -> +-1 min every 5 s -> +-5% every 10 s -> one every 60 s ->
+// +-5% every 5 s -> whole film every 10 s -> whole film every 5 s.
+// Every step goes outwards from its centre, ahead first at equal distance.
+// Layered: a 10 s slot is also a 5 s slot, nothing is made twice, and a
+// keyframe that serves several slots is decoded once.
 // While a slot is not made yet, the seek bar shows the nearest made tile
 // (up to 5 min away) with ITS own time, dimmed as "still loading".
-// A keyframe that serves several 10 s slots is decoded once.
 //
-// MEMORY (owner: never run the TV out of memory, at all costs). Before every
-// frame MemAvailable must cover a floor plus what the next frame needs
-// (mini_motor_memoria); otherwise the decoder is freed and the thread waits.
-// One decoded frame at a time; tight memory = 1 thread and the decoder closed
-// between frames. The tiles stay compressed in RAM (~8 KB each); only the few
-// on screen become textures.
+// MEMORY (owner: never run out of memory, at all costs). Before every frame
+// MemAvailable must cover a 150 MB floor plus what the next frame costs
+// (measured on the device after the first one). One decoded frame at a time,
+// one decoding thread; the decoder stays open between frames (TV tests 22/10:
+// ~20% faster) and is closed while paused. The tiles stay compressed in RAM
+// (~8 KB each); only the few on screen become textures.
 //
-// Nothing is kept on the TV: with Google Drive linked (minidrive.c) the set is
-// looked up before anything is made and saved when the title stops.
+// Nothing is kept on the device: with Google Drive linked (minidrive.c) the set
+// is looked up before anything is made and saved when the title stops.
 //
 // Logs `[miniatura]`, never URLs or keys.
 #include "seekr.h"
+#include "miniplat.h"
 
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
 #include "minidrive.h"
-#include "minilab.h"
-#include "dados.h"
 #include "miniatura_motor.h"
 #include "rede.h"
 #include "streams.h"
@@ -50,20 +53,26 @@
 #include <time.h>
 #include <unistd.h>
 
-#define GRADE_MS 10000L
-#define TOL_MS 5000L
-// MEMORY GATE (knobs in the thumbnail lab, minilab.h): MemAvailable must cover
-// a floor (owner's test value 150 MB; the DTS converter with thumbnails on has
-// taken this TV, Tizen 9 / 1774 MB, to 175 MB with no trouble) plus the next
-// tile's cost. Measured on the TV (logs of 22/10): a 4K tile costs 35-45 MB of
-// MemAvailable. Before any is measured the cost is a guess (60 MB for 4K,
-// scaled by picture size); after `medirApos` tiles it is the largest of the
-// last MEDIDAS measured costs x margemPct (never under MEDIDA_MIN_KB).
+#define BASE_MS 5000L              // one slot every 5 s; the 10 s grid uses every second one
+#define DEZ 2                      // slots per 10 s
+// MEMORY GATE (values from the TV tests of 22-23/10, Tizen 9 / 1774 MB):
+// MemAvailable must cover the floor plus the next tile's cost. A 4K tile costs
+// 35-45 MB of MemAvailable; before one is measured the cost is 60 MB scaled by
+// picture size, after it the largest of the last MEDIDAS measured costs x 1.25.
+// With the DTS converter running the TV went down to 155 MB with no trouble.
+#define PISO_KB (150L * 1024)
+#define CUSTO_4K_KB (60L * 1024)
+#define MARGEM_PCT 125
 #define MEDIDAS 8
 #define MEDIDA_MIN_KB (20L * 1024)
-#define PERTO_SLOTS 6              // +-1 min around the playhead first
-#define GROSSO_SLOTS 30            // then one every 5 min
-#define VIZINHO_SLOTS 30           // seek bar: nearest made tile up to 5 min away
+#define PAUSA_MEM_MS 1500          // memory re-check while paused
+#define INTERVALO_MS 30            // between tiles
+#define RAM_5S_4K_MB 2048          // 4K gets the 5 s grid only with this much RAM
+#define SCRUB_SLOTS 6              // +-30 s around the scrub point
+#define PERTO_SLOTS 12             // +-1 min around the playhead
+#define GROSSO_SLOTS 60            // one every 5 min
+#define MINUTO_SLOTS 12            // one every 60 s
+#define VIZINHO_SLOTS 60           // seek bar: nearest made tile up to 5 min away
 #define FATIA 0.05                 // +-5% of the runtime around the playhead
 #define SLOTS 4
 
@@ -75,7 +84,8 @@ typedef struct { unsigned char *jpg; int n; long pts; } Tile;
 typedef struct {
   unsigned g;
   int refs;
-  Tile *tiles; unsigned char *falhas; int n;
+  Tile *tiles; unsigned char *falhas; int n;   // n slots of BASE_MS
+  int passo;                 // 1 = 5 s grid, DEZ = 10 s grid, 0 = not decided yet
   int feitos, novos;
   long dur;
   volatile int parar;
@@ -90,60 +100,6 @@ static char urlAtual[4096];      // its link (identity: video_url_atual)
 static long durAtual;
 static Uint32 batida;            // last seekr_pedir: the player still shows this title
 
-// ------------------------------------------------------------------ the lab's knobs and readout
-static MiniAjustes ajustes;
-static int ajustesLidos;
-static MiniStats lab;            // under mu
-#define ARQ_LAB "miniteste.txt"
-static const struct { const char *nome; size_t off; } CAMPOS[] = {
-#define C(x) { #x, offsetof(MiniAjustes, x) }
-  C(pisoMB), C(dtsExtraMB), C(margemPct), C(estimativa4kMB), C(medirApos), C(threads), C(manterDecoder),
-  C(prefetch), C(lerBlocos), C(exato), C(tsBlocos), C(tsSonda), C(tsJanelaKB), C(tsPassoKB), C(tsSondasMax),
-  C(pausaMs), C(intervaloMs), C(parado)
-#undef C
-};
-void mini_ajustes_padrao(MiniAjustes *a) {
-  memset(a, 0, sizeof *a);
-  a->pisoMB = 150; a->dtsExtraMB = 0; a->margemPct = 125; a->estimativa4kMB = 60; a->medirApos = 1;
-  a->threads = 1; a->manterDecoder = 0; a->prefetch = 1; a->lerBlocos = 4; a->exato = 0;
-  a->tsBlocos = 7; a->tsSonda = 0; a->tsJanelaKB = 64; a->tsPassoKB = 512; a->tsSondasMax = 12;
-  a->pausaMs = 1500; a->intervaloMs = 30; a->parado = 0;
-}
-MiniAjustes *mini_ajustes(void) {
-  if (!ajustesLidos) {
-    char *t = dados_ler(ARQ_LAB), *p;
-    ajustesLidos = 1;
-    mini_ajustes_padrao(&ajustes);
-    for (p = t; p && *p; ) {
-      char nome[32]; int v;
-      if (sscanf(p, "%31[^=]=%d", nome, &v) == 2)
-        for (size_t i = 0; i < sizeof CAMPOS / sizeof *CAMPOS; i++)
-          if (!strcmp(nome, CAMPOS[i].nome)) *(int *)((char *)&ajustes + CAMPOS[i].off) = v;
-      p = strchr(p, '\n');
-      if (p) p++;
-    }
-    free(t);
-  }
-  return &ajustes;
-}
-void mini_ajustes_gravar(void) {
-  char buf[1024]; size_t u = 0;
-  mini_ajustes();
-  for (size_t i = 0; i < sizeof CAMPOS / sizeof *CAMPOS && u < sizeof buf; i++)
-    u += (size_t)snprintf(buf + u, sizeof buf - u, "%s=%d\n", CAMPOS[i].nome,
-                          *(int *)((char *)&ajustes + CAMPOS[i].off));
-  if (!dados_gravar(ARQ_LAB, buf)) { printf("[miniatura] lab: could not save the test values\n"); fflush(stdout); }
-}
-void mini_stats(MiniStats *s) {
-  pthread_mutex_lock(&mu);
-  *s = lab;
-  pthread_mutex_unlock(&mu);
-}
-static __attribute__((unused)) void estadoLab(const char *e) {
-  pthread_mutex_lock(&mu);
-  snprintf(lab.estado, sizeof lab.estado, "%s", e);
-  pthread_mutex_unlock(&mu);
-}
 static long alvoScrub = -1; static Uint32 alvoTick;
 
 // Caller holds mu.
@@ -162,6 +118,15 @@ static long memDisponivelKB(void) {
   fclose(f);
   return v;
 }
+static long memTotalMB(void) {
+  FILE *f = fopen("/proc/meminfo", "r");
+  char l[128]; long v = -1;
+  if (!f) return -1;
+  while (fgets(l, sizeof l, f)) if (!strncmp(l, "MemTotal:", 9)) { v = atol(l + 9) / 1024; break; }
+  fclose(f);
+  return v;
+}
+static int nucleos(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n > 0 ? (int)n : 1; }
 static long rssKB(void) {
   FILE *f = fopen("/proc/self/status", "r");
   char l[128]; long v = -1;
@@ -170,11 +135,13 @@ static long rssKB(void) {
   fclose(f);
   return v;
 }
-static void dormirJ(Job *j, int ms) { while (ms > 0 && !j->parar) { usleep(100000); ms -= 100; } }
+static void dormirJ(Job *j, int ms) { while (ms > 0 && !j->parar) { int p = ms < 100 ? ms : 100; usleep((useconds_t)p * 1000); ms -= p; } }
 
 // ------------------------------------------------------------------ pack (Drive file)
 // "NVMT" u32 version=1, u32 grid ms, u32 n slots, u32 count, then per tile
-// u32 slot, i32 pts ms, u32 len, JPEG bytes. Little-endian.
+// u32 slot, i32 pts ms, u32 len, JPEG bytes. Little-endian. The grid is the
+// title's own (5000 or 10000) and slots count in it, so sets saved by the
+// first 10 s-only builds read the same way.
 static void put32(unsigned char *p, uint32_t v) { p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8); p[2] = (unsigned char)(v >> 16); p[3] = (unsigned char)(v >> 24); }
 static uint32_t get32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 
@@ -182,14 +149,16 @@ static unsigned char *empacotar(Job *j, size_t *n, int *conta) {
   size_t tam = 20;
   int c = 0;
   pthread_mutex_lock(&mu);
-  for (int k = 0; k < j->n; k++) if (j->tiles[k].jpg) { tam += 12 + (size_t)j->tiles[k].n; c++; }
+  int ps = j->passo > 0 ? j->passo : DEZ;
+  for (int k = 0; k < j->n; k += ps) if (j->tiles[k].jpg) { tam += 12 + (size_t)j->tiles[k].n; c++; }
   unsigned char *b = c ? malloc(tam) : NULL;
   if (b) {
     unsigned char *p = b;
-    memcpy(p, "NVMT", 4); put32(p + 4, 1); put32(p + 8, GRADE_MS); put32(p + 12, (uint32_t)j->n); put32(p + 16, (uint32_t)c);
+    memcpy(p, "NVMT", 4); put32(p + 4, 1); put32(p + 8, (uint32_t)(ps * BASE_MS));
+    put32(p + 12, (uint32_t)((j->n + ps - 1) / ps)); put32(p + 16, (uint32_t)c);
     p += 20;
-    for (int k = 0; k < j->n; k++) if (j->tiles[k].jpg) {
-      put32(p, (uint32_t)k); put32(p + 4, (uint32_t)j->tiles[k].pts); put32(p + 8, (uint32_t)j->tiles[k].n);
+    for (int k = 0; k < j->n; k += ps) if (j->tiles[k].jpg) {
+      put32(p, (uint32_t)(k / ps)); put32(p + 4, (uint32_t)j->tiles[k].pts); put32(p + 8, (uint32_t)j->tiles[k].n);
       memcpy(p + 12, j->tiles[k].jpg, (size_t)j->tiles[k].n); p += 12 + j->tiles[k].n;
     }
   }
@@ -198,15 +167,21 @@ static unsigned char *empacotar(Job *j, size_t *n, int *conta) {
   return b;
 }
 
-// Adds the tiles of a pack to the set (never replaces one already made). Count added.
-static int desempacotar(Job *jb, const unsigned char *b, size_t n) {
-  if (n < 20 || memcmp(b, "NVMT", 4) || get32(b + 4) != 1 || get32(b + 8) != GRADE_MS) return 0;
+// Adds the tiles of a pack to the set (never replaces one already made).
+// Count added; *grade = the pack's grid in ms (0 = not a pack).
+static int desempacotar(Job *jb, const unsigned char *b, size_t n, long *grade) {
+  if (grade) *grade = 0;
+  if (n < 20 || memcmp(b, "NVMT", 4) || get32(b + 4) != 1) return 0;
+  uint32_t g = get32(b + 8);
+  if (g != BASE_MS && g != DEZ * BASE_MS) return 0;
+  int mult = (int)(g / BASE_MS);
+  if (grade) *grade = (long)g;
   uint32_t c = get32(b + 16);
   size_t pos = 20;
   int add = 0;
   pthread_mutex_lock(&mu);
   for (uint32_t i = 0; i < c && pos + 12 <= n; i++) {
-    uint32_t k = get32(b + pos), len = get32(b + pos + 8);
+    uint32_t k = get32(b + pos) * (uint32_t)mult, len = get32(b + pos + 8);
     long pts = (long)(int32_t)get32(b + pos + 4);
     if (pos + 12 + len > n || len < 125 || len > 200000) break;
     if ((int)k < jb->n && !jb->tiles[k].jpg) {
@@ -222,47 +197,67 @@ static int desempacotar(Job *jb, const unsigned char *b, size_t n) {
 
 // ------------------------------------------------------------------ order of work
 static int pronto(const Job *j, int k) { return k >= 0 && k < j->n && j->tiles[k].jpg; }
-static int livre(const Job *j, int k) { return k >= 0 && k < j->n && !j->tiles[k].jpg && j->falhas[k] < 2; }
-
-// Next slot to make (-1 = none left). Caller holds mu.
-static int proximo(const Job *j, long phMs, int *classe) {
-  int ph = (int)(phMs / GRADE_MS), w;
-  if (ph >= j->n) ph = j->n - 1;
-  if (ph < 0) ph = 0;
-  // 1. the scrub target, if the person looked at the seek bar in the last 4 s
-  if (alvoScrub >= 0 && (Sint32)(SDL_GetTicks() - alvoTick) < 4000) {
-    int k0 = (int)((alvoScrub + GRADE_MS / 2) / GRADE_MS);
-    for (int d = 0; d <= 3; d++) {
-      if (livre(j, k0 + d)) { *classe = 1; return k0 + d; }
-      if (d && livre(j, k0 - d)) { *classe = 1; return k0 - d; }
-    }
-  }
-  // 2. +-1 min around the playhead, ahead first at equal distance
-  for (int d = 0; d <= PERTO_SLOTS; d++) {
-    if (livre(j, ph + d)) { *classe = 2; return ph + d; }
-    if (d && livre(j, ph - d)) { *classe = 2; return ph - d; }
-  }
-  // 3. one every 5 min over the whole film, nearest to the playhead first
-  for (int d = 0; d < j->n; d++) {
-    int a = ph + d, b = ph - d;
-    if (a % GROSSO_SLOTS == 0 && livre(j, a)) { *classe = 3; return a; }
-    if (d && b >= 0 && b % GROSSO_SLOTS == 0 && livre(j, b)) { *classe = 3; return b; }
-  }
-  // 4. the rest of +-5% of the runtime around the playhead
-  w = (int)(j->dur * FATIA / GRADE_MS) + 1;
-  for (int d = 0; d <= w; d++) {
-    if (livre(j, ph + d)) { *classe = 4; return ph + d; }
-    if (d && livre(j, ph - d)) { *classe = 4; return ph - d; }
-  }
-  // 5. one every 60 s, then 6. the rest, nearest to the playhead first
-  for (int passo = 6; passo >= 1; passo -= 5) {
-    for (int d = 0; d < j->n; d++) {
-      int a = ph + d, b = ph - d;
-      if (a % passo == 0 && livre(j, a)) { *classe = passo == 6 ? 5 : 6; return a; }
-      if (d && b >= 0 && b % passo == 0 && livre(j, b)) { *classe = passo == 6 ? 5 : 6; return b; }
-    }
+static int livre(const Job *j, int k) {
+  return k >= 0 && k < j->n && j->passo > 0 && k % j->passo == 0 && !j->tiles[k].jpg && j->falhas[k] < 2;
+}
+// Nearest free slot on the `passo` grid within `raio` slots of `c`, ahead first.
+static int perto(const Job *j, int c, int raio, int passo) {
+  for (int d = 0; d <= raio; d++) {
+    if ((c + d) % passo == 0 && livre(j, c + d)) return c + d;
+    if (d && c - d >= 0 && (c - d) % passo == 0 && livre(j, c - d)) return c - d;
   }
   return -1;
+}
+
+enum { E_SCRUB, E_PERTO, E_FATIA, E_TODO };
+typedef struct { int tipo, passo; } Etapa;
+// 10 s grid: scrub +-30 s, +-1 min, every 5 min, +-5%, every 60 s, every 10 s.
+static const Etapa ORDEM_10[] = {
+  { E_SCRUB, DEZ }, { E_PERTO, DEZ }, { E_TODO, GROSSO_SLOTS }, { E_FATIA, DEZ },
+  { E_TODO, MINUTO_SLOTS }, { E_TODO, DEZ } };
+// 5 s grid (owner, 23/10): scrub +-30 s every 5 s, +-1 min every 10 s, every
+// 5 min, +-1 min every 5 s, +-5% every 10 s, every 60 s, +-5% every 5 s,
+// whole film every 10 s, whole film every 5 s.
+static const Etapa ORDEM_5[] = {
+  { E_SCRUB, 1 }, { E_PERTO, DEZ }, { E_TODO, GROSSO_SLOTS }, { E_PERTO, 1 }, { E_FATIA, DEZ },
+  { E_TODO, MINUTO_SLOTS }, { E_FATIA, 1 }, { E_TODO, DEZ }, { E_TODO, 1 } };
+
+// Next slot to make (-1 = none left). *classe = the step (1-based). Caller holds mu.
+static int proximo(const Job *j, long phMs, int *classe) {
+  const Etapa *o = j->passo == 1 ? ORDEM_5 : ORDEM_10;
+  int no = j->passo == 1 ? (int)(sizeof ORDEM_5 / sizeof *ORDEM_5) : (int)(sizeof ORDEM_10 / sizeof *ORDEM_10);
+  int ph = (int)((phMs + BASE_MS / 2) / BASE_MS), fatia = (int)(j->dur * FATIA / BASE_MS) + 1;
+  int scrub = alvoScrub >= 0 && (Sint32)(SDL_GetTicks() - alvoTick) < 4000;
+  int k0 = (int)((alvoScrub + BASE_MS / 2) / BASE_MS);
+  if (j->passo <= 0) return -1;
+  if (ph >= j->n) ph = j->n - 1;
+  if (ph < 0) ph = 0;
+  for (int e = 0; e < no; e++) {
+    int k = -1;
+    switch (o[e].tipo) {
+      case E_SCRUB: if (scrub) k = perto(j, k0, SCRUB_SLOTS, o[e].passo); break;
+      case E_PERTO: k = perto(j, ph, PERTO_SLOTS, o[e].passo); break;
+      case E_FATIA: k = perto(j, ph, fatia, o[e].passo); break;
+      default:      k = perto(j, ph, j->n, o[e].passo); break;
+    }
+    if (k >= 0) { *classe = e + 1; return k; }
+  }
+  return -1;
+}
+
+// The grid for this file (see the top of the file).
+static int gradeDe(const MiniInfo *i, long durMs, const char **porque) {
+  long ram = memTotalMB();
+  int hd = i->largura <= 2048 && i->altura <= 1152;
+  if (!strcmp(i->formato, "mpegts")) { *porque = "M2TS/TS"; return DEZ; }
+  if (hd) {
+    if (durMs <= 90L * 60000) { *porque = "up to 1080p, 90 min or shorter"; return 1; }
+    *porque = "up to 1080p, longer than 90 min"; return DEZ;
+  }
+  if (durMs >= 70L * 60000) { *porque = "above 1080p, 70 min or longer"; return DEZ; }
+  if (ram >= 0 && ram < RAM_5S_4K_MB) { *porque = "above 1080p, under 2 GB of RAM"; return DEZ; }
+  *porque = "above 1080p, shorter than 70 min";
+  return 1;
 }
 
 typedef struct {
@@ -272,7 +267,10 @@ typedef struct {
   char imdb[24]; int t, e;
 } Trabalho;
 
-#ifdef NV_DTS_FFMPEG
+// The engine needs FFmpeg: the .tpk 6+ and LG link it for the DTS converter
+// (NV_DTS_FFMPEG), Android links a thumbnail-only build (NV_MINI_FFMPEG,
+// tools/android/ffmpeg-miniaturas.sh). NuvioTpk40 has none.
+#if defined(NV_DTS_FFMPEG) || defined(NV_MINI_FFMPEG)
 // ------------------------------------------------------------------ source reader
 typedef struct {
   char url[4096], cab[2048], final[4096];
@@ -327,17 +325,14 @@ static void *trabalhar(void *u) {
   MiniMotor *m = NULL;
   MiniMeta meta; memset(&meta, 0, sizeof meta);
   char id[128] = "", erro[128] = "";
-  // One decoding thread: on the TV 2 threads were no faster while the player
-  // decodes 4K (log 4: 451/744 ms vs 1 thread 286-622 ms) and cost more memory.
-  int threads = 1, seguidas = 0, feitosAqui = 0;
+  // One decoding thread: on the TV 2-3 threads were no faster while the player
+  // decodes 4K (tests 22/10) and cost more memory.
+  const int threads = 1;
+  int seguidas = 0, feitosAqui = 0;
   unsigned long somaMs = 0;
   long medidas[MEDIDAS] = {0}; int nMedidas = 0;
   Uint32 ultimaPausaLog = 0; int pausasCaladas = 0;
-  pthread_mutex_lock(&mu);
-  memset(&lab, 0, sizeof lab);
-  snprintf(lab.estado, sizeof lab.estado, "starting");
-  lab.n = j->n;
-  pthread_mutex_unlock(&mu);
+  long gradePack = 0;
   if (!l) goto fim;
   l->j = j;
   snprintf(l->url, sizeof l->url, "%s", w->url);
@@ -373,81 +368,65 @@ static void *trabalhar(void *u) {
   if (minidrive_ligado() && (meta.fp[0] || meta.nk[0]) && !j->parar) {
     unsigned char *b = NULL; size_t n = 0;
     if (minidrive_buscar(&meta, &b, &n, id, sizeof id) == 1) {
-      int add = desempacotar(j, b, n);
-      printf("[miniatura] %d tile(s) from Google Drive\n", add); fflush(stdout);
+      int add = desempacotar(j, b, n, &gradePack);
+      printf("[miniatura] %d tile(s) from Google Drive (%ld s grid)\n", add, gradePack / 1000); fflush(stdout);
       minidrive_tocar(id);
     }
     free(b);
     minidrive_limpeza();
   }
-  pthread_mutex_lock(&mu); int faltam = j->feitos < j->n; pthread_mutex_unlock(&mu);
-  if (!faltam || j->parar) goto fim;
+  // A complete 5 s set: nothing left to make, not even opening the file.
+  pthread_mutex_lock(&mu); int completo = gradePack == BASE_MS && j->feitos >= j->n; pthread_mutex_unlock(&mu);
+  if (completo || j->parar) goto fim;
   if (l->total <= 0) { printf("[miniatura] stopped: source size unknown\n"); goto semPrevia; }
 
   m = mini_motor_abrir(lerFonte, l, l->total, erro, sizeof erro);
   if (!m) { printf("[miniatura] not made for this file: %s\n", erro); goto semPrevia; }
   {
     const MiniInfo *i = mini_motor_info(m);
+    const char *porque = "";
+    int ps = gradeDe(i, j->dur, &porque);
     pthread_mutex_lock(&mu);
-    snprintf(lab.arquivo, sizeof lab.arquivo, "%s %s %dx%d%s", i->formato, i->codec, i->largura, i->altura, i->hdr ? " HDR" : "");
+    j->passo = ps;
     pthread_mutex_unlock(&mu);
-    printf("[miniatura] %s %s %dx%d %d-bit%s, %d keyframes, %d slots, needs ~%zu MB per frame\n",
-           i->formato, i->codec, i->largura, i->altura, i->bits, i->hdr ? " HDR" : "", i->chaves, j->n,
-           mini_motor_memoria(m, 1) / 1048576);
+    printf("[miniatura] %s %s %dx%d %d-bit%s, %d keyframes; %s grid (%s), %d slots\n",
+           i->formato, i->codec, i->largura, i->altura, i->bits, i->hdr ? " HDR" : "", i->chaves,
+           ps == 1 ? "5 s" : "10 s", porque, (j->n + ps - 1) / ps);
     fflush(stdout);
   }
 
   while (!j->parar) {
-    MiniAjustes aj = *mini_ajustes();             // the lab's knobs, re-read every loop
-    {
-      MiniConfig c;
-      mini_motor_config_padrao(&c);
-      c.lerBlocos = aj.lerBlocos; c.exato = aj.exato; c.prefetch = aj.prefetch; c.tsBlocos = aj.tsBlocos;
-      c.tsSonda = aj.tsSonda; c.tsJanelaKB = aj.tsJanelaKB; c.tsPassoKB = aj.tsPassoKB; c.tsSondasMax = aj.tsSondasMax;
-      mini_motor_config(m, &c);
-    }
-    threads = aj.threads < 1 ? 1 : aj.threads > 3 ? 3 : aj.threads;
-    // Pauses: the lab stopped it, the player is not showing this title, or is buffering / opening.
-    if (aj.parado) { mini_motor_soltar_decoder(m); estadoLab("stopped in the lab"); dormirJ(j, 500); continue; }
-    if ((Sint32)(SDL_GetTicks() - batida) > 6000) { mini_motor_soltar_decoder(m); estadoLab("waiting: title not on screen"); dormirJ(j, 500); continue; }
-    if (video_bufferando_ms() > 0 || !video_pronto()) { mini_motor_soltar_decoder(m); estadoLab("waiting: player buffering"); dormirJ(j, 700); continue; }
+    // Pauses: the player is not showing this title, or is buffering / opening.
+    if ((Sint32)(SDL_GetTicks() - batida) > 6000) { mini_motor_soltar_decoder(m); dormirJ(j, 500); continue; }
+    if (video_bufferando_ms() > 0 || !video_pronto()) { mini_motor_soltar_decoder(m); dormirJ(j, 700); continue; }
     // Memory before every frame.
     long disp = memDisponivelKB();
     long precisa = (long)(mini_motor_memoria(m, threads) / 1024);
     {
-      // Static guess until measured: the lab's 4K figure, scaled by picture size.
+      // Guess until measured: 60 MB for a 4K frame, scaled by picture size.
       const MiniInfo *mi = mini_motor_info(m);
       double px = (double)mi->largura * (double)mi->altura / (3840.0 * 2160.0);
-      long g = (long)(aj.estimativa4kMB * 1024.0 * (px > 0.05 ? px : 0.05));
+      long g = (long)(CUSTO_4K_KB * (px > 0.05 ? px : 0.05));
       if (g < precisa) precisa = g;
     }
-    if (nMedidas >= (aj.medirApos < 1 ? 1 : aj.medirApos)) {
+    if (nMedidas >= 1) {
       long maior = 0;
       for (int i = 0; i < nMedidas && i < MEDIDAS; i++) if (medidas[i] > maior) maior = medidas[i];
-      maior = maior * aj.margemPct / 100;
+      maior = maior * MARGEM_PCT / 100;
       if (maior < MEDIDA_MIN_KB) maior = MEDIDA_MIN_KB;
       precisa = maior;
     }
-    int dts = video_dts_estado() == VIDEO_DTS_PREPARANDO || video_dts_estado() == VIDEO_DTS_CONVERTIDO;
-    long piso = (long)(aj.pisoMB + (dts ? aj.dtsExtraMB : 0)) * 1024;
-    pthread_mutex_lock(&mu);
-    lab.livreMB = disp / 1024; lab.custoUsadoMB = precisa / 1024; lab.pisoEfetivoMB = piso / 1024;
-    if (disp >= 0 && (lab.menorLivreMB <= 0 || disp / 1024 < lab.menorLivreMB)) lab.menorLivreMB = disp / 1024;
-    pthread_mutex_unlock(&mu);
-    if (disp >= 0 && disp < piso + precisa) {
+    if (disp >= 0 && disp < PISO_KB + precisa) {
+      int dts = video_dts_estado() == VIDEO_DTS_PREPARANDO || video_dts_estado() == VIDEO_DTS_CONVERTIDO;
       mini_motor_soltar_decoder(m);
-      char e[96];
-      snprintf(e, sizeof e, "paused: low memory (%ld < %ld + %ld MB)", disp / 1024, piso / 1024, precisa / 1024);
-      estadoLab(e);
       // One line when it starts, then at most one every 30 s.
       if (!ultimaPausaLog || SDL_GetTicks() - ultimaPausaLog > 30000) {
         printf("[miniatura] paused: low memory (free %ld MB, needs %ld MB + floor %ld MB%s)%s\n",
-               disp / 1024, precisa / 1024, piso / 1024, dts ? ", DTS converting" : "", pausasCaladas ? ", still waiting" : "");
+               disp / 1024, precisa / 1024, PISO_KB / 1024, dts ? ", DTS converting" : "", pausasCaladas ? ", still waiting" : "");
         fflush(stdout);
         ultimaPausaLog = SDL_GetTicks(); pausasCaladas = 0;
-        pthread_mutex_lock(&mu); lab.pausasMem++; pthread_mutex_unlock(&mu);
       } else pausasCaladas++;
-      dormirJ(j, aj.pausaMs < 100 ? 100 : aj.pausaMs);
+      dormirJ(j, PAUSA_MEM_MS);
       continue;
     }
     ultimaPausaLog = 0; pausasCaladas = 0;
@@ -456,29 +435,30 @@ static void *trabalhar(void *u) {
     long ph = (long)(video_pos() * 1000.0);
     pthread_mutex_lock(&mu);
     k = proximo(j, ph, &classe);
-    if (k >= 0 && aj.prefetch) {
+    if (k >= 0) {
       // The slot after this one, for the prefetch: same order, this one taken.
       unsigned char f0 = j->falhas[k];
       j->falhas[k] = 99;
       k2 = proximo(j, ph, &c2);
       j->falhas[k] = f0;
     }
+    long tol = (long)j->passo * BASE_MS / 2;
     pthread_mutex_unlock(&mu);
     if (k < 0) break;
-    long alvo = k * GRADE_MS;
+    long alvo = k * BASE_MS;
     if (alvo > j->dur - 1) alvo = j->dur - 1;
     {
-      long alvo2 = k2 >= 0 ? k2 * GRADE_MS : -1;
+      long alvo2 = k2 >= 0 ? k2 * BASE_MS : -1;
       if (alvo2 > j->dur - 1) alvo2 = j->dur - 1;
-      mini_motor_proximo(m, alvo2, TOL_MS);
+      mini_motor_proximo(m, alvo2, tol);
     }
 
     // Keyframe shared with a slot already made: copy it, no decode.
-    long kf = mini_motor_chave(m, alvo, TOL_MS);
+    long kf = mini_motor_chave(m, alvo, tol);
     int irmao = -1;
     if (kf >= 0) {
       pthread_mutex_lock(&mu);
-      for (int d = 1; d <= 3 && irmao < 0; d++) {
+      for (int d = 1; d <= 6 && irmao < 0; d++) {
         if (pronto(j, k - d) && labs(j->tiles[k - d].pts - kf) < 50) irmao = k - d;
         else if (pronto(j, k + d) && labs(j->tiles[k + d].pts - kf) < 50) irmao = k + d;
       }
@@ -494,14 +474,12 @@ static void *trabalhar(void *u) {
 
     unsigned char *jpg = NULL; int nj = 0; MiniQuadro q;
     long antes = memDisponivelKB();
-    { char e[64]; snprintf(e, sizeof e, "making slot %d (%ld s)", k, alvo / 1000); estadoLab(e); }
-    if (mini_motor_quadro(m, alvo, TOL_MS, threads, &j->parar, &jpg, &nj, &q, erro, sizeof erro) < 0) {
+    if (mini_motor_quadro(m, alvo, tol, threads, &j->parar, &jpg, &nj, &q, erro, sizeof erro) < 0) {
       if (j->parar) break;
       printf("[miniatura] slot %d (%lds) failed: %s\n", k, alvo / 1000, erro); fflush(stdout);
       pthread_mutex_lock(&mu); j->falhas[k]++; pthread_mutex_unlock(&mu);
       if (++seguidas >= 3) {
         printf("[miniatura] 3 failures in a row: waiting 30 s\n"); fflush(stdout);
-        estadoLab("3 failures in a row: waiting 30 s");
         mini_motor_soltar_decoder(m); dormirJ(j, 30000); seguidas = 0;
       }
       if (l->falhas >= 6) { printf("[miniatura] source unreachable: stopped\n"); break; }
@@ -514,37 +492,22 @@ static void *trabalhar(void *u) {
       j->tiles[k] = (Tile){ jpg, nj, q.ptsMs }; jpg = NULL; j->feitos++; j->novos++;
       if (j == job) estado = SEEKR_PRONTO;
     }
-    int f = j->feitos, n = j->n;
+    int f = j->feitos, n = (j->n + j->passo - 1) / j->passo;
     pthread_mutex_unlock(&mu);
     free(jpg);
     feitosAqui++; somaMs += q.totalMs;
     // One line per tile while the first window fills, then one every 20.
     if (feitosAqui <= 20 || feitosAqui % 20 == 0) {
-      printf("[miniatura] slot %d (%lds, class %d) frame %lds decode %ums total %ums, %d thread(s), read %ld KB in %d request(s)",
-             k, alvo / 1000, classe, q.ptsMs / 1000, q.decodMs, q.totalMs, q.threads, q.bytesLidos / 1024, q.pedidos);
+      printf("[miniatura] slot %ld s (step %d) frame %lds decode %ums total %ums, read %ld KB in %d request(s)",
+             alvo / 1000, classe, q.ptsMs / 1000, q.decodMs, q.totalMs, q.bytesLidos / 1024, q.pedidos);
       if (q.adiantadoKB) printf(" + %ld KB ahead", q.adiantadoKB);
-      if (q.sondas) printf(", %d probe(s) %ld KB%s", q.sondas, q.sondaKB, q.achouSonda ? " found" : "");
       printf(", free %ld->%ld MB, rss %ld MB, %d/%d done\n", antes / 1024, depois / 1024, rssKB() / 1024, f, n);
     }
     fflush(stdout);
-    // What this tile really cost (MemAvailable before -> after, decoder still open).
+    // What this tile really cost (MemAvailable before -> after, decoder open).
     if (antes >= 0 && depois >= 0 && antes > depois) medidas[nMedidas++ % MEDIDAS] = antes - depois;
-    pthread_mutex_lock(&mu);
-    lab.feitos = f; lab.n = n; lab.feitosSessao = feitosAqui;
-    lab.ultimoMs = q.totalMs; lab.ultimoDecodMs = q.decodMs; lab.mediaMs = (unsigned)(somaMs / (unsigned long)feitosAqui);
-    lab.ultimoKB = q.bytesLidos / 1024; lab.ultimoPedidos = q.pedidos; lab.adiantadoKB = q.adiantadoKB;
-    lab.ultimasSondas = q.sondas; lab.achouSonda = q.achouSonda;
-    lab.ultimoCustoMB = antes > depois ? (antes - depois) / 1024 : 0;
-    lab.lidosMB = (long)(mini_motor_lidos(m) / 1048576);
-    if (depois >= 0 && depois / 1024 < lab.menorLivreMB) lab.menorLivreMB = depois / 1024;
-    pthread_mutex_unlock(&mu);
-    // Give everything back between frames (unless the lab keeps the decoder open):
-    // nothing of ours stays in memory while the player runs.
-    if (!aj.manterDecoder) mini_motor_soltar_decoder(m);
-    if (f >= n) break;
-    if (aj.intervaloMs > 0) dormirJ(j, aj.intervaloMs);   // yield
+    dormirJ(j, INTERVALO_MS);
   }
-  estadoLab(j->parar ? "stopped (title closed)" : "finished");
   if (feitosAqui)
     printf("[miniatura] made %d tile(s), %lu ms average, %lld MB read\n", feitosAqui,
            somaMs / (unsigned long)feitosAqui, mini_motor_lidos(m) / 1048576);
@@ -565,9 +528,7 @@ fim:
   free(w);
   return NULL;
 }
-int mini_lab_disponivel(void) { return 1; }
 #else
-int mini_lab_disponivel(void) { return 0; }
 // NuvioTpk40 (no FFmpeg): nothing can be decoded.
 static void *trabalhar(void *u) {
   Trabalho *w = u;
@@ -615,7 +576,7 @@ void seekr_pedir(const char *imdb, int t, int e, long durMs) {
   pthread_mutex_unlock(&mu);
   j = calloc(1, sizeof *j);
   w = calloc(1, sizeof *w);
-  int n = (int)((durMs - 1) / GRADE_MS + 1);
+  int n = (int)((durMs - 1) / BASE_MS + 1);
   if (j) { j->tiles = calloc((size_t)n, sizeof *j->tiles); j->falhas = calloc((size_t)n, 1); }
   if (!j || !w || !j->tiles || !j->falhas) {
     if (j) { free(j->tiles); free(j->falhas); }
@@ -635,8 +596,15 @@ void seekr_pedir(const char *imdb, int t, int e, long durMs) {
   estado = SEEKR_BUSCANDO;
   alvoScrub = -1;
   pthread_mutex_unlock(&mu);
-  printf("[miniatura] new title: %ld min, %d slots of 10 s%s\n", durMs / 60000, n,
-         minidrive_ligado() ? ", Google Drive linked" : "");
+  {
+    static int dispositivo;          // once per run: what this device has
+    if (!dispositivo) {
+      dispositivo = 1;
+      printf("[miniatura] device: RAM %ld MB, %d CPU core(s), MemAvailable %ld MB\n",
+             memTotalMB(), nucleos(), memDisponivelKB() / 1024);
+    }
+  }
+  printf("[miniatura] new title: %ld min%s\n", durMs / 60000, minidrive_ligado() ? ", Google Drive linked" : "");
   fflush(stdout);
   if (pthread_create(&f, NULL, trabalhar, w) == 0) pthread_detach(f);
   else {
@@ -760,10 +728,12 @@ int seekr_quadros(double posSeg, int n, GLuint *texs, double *cueSeg) {
   alvoScrub = pos; alvoTick = SDL_GetTicks();
   if (!job) { pthread_mutex_unlock(&mu); return 0; }
   g = job->g;
-  int k = (int)((pos + GRADE_MS / 2) / GRADE_MS);
+  int k = (int)((pos + BASE_MS / 2) / BASE_MS);
   if (k >= job->n) k = job->n - 1;
+  if (k < 0) k = 0;
   atualK = vizinho(job, k, VIZINHO_SLOTS);          // nearest made tile, up to 5 min away
-  longe = atualK >= 0 && abs(atualK - k) > 1;
+  // Dimmed when it is not this spot's own slot on the title's grid.
+  longe = atualK >= 0 && abs(atualK - k) > (job->passo > 0 ? job->passo : DEZ);
   if (atualK >= 0) {
     // Strip neighbours: the nearest made tile on each side.
     for (int d = 1; d <= VIZINHO_SLOTS && antes < 0; d++) if (pronto(job, atualK - d)) antes = atualK - d;
@@ -811,4 +781,4 @@ GLuint seekr_quadro(double posSeg, double *cueSeg) {
 void seekr_shot(int est, const GLuint *t, const double *cue, int velho) { (void)est; (void)t; (void)cue; (void)velho; }
 #endif
 
-#endif // NV_TPK
+#endif // NV_MINIATURAS

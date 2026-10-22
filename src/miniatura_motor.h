@@ -1,4 +1,4 @@
-// SEEK-BAR THUMBNAILS MADE ON THE TV (.tpk): the decoding engine.
+// SEEK-BAR THUMBNAILS MADE ON THE DEVICE (miniplat.h): the decoding engine.
 //
 // Pure: no SDL, no GL, no network of its own. The caller hands in a range
 // reader (miniatura.c reads the source link through rede; the host test reads
@@ -13,7 +13,8 @@
 // ~25 MB). mini_motor_memoria() estimates what the next frame needs, for the
 // caller's free-memory check before every frame.
 //
-// Built only into the Samsung .tpk with FFmpeg (the .c is empty elsewhere).
+// Built where miniplat.h says thumbnails are made on the device and FFmpeg is
+// linked (the .c is empty elsewhere).
 #ifndef NV_MINIATURA_MOTOR_H
 #define NV_MINIATURA_MOTOR_H
 #include <stddef.h>
@@ -48,21 +49,13 @@ typedef struct {
   int threads;
   int pedidos;          // range requests on the demuxer path
   long adiantadoKB;     // prefetched for the NEXT frame during this decode (not in bytesLidos)
-  int sondas;           // MPEG-TS probe windows read
-  long sondaKB;         // bytes of those windows (included in bytesLidos)
-  int achouSonda;       // a probe found the keyframe start
 } MiniQuadro;
 
-// Test knobs (the thumbnail lab in the player). Defaults: mini_motor_config_padrao.
+// Read tuning. Defaults (mini_motor_config_padrao) are the TV-tested values.
 typedef struct {
   int lerBlocos;        // 256 KiB blocks per range request, 1..7 (default 4 = 1 MiB)
-  int exato;            // 1 = request only the blocks the demuxer asked for
   int prefetch;         // 1 = fetch the next keyframe (mini_motor_proximo) during a decode
   int tsBlocos;         // MPEG-TS: blocks per request while reading forward (default 7)
-  int tsSonda;          // 1 = MPEG-TS: probe small windows for the keyframe start (default 0)
-  int tsJanelaKB;       // probe window (default 64)
-  int tsPassoKB;        // distance between probe windows (default 512)
-  int tsSondasMax;      // windows per try (default 12)
 } MiniConfig;
 
 // Opens the container. `tamanho` = total file size. NULL on failure, with a

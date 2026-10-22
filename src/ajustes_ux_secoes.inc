@@ -911,7 +911,7 @@ static void ajcRepSeekr(int A) {
   ajcFoco(AJ_SEEKR_LIGADO, 222, 140, 196, 112, 10);
   gfx_cor(CR(36, 300, 568, 5), 0.5f, 1, 1, 1, 0.22f); CACC(36, 300, 284, 5, 1);
   gfx_cor(CR(312, 294, 16, 16), 0.5f, 1, 1, 1, 1);
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
   // .tpk: thumbnails made on the TV; the pill is the Google Drive link (no key, no test, no sync).
   { float w2 = ajcTxt("Google Drive", 12, 1, 0, 0, 0, 0) + 52;
     CVID(28, 24, w2 + 120, 34, 17); CICON("aj_cloud", 40, 32, 18, 0.85f);

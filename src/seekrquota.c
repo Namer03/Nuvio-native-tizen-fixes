@@ -1,6 +1,8 @@
-// The Samsung .tpk makes its thumbnails on the TV (miniatura.c serves the same
-// seekr_* calls there); the Seekr API is not built into it.
-#ifndef NV_TPK
+// The Samsung .tpk, LG and Android make their thumbnails on the device
+// (miniatura.c serves the same seekr_* calls there, miniplat.h); the Seekr API
+// is not built into them.
+#include "miniplat.h"
+#ifndef NV_MINIATURAS
 #include "seekrquota.h"
 #include "dados.h"
 #include <pthread.h>

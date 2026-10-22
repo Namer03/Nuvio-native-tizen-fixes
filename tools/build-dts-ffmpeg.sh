@@ -13,7 +13,8 @@ TMPDIR="${TMPDIR%/}"
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core; and for the
 #                   seek-bar thumbnails made on the TV (src/miniatura*.c): h264/hevc decoders
 #                   (keyframes only, decoded one at a time), the mjpeg encoder (320x180 tiles) and
-#                   the mpegts demuxer (.m2ts / .ts remuxes).
+#                   the mpegts demuxer (.m2ts / .ts remuxes). The webOS target gets the same
+#                   thumbnail components.
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -52,6 +53,12 @@ if [ "$TARGET" = tpk ]; then
       --cross-prefix=arm-linux-gnueabi-
   fi
 else
+  # LG webOS: seek-bar thumbnails made on the TV (src/miniatura*.c), like the
+  # .tpk: h264/hevc decoders (keyframes only), the mjpeg encoder (320x180
+  # tiles) and the mpegts demuxer (.m2ts / .ts remuxes).
+  DECODERS=$DECODERS,h264,hevc
+  ENCODERS=$ENCODERS,mjpeg
+  DEMUXERS=$DEMUXERS,mpegts
   CC=${CC:-arm-webos-linux-gnueabi-gcc}
   archive="$BUILD/ffmpeg-$VERSION.tar.xz"
   [ -f "$archive" ] || curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$archive"

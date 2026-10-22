@@ -4566,7 +4566,7 @@ void player_atualizar(float dt, Uint32 agora) {
     // da folha por ela) e uma vez por titulo — seekr_pedir ignora o repetido.
     if (d > 60.0 && video_pronto() && !ehCanal() && ajustes_seekr_ligado()) {
       const CatItem *cs = item();
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
       // Made on this TV from the file itself (miniatura.c): no IMDb id needed.
       if (cs)
 #else

@@ -29,7 +29,7 @@ static const Item TELA[] = {
       OPC(AJ_PLR_FORMATO), OPC(AJ_SAIDA_PLAYER), OPC(AJ_PROPORCAO_PADRAO), OPC(AJ_BRILHO_PLAYER), OPC(AJ_HDR_UI),
     ROT("Miniatura ao avançar"),
       OPC(AJ_SEEKR_LIGADO), OPC(AJ_SEEKR_CHAVE),
-#ifndef NV_TPK
+#ifndef NV_MINIATURAS
       OPC(AJ_SEEKR_TESTAR),   // .tpk: thumbnails made on the TV, no key to test
 #endif
       OPC(AJ_SEEKR_FITA),
@@ -58,7 +58,7 @@ static const Item TELA[] = {
 #endif
 #endif
       OPC(AJ_CACHE_SEEK), OPC(AJ_MANTER_VIDEO), OPC(AJ_RETOMADA_MORNA), OPC(AJ_MANTER_PRAZO),
-#ifndef NV_TPK
+#ifndef NV_MINIATURAS
       OPC(AJ_SEEKR_AJUSTE),   // .tpk: frames come from the file itself, never out of sync
 #endif
 #if defined(NV_ANDROID) || (!defined(NV_TPK) && !defined(__EMSCRIPTEN__))

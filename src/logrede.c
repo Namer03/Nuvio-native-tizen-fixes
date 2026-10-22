@@ -1,4 +1,5 @@
 // Ver logrede.h para o porque e as regras.
+#include "miniplat.h"
 #include "logrede.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -263,7 +264,7 @@ static const char PAGINA[] =
 ".l{padding:1px 0}.f{color:var(--fonte)}.d{color:var(--diag)}.n{color:var(--next)}.e{color:var(--erro)}.a{color:var(--abrir)}.h{color:#fff;font-weight:700;margin-top:10px;border-top:1px solid #333}.x{display:none}"
 "</style></head><body><header><b>Nuvio log</b>"
 "<button id=b1 class=on>Source picking</button><button id=b2>Won't open</button><button id=b3>Error while playing</button>"
-#ifdef NV_TPK
+#ifdef NV_MINIATURAS
 "<button id=b4>Thumbnails</button>"
 #endif
 "<button id=b0>Everything</button>"
