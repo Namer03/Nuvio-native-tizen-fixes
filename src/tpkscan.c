@@ -39,6 +39,11 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+/* So o glibc com _GNU_SOURCE declara RTLD_DEFAULT (a imagem do .tpk nao
+ * define: CI de 23/10). No glibc ele vale ((void *) 0). */
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)0)
+#endif
 
 // ---- ganchos do host .NET (tizen-tpk/Exibe.cs) --------------------------------
 typedef void (*TsFnSem)(void);
