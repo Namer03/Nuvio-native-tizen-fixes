@@ -587,6 +587,9 @@ static void ass_fila_tirar_locked(int i, AssCpuFrame *saida) {
 static void ass_fila_publicar_locked(AssCpuFrame *f) {
   int teto = assFilaTeto < 1 ? 1 : assFilaTeto > ASS_FILA_MAX ? ASS_FILA_MAX : assFilaTeto;
   while (assFilaN >= teto) ass_fila_tirar_locked(0, NULL);
+  /* Quadros enormes (letreiro com blur de tela cheia): a fila nao guarda mais
+   * que ASS_FILA_BYTES; sai o mais velho. */
+  while (assFilaN && ass_fila_bytes_locked() + f->bytes > ASS_FILA_BYTES) ass_fila_tirar_locked(0, NULL);
   assFila[assFilaN++] = *f;
   memset(f, 0, sizeof *f);
 }
@@ -1054,6 +1057,7 @@ static int *assMainIdx;          // e o indice dela em assTc (-1 = sem cache)
 static int assMainTexCap, assMainEnviado;
 static int assMainCorChave = -2, assMainFmt = -1, assMainCache = -1;
 static int assCaminhoNovoAntes = -1;
+static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
 
 static size_t ass_tc_tam(int w, int h, int alfa) { return (size_t)w * (size_t)h * (alfa ? 1u : 4u); }
 
@@ -1903,6 +1907,7 @@ void assrender_aplicar_invalidacao(void) {
   if (assTexResetar) {
     assTexResetar = 0;
     ass_apagar_texturas_locked();
+    assMainResetar = 1;   // o caminho novo tambem solta o quadro e as texturas dele
   }
   pthread_mutex_unlock(&assFilaTrava);
 }
@@ -2125,7 +2130,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       /* "Upload outside lock" desligado: a trava fica do pedido ate o fim do
        * desenho, como no caminho antigo. */
     } else pthread_mutex_unlock(&assFilaTrava);
-    if (reset || saltou) { ass_main_soltar(); ass_tc_apagar(); }
+    if (reset || saltou || assMainResetar) { ass_main_soltar(); ass_tc_apagar(); assMainResetar = 0; }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
     if (quadroNovo) {
       ass_frame_liberar(&assMain);
