@@ -134,23 +134,6 @@ jobs:
           path: ${{ env.NUVIO_TPK_CACHE }}/prefix-dts
           key: tpk-dts-ffmpeg-${{ hashFiles('tools/build-dts-ffmpeg.sh') }}
 
-      # The TPK libass has an ARMv7 NEON bitmap engine (tools/tpk/libass-nv).
-      # Here, in the same linux/arm build image under qemu, libass's checkasm
-      # compares every NEON function with the C engine, and verify.c renders
-      # the sample scripts with both engines and compares every image byte for
-      # byte. Any difference fails the build (no .tpk is uploaded).
-      - name: Verify libass NEON engine (qemu-arm)
-        run: |
-          set -o pipefail
-          docker run --rm --platform linux/arm -v "$NUVIO_TPK_CACHE:/w" -v "$PWD:/work" -w /work \
-            nuvio-tpk-sdk sh tools/tpk/libass-nv/verify.sh 2>&1 | tee verify-libass.log
-          {
-            echo '### libass NEON engine (qemu-arm)'
-            echo '```'
-            grep -E '^\[verify\]|identical|differ|RESULT|frames' verify-libass.log | tail -n 30
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       # On failure, show the last lines of the build at the top of the run page.
       - name: Show build error summary
         if: failure()
@@ -168,3 +151,28 @@ jobs:
           name: NuvioTpk
           path: build/tpk/*.tpk
           if-no-files-found: error
+
+      # The TPK libass has an ARMv7 NEON bitmap engine (tools/tpk/libass-nv).
+      # Here, in the same linux/arm build image under qemu, libass's checkasm
+      # compares every NEON function with the C engine, and verify.c renders
+      # the sample scripts with both engines and compares every image byte for
+      # byte. It runs after the upload, so a .tpk is always there to test, but any
+      # difference turns the run red. Its last lines go to the run annotations.
+      - name: Verify libass NEON engine (qemu-arm)
+        run: |
+          set -o pipefail
+          ok=1
+          docker run --rm --platform linux/arm -v "$NUVIO_TPK_CACHE:/w" -v "$PWD:/work" -w /work \
+            nuvio-tpk-sdk sh tools/tpk/libass-nv/verify.sh 2>&1 | tee verify-libass.log || ok=0
+          {
+            echo '### libass NEON engine (qemu-arm)'
+            echo '```'
+            grep -E '^\[verify\]|identical|differ|RESULT|frames' verify-libass.log | tail -n 30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ok" = 1 ]; then
+            echo "::notice title=libass NEON::$(grep -E 'RESULT|total C' verify-libass.log | tr '\n' ' ')"
+          else
+            tail -n 25 verify-libass.log | sed 's/^/::error title=libass verify::/'
+            exit 1
+          fi
