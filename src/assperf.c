@@ -87,7 +87,7 @@ static const ApDef DEF[AP_N] = {
     "Adds an [assperf] stages: line to the 10 s log: libass time per frame split into shaping, raster, blur, compose, clip.",
     1, 1, 2, { "Off", "On" } },
   [AP_BENCH] = { "bench", "ASS bench",
-    "Pause first. \xe2\x86\x92 runs this engine, \xe2\x86\x90 runs C vs NEON: the 10 s before the playhead, re-rendered off-screen, cold caches.",
+    "Pause first. \xe2\x86\x92 runs this engine with 1, then 2 and 3 renderers at once (same frames, compared); \xe2\x86\x90 runs C vs NEON. The 10 s before the playhead, cold caches.",
     0, 0, 3, { "Off", "Run (this engine)", "Run C vs NEON" } },
   [AP_ESTILO] = { "estilo", "Your style on styled ASS",
     "Ignored draws styled ASS as authored, like the phone. Applies puts your Style colour, border, box, font and opacity on every sign (masks turn grey, rings appear).",
@@ -101,6 +101,18 @@ static const ApDef DEF[AP_N] = {
   [AP_CARTAO] = { "cartao", "Colour test card",
     "Draws pure white and grey patches over the video with the subtitle path. If the white patch looks grey, the TV changes our colours.",
     0, 0, 2, { "Off", "On" } },
+  [AP_PARALELO] = { "paralelo", "Parallel renderers",
+    "Extra libass renderers render the next frames ahead, each on its own core and with its own copy of the track. Off = one renderer (old). Ignores Render ahead / Early frames.",
+    1, 1, 3, { "Off (old)", "2", "3" } },
+  [AP_PARMIN] = { "parmin", "Blur split minimum",
+    "Smallest blur job that is split across the blur threads. Smaller = more jobs split (more overhead). The picture is identical.",
+    0, 0, 4, { "64k (old)", "16k", "4k", "1k" } },
+  [AP_SCAN] = { "scan", "Scan display APIs",
+    "Read-only: logs the TV's EGL/GL colour options, the window protocol requests, display/picture functions in the TV libraries and the .NET display API. Full list: /ass-snap-display-scan.txt.",
+    0, 0, 2, { "Off", "Run" } },
+  [AP_BRILHO] = { "brilho", "Window brightness (test)",
+    "Asks the window system for this window's brightness (NUI Window.SetBrightness). 30 should visibly dim something if the call works. Off restores it.",
+    0, 0, 3, { "Off", "100", "30" } },
   [AP_LOG] = { "log", "Subtitle log",
     "Summary writes one [assperf] line every 10 s. Detailed also logs each slow frame.",
     1, 1, 3, { "Off", "Summary (10 s)", "Detailed" } },
@@ -120,7 +132,7 @@ static void aplicarPreset(int p) {
     if (assperf_e_medida(i)) continue;   // medida nao e comportamento: o preset nao mexe
     val[i] = p == 2 ? DEF[i].leve : DEF[i].recomendado;
   }
-  if (p == 1) val[AP_FIOS] = 0;
+  if (p == 1) { val[AP_FIOS] = 0; val[AP_PARALELO] = 0; }
 }
 
 static void gravar(void) {
@@ -163,6 +175,8 @@ void assperf_iniciar(void) {
     val[AP_BENCH] = 0;   // acoes: nunca voltam ligadas do arquivo
     val[AP_SNAP] = 0;
     val[AP_CARTAO] = 0;
+    val[AP_SCAN] = 0;
+    val[AP_BRILHO] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -172,7 +186,7 @@ void assperf_iniciar(void) {
         aplicarPreset(1);   // as chaves de medida ficam como estavam
         gravar();
         printf("[assperf] the previous session crashed while ASS subtitles were drawing: "
-               "options back to Recommended with 1 blur thread (Safe)\n");
+               "options back to Recommended with 1 blur thread and no parallel renderers (Safe)\n");
       }
     }
   }
@@ -213,10 +227,17 @@ int assperf_get(int id) {
 }
 
 int assperf_e_medida(int id) {
-  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO;
+  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO ||
+         id == AP_SCAN || id == AP_BRILHO;
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
 int assperf_fios(void) { int v = assperf_get(AP_FIOS); return v < 0 ? 1 : v > 3 ? 4 : v + 1; }
+int assperf_paralelo(void) { int v = assperf_get(AP_PARALELO); return v <= 0 ? 1 : v >= 2 ? 3 : 2; }
+size_t assperf_par_min(void) {
+  static const size_t l[4] = { 65536, 16384, 4096, 1024 };
+  int v = assperf_get(AP_PARMIN);
+  return l[v < 0 || v > 3 ? 0 : v];
+}
 
 int assperf_n_valores(int id) { return id >= 0 && id < AP_N ? DEF[id].n : 0; }
 const char *assperf_rotulo(int id) { return id >= 0 && id < AP_N ? DEF[id].rotulo : ""; }
@@ -271,7 +292,7 @@ const char *assperf_preset_nome(void) {
     if (assperf_e_medida(i) || DEF[i].fixa) continue;
     if (v != DEF[i].recomendado) rec = 0;
     if (v != DEF[i].leve) lev = 0;
-    if (v != (i == AP_FIOS ? 0 : DEF[i].recomendado)) safe = 0;
+    if (v != (i == AP_FIOS || i == AP_PARALELO ? 0 : DEF[i].recomendado)) safe = 0;
   }
   return rec ? "Recommended" : lev ? "Lightest" : safe ? "Safe" : "Custom";
 }
@@ -313,7 +334,7 @@ void assperf_faixa_ativa(int ativa) {
   static int marcada;
   int teste = 0;
   for (int i = 0; i < AP_N; i++) if (!assperf_e_medida(i) && assperf_get(i)) teste = 1;
-  if (assperf_get(AP_FIOS) == 0) teste = 0;   // ja no Safe: nada a desfazer
+  if (assperf_get(AP_FIOS) == 0 && assperf_get(AP_PARALELO) == 0) teste = 0;   // ja no Safe: nada a desfazer
   if (ativa && teste) { if (!__atomic_exchange_n(&marcada, 1, __ATOMIC_ACQ_REL)) dados_gravar(AP_MARCA, "1\n"); }
   else if (__atomic_exchange_n(&marcada, 0, __ATOMIC_ACQ_REL)) dados_apagar(AP_MARCA);
 #else
@@ -337,10 +358,15 @@ static struct {
   float alfaMin, alfaOpc; int alfaN;   // assperf_med_alfa
   // libass por etapa (assperf_med_estagios)
   struct {
-    int motor;
+    int motor, renderers;
     unsigned frames, events, images, hit[3], miss[3];
+    unsigned parJobs, parSplit, parSmall, parBusy, parOne;
+    unsigned long long parLanes, parLanesSplit;
     double frameMs, frameMax, stageMs[8], piorStage[8];
   } est;
+  // renderers em paralelo: renders dos ajudantes e quadros deles na tela
+  long ajRenders, ajPublicados, ajExibidos, principalExibidos;
+  double ajSoma, ajMax;
 } M;
 
 const char *const assperf_estagio_nome[8] = {
@@ -422,7 +448,11 @@ void assperf_med_estagios(const AssperfEstagios *e) {
   if (!e || !e->frames) return;
   pthread_mutex_lock(&medTrava);
   M.est.motor = e->motor;
+  if (e->renderers > M.est.renderers) M.est.renderers = e->renderers;
   M.est.frames += e->frames; M.est.events += e->events; M.est.images += e->images;
+  M.est.parJobs += e->parJobs; M.est.parSplit += e->parSplit; M.est.parSmall += e->parSmall;
+  M.est.parBusy += e->parBusy; M.est.parOne += e->parOne;
+  M.est.parLanes += e->parLanes; M.est.parLanesSplit += e->parLanesSplit;
   for (i = 0; i < 3; i++) { M.est.hit[i] += e->hit[i]; M.est.miss[i] += e->miss[i]; }
   M.est.frameMs += e->frameMs;
   for (i = 0; i < 8; i++) M.est.stageMs[i] += e->stageMs[i];
@@ -430,6 +460,18 @@ void assperf_med_estagios(const AssperfEstagios *e) {
     M.est.frameMax = e->frameMs;
     memcpy(M.est.piorStage, e->stageMs, sizeof M.est.piorStage);
   }
+  pthread_mutex_unlock(&medTrava);
+}
+
+void assperf_med_ajudante(double ms, int publicado) {
+  pthread_mutex_lock(&medTrava);
+  M.ajRenders++; if (publicado) M.ajPublicados++;
+  M.ajSoma += ms; if (ms > M.ajMax) M.ajMax = ms;
+  pthread_mutex_unlock(&medTrava);
+}
+void assperf_med_ajudante_exibido(int doAjudante) {
+  pthread_mutex_lock(&medTrava);
+  if (doAjudante) M.ajExibidos++; else M.principalExibidos++;
   pthread_mutex_unlock(&medTrava);
 }
 
@@ -457,7 +499,7 @@ void assperf_med_tick(void) {
   if (M.ini <= 0) { M.ini = t; pthread_mutex_unlock(&medTrava); return; }
   if (t - M.ini < 10.0 && !medForcar) { pthread_mutex_unlock(&medTrava); return; }
   medForcar = 0;
-  if (M.quadros || M.lotes || M.renders) {
+  if (M.quadros || M.lotes || M.renders || M.ajRenders) {
     double rAvg = M.renders ? M.renderSoma / M.renders : 0, uAvg = M.uploads ? M.upSoma / M.uploads : 0;
     double aAvg = M.atrasos ? M.atrasoSoma / M.atrasos : 0, adAvg = M.adianteN ? M.adianteSoma / M.adianteN : 0;
     snprintf(M.texto, sizeof M.texto,
@@ -474,6 +516,11 @@ void assperf_med_tick(void) {
              aAvg, M.atrasoMin, M.atrasoMax, M.atrasos, adAvg,
              M.lotes, M.cheios, M.linhasNovas, M.total, M.lotes ? M.loteSoma / M.lotes : 0, M.loteMax,
              M.relayBlocos, M.relayUsados, M.podados);
+      if (M.ajRenders || assperf_paralelo() > 1)
+        printf("[assperf] parallel: renderers=%d | lookahead renders n=%ld avg=%.1f max=%.1f ms published=%ld"
+               " | new frames on screen: from lookahead %ld, from the main renderer %ld\n",
+               assperf_paralelo(), M.ajRenders, M.ajRenders ? M.ajSoma / M.ajRenders : 0.0, M.ajMax, M.ajPublicados,
+               M.ajExibidos, M.principalExibidos);
       if (M.alfaN)
         printf("[assperf] draw alpha min=%.2f (Subtitles > Style > Opacity = %.0f%%, your style %s on styled ASS)\n",
                M.alfaMin, M.alfaOpc * 100.0f, assperf_get(AP_ESTILO) ? "ignored" : "applied");
@@ -495,6 +542,13 @@ void assperf_med_tick(void) {
                M.est.motor == 1 ? "NEON" : M.est.motor == 0 ? "C" : "?", M.est.frames, M.est.frameMs / f, M.est.frameMax,
                per, pior, AP_PCT(0), AP_PCT(1), AP_PCT(2), M.est.miss[0], M.est.miss[1], M.est.miss[2],
                M.est.events / f, M.est.images / f);
+        if (M.est.parJobs)
+          printf("[assperf] blur split: renderers=%d jobs=%u split=%u (%d%%) one-thread: below minimum %u, pool busy %u, 1 thread %u"
+                 " | lanes split %d%% | minimum %u lanes\n",
+                 M.est.renderers ? M.est.renderers : 1, M.est.parJobs, M.est.parSplit,
+                 (int)(100.0 * M.est.parSplit / M.est.parJobs + 0.5), M.est.parSmall, M.est.parBusy, M.est.parOne,
+                 M.est.parLanes ? (int)(100.0 * (double)M.est.parLanesSplit / (double)M.est.parLanes + 0.5) : 0,
+                 (unsigned)assperf_par_min());
 #undef AP_PCT
       }
       fflush(stdout);
@@ -523,7 +577,7 @@ void assperf_med_texto(char *dst, size_t n) {
 }
 
 // --- ASS snapshot: os arquivos da pagina do log -----------------------------
-#define AP_SNAP_MAX 6
+#define AP_SNAP_MAX 8
 static struct { char nome[48]; unsigned char *buf; size_t n; } snapArq[AP_SNAP_MAX];
 static pthread_mutex_t snapTrava = PTHREAD_MUTEX_INITIALIZER;
 

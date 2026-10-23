@@ -352,6 +352,9 @@ namespace NuvioTpk
             Etapa("begin apps-init");
             try { Apps.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }); } catch (Exception e) { Etapa("note apps-init " + e.GetType().Name); }
             Etapa("ok apps-init");
+            // Testes de exibicao da folha ASS performance (Exibe.cs, src/tpkscan.c).
+            try { Exibe.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }, () => new object[] { NuiWindow.Instance, gl }); }
+            catch (Exception e) { Etapa("note display-test-init " + e.GetType().Name); }
             NvCarga.LimparAntigos(dados);
             // Prova no log (#184): >0 = os DllImport passaram pelo resolvedor e
             // cairam na encenada; o "[atualizacao] instalada X" do C deve dizer

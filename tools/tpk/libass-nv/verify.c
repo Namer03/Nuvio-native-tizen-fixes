@@ -16,6 +16,7 @@
 
 #include <ass/ass.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -135,6 +136,65 @@ static int run(ASS_Library *lib, const char *file, int simd, int threads, Frame 
     return 0;
 }
 
+/* 0004: N renderers render the same grid AT THE SAME TIME, frame i on
+ * renderer i % N, each with its own renderer and its own ass_nv_track_clone
+ * of the track, sharing the library (the app's parallel renderers). Every
+ * frame must equal the single-renderer NEON pass. */
+typedef struct {
+    ASS_Library *lib;
+    ASS_Track *src;
+    int k, n, frames;
+    Frame *out;
+    unsigned timed;
+    int fail;
+} Par;
+
+static void *par_worker(void *u)
+{
+    Par *p = u;
+    ASS_Renderer *r = ass_renderer_init(p->lib);
+    ASS_Track *t = ass_nv_track_clone(p->src);
+    if (!r || !t) { p->fail = 1; return NULL; }
+    ass_set_frame_size(r, W, H);
+    ass_set_storage_size(r, W, H);
+    ass_set_fonts(r, NULL, "Roboto", ASS_FONTPROVIDER_NONE, NULL, 0);
+    if (ass_nv_set_engine(r, 1) != 1) { p->fail = 1; return NULL; }
+    ASS_NvPerf pf;
+    ass_nv_perf_take(&pf);
+    for (int i = p->k; i < p->frames; i += p->n)
+        p->out[i] = hash_frame(ass_render_frame(r, t, (long long) i * STEP_MS, NULL));
+    ass_nv_perf_take(&pf);
+    p->timed = pf.frames;
+    ass_free_track(t);
+    ass_renderer_done(r);
+    return NULL;
+}
+
+static int run_parallel(ASS_Library *lib, const char *file, int nr, Frame *out, int frames)
+{
+    ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
+    if (!t) return -1;
+    pthread_t th[4];
+    Par p[4];
+    unsigned timed = 0;
+    int fail = 0;
+    for (int k = 0; k < nr; k++) {
+        p[k] = (Par) { lib, t, k, nr, frames, out, 0, 0 };
+        if (pthread_create(&th[k], NULL, par_worker, &p[k])) return -1;
+    }
+    for (int k = 0; k < nr; k++) {
+        pthread_join(th[k], NULL);
+        fail |= p[k].fail;
+        timed += p[k].timed;
+    }
+    ass_free_track(t);
+    if (timed != (unsigned) frames) {
+        fprintf(stderr, "per-thread stage timers counted %u frames, expected %d\n", timed, frames);
+        return -1;
+    }
+    return fail ? -1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) { fprintf(stderr, "usage: verify <font dir> <file.ass>...\n"); return 2; }
@@ -144,7 +204,7 @@ int main(int argc, char **argv)
     load_fonts(lib, argv[1]);
     ass_nv_perf_enable(1);
 
-    static Frame a[MAX_FRAMES], b[MAX_FRAMES], c[MAX_FRAMES];
+    static Frame a[MAX_FRAMES], b[MAX_FRAMES], c[MAX_FRAMES], d[MAX_FRAMES];
     int bad = 0;
     double tc = 0, tn = 0;
     for (int i = 2; i < argc; i++) {
@@ -167,10 +227,22 @@ int main(int argc, char **argv)
         if (na != nb || na != nc) diff++;
         if (!imgs) { printf("  no images rendered\n"); diff++; }
         printf("  %s: %d frames, %d differ\n", diff ? "FAIL" : "identical", na, diff);
+        /* 3 renderers at once, threaded blur on (the TV runs both together). */
+        ass_nv_set_threads(4);
+        if (run_parallel(lib, argv[i], 3, d, na)) { printf("  parallel renderers: FAIL to run\n"); bad = 1; continue; }
+        int pdiff = 0;
+        for (int k = 0; k < na; k++)
+            if (d[k].hash != b[k].hash || d[k].imgs != b[k].imgs) {
+                if (pdiff < 5)
+                    printf("  PARALLEL DIFF at %d ms (%u vs %u images)\n", k * STEP_MS, d[k].imgs, b[k].imgs);
+                pdiff++;
+            }
+        printf("  3 renderers at once (track clones, shared library): %s, %d differ\n", pdiff ? "FAIL" : "identical", pdiff);
+        diff += pdiff;
         bad |= diff != 0;
     }
     printf("total C %.0f ms, NEON %.0f ms (x%.2f; emulated, not TV speed)\n", tc, tn, tn > 0 ? tc / tn : 0);
-    printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine (1 and 4 threads) bit-identical to C\n");
+    printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine (1 and 4 threads, and 3 renderers at once) bit-identical to C\n");
     ass_library_done(lib);
     return bad;
 }

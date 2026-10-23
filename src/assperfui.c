@@ -6,6 +6,9 @@
 // que vao ao log "[assperf] 10s".
 #include "assperfui.h"
 #include "assperf.h"
+#ifdef NV_TPK
+#include "tpkscan.h"
+#endif
 #include "plrui.h"
 #include "text.h"
 #include "gfx.h"
@@ -15,8 +18,8 @@
 /* Linhas da folha: o preset e as chaves que ainda se ajustam, nesta ordem.
  * As chaves fixas (assperf_fixa: decididas nos testes na TV) nao aparecem. */
 static const int AU_ORDEM[] = {
-  AP_ESTILO, AP_FIOS, AP_ESCALA, AP_ADIANTE, AP_CACHE, AP_HINTING, AP_FONTES,
-  AP_PODA, AP_RELAY, AP_SNAP, AP_CARTAO, AP_BENCH, AP_ESTAGIOS, AP_LOG,
+  AP_ESTILO, AP_PARALELO, AP_FIOS, AP_PARMIN, AP_ESCALA, AP_ADIANTE, AP_CACHE, AP_HINTING, AP_FONTES,
+  AP_PODA, AP_RELAY, AP_SNAP, AP_CARTAO, AP_SCAN, AP_BRILHO, AP_BENCH, AP_ESTAGIOS, AP_LOG,
 };
 #define AU_NCHAVES ((int)(sizeof AU_ORDEM / sizeof AU_ORDEM[0]))
 #define AU_LINHAS (AU_NCHAVES + 1)          // 0 = preset, 1.. = as chaves
@@ -83,6 +86,9 @@ void assperfui_corpo(GfxRect c, float a) {
   float x0 = c.x + AU_PAD_X, w = c.w - AU_PAD_X * 2.0f, y = c.y + AU_PAD_Y;
   float cw = (w - 24.0f) * 0.5f;
   int i;
+#ifdef NV_TPK
+  tpkscan_tick();   // fio GL: "Scan display APIs" e "Window brightness (test)"
+#endif
   { TxtLinha t = txt_linha(TXT_G30B, "ASS performance (test)", 243, 242, 239, 255);
     const char *k[3] = { "\xe2\x86\x91 \xe2\x86\x93", "\xe2\x86\x90 \xe2\x86\x92", "Voltar" };
     const char *rt[3] = { "Op\xc3\xa7\xc3\xa3o", "Mudar", "Fechar" };
@@ -97,7 +103,7 @@ void assperfui_corpo(GfxRect c, float a) {
   }
   y += AU_POR_COLUNA * AU_LINHA_H + 12.0f;
   { char med[200];
-    const char *ajuda = foco == 0 ? "Recommended = the tested settings (NEON, authored style, 3 blur threads). "
+    const char *ajuda = foco == 0 ? "Recommended = the tested settings (NEON, authored style, 3 blur threads, 2 parallel renderers). "
                                      "Lightest = Recommended + 75% render resolution, no hinting, 128 MB cache."
                                   : assperf_ajuda(AU_ORDEM[foco - 1]);
     txt_bloco_corta(TXT_G18M, ajuda, 243, 242, 239, x0, y, w, 26.0f, a * 0.85f, 2);

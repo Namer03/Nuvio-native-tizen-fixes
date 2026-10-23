@@ -147,6 +147,10 @@ typedef struct {
   float ox, oy;          // canto da area do video na tela quando foi renderizado
   int k;                 // pixels do alvo por unidade de layout: o quadro foi renderizado k vezes maior (#335)
   float esc;             // assperf: pixels do quadro por unidade de layout (k x resolucao); 0 = k
+  /* assperf (renderers em paralelo): instantes para os quais este quadro e o
+   * quadro certo, [vDe, vAte) — nada comeca, acaba ou anima no meio. */
+  long long vDe, vAte;
+  int doAjudante;        // feito por um renderer de antecipacao (nao o principal)
 } AssCpuFrame;
 
 static pthread_mutex_t assTrava = PTHREAD_MUTEX_INITIALIZER;
@@ -181,11 +185,34 @@ static unsigned assEpoch;
  * em ordem de pedido (ms crescente dentro de um epoch). */
 #define ASS_FILA_MAX 4
 #define ASS_FILA_BYTES (24u * 1024u * 1024u)
-static AssCpuFrame assFila[ASS_FILA_MAX];
+/* Renderers em paralelo (assperf "Parallel renderers"): os quadros adiantados
+ * esperam a vez aqui, em ordem de instante; cabem mais. */
+#define ASS_FILA_CAP 8
+#define ASS_FILA_PIPE_BYTES (48u * 1024u * 1024u)
+static AssCpuFrame assFila[ASS_FILA_CAP];
 static int assFilaN;
 static int assFilaTeto = 1;      // 1 = como antes; ASS_FILA_MAX com hold
 static AssCpuFrame assAtual;
 static double assUltimoRenderPuroMs;   // assperf: render sem a espera da trava (sob assFilaTrava)
+/* Grade dos quadros de video para a antecipacao: 23,976 fps (anime). */
+#define ASS_QUADRO_MS (1001.0 / 24.0)
+#define ASS_QUADRO_MS_I ((long long)(ASS_QUADRO_MS + 0.5))
+/* Quanto um quadro que anima cobre: ATE o proximo ponto da grade, exclusive.
+ * A grade e de 41,7 ms; com 42 o quadro T "cobria" o ponto seguinte (que
+ * arredonda para T+41 as vezes) e a antecipacao o pulava. */
+#define ASS_QUADRO_COBRE (ASS_QUADRO_MS_I - 1)
+/* Modo antecipacao (assperf "Parallel renderers"), tudo sob assFilaTrava:
+ * o desenho le os quadros prontos da fila por instante; renderers proprios
+ * fazem os proximos quadros adiantados; o principal so cobre o instante atual
+ * quando nada o cobre (depois de um seek, ou atrasados). */
+static int assAjPipe;
+/* O quadro em tela vale para [de, ate) (modo antecipacao). */
+static long long assExibidoDe = LLONG_MAX, assExibidoAte = LLONG_MIN;
+static unsigned assExibidoEpoch, assExibidoGer;
+/* O pedido que o principal esta renderizando agora. */
+static int assPrincipalOcupado;
+static long long assPrincipalMs;
+static unsigned assPrincipalEpoch, assPrincipalGer;
 /* assperf "Render only on changes": o ultimo render vale para [de, ate) — nenhum
  * evento comeca, acaba ou anima nesse trecho. Sob assFilaTrava. */
 static long long assValidoDe = LLONG_MAX, assValidoAte = LLONG_MIN;
@@ -246,6 +273,80 @@ static struct {
 static pthread_mutex_t assDiagTrava = PTHREAD_MUTEX_INITIALIZER;
 static char assDiag[160] = "libass pronto";
 static int assGlifoMsgs;   // assperf: mensagens de glifo ausente desta faixa (sob assTrava)
+/* Versao da faixa do libass: muda a cada alteracao de eventos ou estilos (sob
+ * assTrava). Os renderers de antecipacao copiam a faixa quando ela muda. */
+static unsigned assTrackVersao;
+
+/* ===== assperf: RENDERERS EM PARALELO (TPK, libass-nv 0004) ================
+ * Um ASS_Renderer nao e seguro entre fios e o libass guarda estado de layout
+ * DENTRO dos eventos da faixa (render_priv), entao cada renderer de
+ * antecipacao tem o seu renderer E a sua copia da faixa (ass_nv_track_clone).
+ * A biblioteca (as fontes) e uma so, compartilhada: quem muda a lista de fontes
+ * (ass_add_font, ass_clear_fonts, ass_read_memory com [Fonts]) pega a trava de
+ * escrita; um render de antecipacao pega a de leitura. O principal e o bench
+ * ja excluem os escritores por assTrava. */
+#if defined(NV_TPK) && defined(ASS_NV_API_PARALELO)
+#define ASS_PARALELO 1
+static pthread_rwlock_t assLibRw;
+static pthread_once_t assLibRwUma = PTHREAD_ONCE_INIT;
+static pthread_t assLibDono;
+static int assLibProf;           // profundidade da escrita do dono (sem TLS de compilador: o .so 4/5 o recusa)
+static unsigned assLibEpoca;     // muda a cada ass_clear_fonts (os renderers de antecipacao refazem o ass_set_fonts)
+static pthread_key_t assAjChave; // != NULL nos fios de antecipacao (mensagens do libass)
+#ifdef __GLIBC__
+extern int pthread_rwlockattr_setkind_np(pthread_rwlockattr_t *, int);
+#endif
+static void ass_lib_rw_criar(void) {
+  pthread_rwlockattr_t a;
+  pthread_rwlockattr_init(&a);
+#ifdef __GLIBC__
+  /* PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP: com renders de leitura
+   * seguidos, uma fonte nova nao espera para sempre. */
+  pthread_rwlockattr_setkind_np(&a, 2);
+#endif
+  pthread_rwlock_init(&assLibRw, &a);
+  pthread_rwlockattr_destroy(&a);
+  pthread_key_create(&assAjChave, NULL);
+}
+static void ass_lib_iniciar_travas(void) { pthread_once(&assLibRwUma, ass_lib_rw_criar); }
+static void ass_lib_escrever(void) {
+  ass_lib_iniciar_travas();
+  if (__atomic_load_n(&assLibProf, __ATOMIC_ACQUIRE) && pthread_equal(__atomic_load_n(&assLibDono, __ATOMIC_ACQUIRE), pthread_self())) {
+    __atomic_add_fetch(&assLibProf, 1, __ATOMIC_ACQ_REL);
+    return;
+  }
+  pthread_rwlock_wrlock(&assLibRw);
+  __atomic_store_n(&assLibDono, pthread_self(), __ATOMIC_RELEASE);
+  __atomic_store_n(&assLibProf, 1, __ATOMIC_RELEASE);
+}
+static void ass_lib_soltar(void) {
+  if (__atomic_sub_fetch(&assLibProf, 1, __ATOMIC_ACQ_REL) == 0) pthread_rwlock_unlock(&assLibRw);
+}
+static int ass_fio_ajudante(void) {
+  ass_lib_iniciar_travas();
+  return pthread_getspecific(assAjChave) != NULL;
+}
+#define ASS_ADD_FONT(l, n, d, t) do { ass_lib_escrever(); ass_add_font((l), (n), (d), (t)); ass_lib_soltar(); } while (0)
+static void ass_clear_fonts_lib(ASS_Library *l) {
+  ass_lib_escrever();
+  ass_clear_fonts(l);
+  __atomic_add_fetch(&assLibEpoca, 1, __ATOMIC_ACQ_REL);
+  ass_lib_soltar();
+}
+static ASS_Track *ass_read_memory_lib(ASS_Library *l, char *b, size_t n, const char *cp) {
+  ASS_Track *t;
+  ass_lib_escrever();
+  t = ass_read_memory(l, b, n, cp);
+  ass_lib_soltar();
+  return t;
+}
+#else
+#define ASS_PARALELO 0
+#define ASS_ADD_FONT(l, n, d, t) ass_add_font((l), (n), (d), (t))
+#define ass_clear_fonts_lib(l) ass_clear_fonts(l)
+#define ass_read_memory_lib(l, b, n, cp) ass_read_memory((l), (b), (n), (cp))
+static int ass_fio_ajudante(void) { return 0; }
+#endif
 
 static void ass_diag(const char *s) {
   pthread_mutex_lock(&assDiagTrava);
@@ -256,8 +357,11 @@ static void ass_diag(const char *s) {
 static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) {
   char linha[768];
   (void)dados;
+  /* Renderers de antecipacao: so erros e avisos (o fontselect de cada um
+   * repetiria as mesmas linhas no log). */
+  if (nivel > 3 && ass_fio_ajudante()) return;
   vsnprintf(linha, sizeof linha, fmt, args);
-  if (strstr(linha, "fontselect:")) assResolucaoFonte++;
+  if (strstr(linha, "fontselect:")) __atomic_add_fetch(&assResolucaoFonte, 1, __ATOMIC_RELAXED);
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
@@ -367,7 +471,7 @@ static void ass_fonte_da_pasta(const char *nome, const void *dados, size_t tam, 
   /* The UI subset shares the family name but lacks mixed-script glyphs.
    * Plain subtitles use the verified complete face; leave UI selection intact. */
   if (!strcmp(nome, "NotoNaskhArabic-Subset.ttf")) return;
-  ass_add_font(assLib, nome, (const char *)dados, (int)tam);
+  ASS_ADD_FONT(assLib, nome, (const char *)dados, (int)tam);
 }
 #ifdef NV_TPK
 static int assNaskhFalhou;         /* a completa nao veio: vale o recorte da interface */
@@ -381,7 +485,7 @@ static void ass_subset_naskh_locked(void) {
   fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
   if (n > 4 && n < (1L << 22) && (b = malloc((size_t)n))) {
     if (fread(b, 1, (size_t)n, f) == (size_t)n) {
-      ass_add_font(assLib, "NotoNaskhArabic-Subset.ttf", b, (int)n);
+      ASS_ADD_FONT(assLib, "NotoNaskhArabic-Subset.ttf", b, (int)n);
       fprintf(stderr, "[libass] sem NotoNaskhArabic-Regular: usando o recorte da interface\n");
     }
     free(b);
@@ -422,14 +526,14 @@ static void ass_aplicar_fontes_locked(void) {
 // Explicit selection changes only. Routine packet delivery keeps the original
 // font cache path; a full current batch lets us restore attachment precedence.
 static void ass_fontes_reconstruir_locked(const unsigned char *selecionada, size_t n) {
-  ass_clear_fonts(assLib);
-  if (selecionada) ass_add_font(assLib, assFonteLocal, (const char *)selecionada, (int)n);
+  ass_clear_fonts_lib(assLib);
+  if (selecionada) ASS_ADD_FONT(assLib, assFonteLocal, (const char *)selecionada, (int)n);
   assFonteRegistrada = selecionada != NULL;
   ass_carregar_pasta_locked();
   assNFontesVistas = 0; assBytesFontesVistas = 0;
   for (int i = 0; i < assNFontesAtuais; i++) {
     const AssFonteAtual *f = &assFontesAtuais[i];
-    ass_add_font(assLib, f->nome, (const char *)f->dados, (int)f->tam);
+    ASS_ADD_FONT(assLib, f->nome, (const char *)f->dados, (int)f->tam);
     AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
     snprintf(v->nome, sizeof v->nome, "%.95s", f->nome);
     v->tam = f->tam; v->amostra = ass_amostra_fonte(f->dados, f->tam);
@@ -536,7 +640,7 @@ static void ass_iniciar_locked(int sistema) {
   snprintf(assPastaFontes, sizeof assPastaFontes, "%s", fontDir);
   if (assFonteLocal[0]) {
     size_t n; unsigned char *b = ass_fonte_local_ler(assFonteLocal, &n);
-    if (b) { ass_add_font(assLib, assFonteLocal, (const char *)b, (int)n); assFonteRegistrada = 1; }
+    if (b) { ASS_ADD_FONT(assLib, assFonteLocal, (const char *)b, (int)n); assFonteRegistrada = 1; }
     else assFonteRegistrada = 0;
     free(b);
   }
@@ -584,16 +688,76 @@ static void ass_fila_tirar_locked(int i, AssCpuFrame *saida) {
   assFilaN--;
   memset(&assFila[assFilaN], 0, sizeof assFila[0]);
 }
+/* Modo antecipacao: a fila fica em ordem de instante. Cheia, sai o quadro
+ * mais distante no futuro se o novo vem antes dele; senao fica de fora o novo. */
+static void ass_fila_inserir_locked(AssCpuFrame *f) {
+  int pos;
+  while (assFilaN >= ASS_FILA_CAP || (assFilaN && ass_fila_bytes_locked() + f->bytes > ASS_FILA_PIPE_BYTES)) {
+    if (assFila[assFilaN - 1].ms > f->ms) ass_fila_tirar_locked(assFilaN - 1, NULL);
+    else { ass_frame_liberar(f); return; }
+  }
+  for (pos = assFilaN; pos > 0 && assFila[pos - 1].ms > f->ms; pos--) {}
+  memmove(&assFila[pos + 1], &assFila[pos], (size_t)(assFilaN - pos) * sizeof assFila[0]);
+  assFila[pos] = *f;
+  assFilaN++;
+  memset(f, 0, sizeof *f);
+}
+
 /* Publica (worker). Teto 1 = substitui, como o assPronto antigo; com mais,
  * a fila cheia perde o mais velho. */
 static void ass_fila_publicar_locked(AssCpuFrame *f) {
   int teto = assFilaTeto < 1 ? 1 : assFilaTeto > ASS_FILA_MAX ? ASS_FILA_MAX : assFilaTeto;
+  if (assAjPipe) { ass_fila_inserir_locked(f); return; }
   while (assFilaN >= teto) ass_fila_tirar_locked(0, NULL);
   /* Quadros enormes (letreiro com blur de tela cheia): a fila nao guarda mais
    * que ASS_FILA_BYTES; sai o mais velho. */
   while (assFilaN && ass_fila_bytes_locked() + f->bytes > ASS_FILA_BYTES) ass_fila_tirar_locked(0, NULL);
   assFila[assFilaN++] = *f;
   memset(f, 0, sizeof *f);
+}
+
+#if ASS_PARALELO
+/* Renderers de antecipacao. Cada um: um fio, um ASS_Renderer e uma copia da
+ * faixa. Os campos de AssAj so o proprio fio toca, menos `vivo` (assFilaTrava). */
+#define ASS_AJ_MAX 3
+typedef struct {
+  pthread_t fio;
+  int vivo;
+  ASS_Renderer *r;
+  ASS_Track *t;
+  unsigned trackVersao, trackGeracao, libEpoca, apVersao;
+  int temFontes, lw, lh, vw, vh, bits;
+  double esc;
+} AssAj;
+static AssAj assAj[ASS_AJ_MAX];
+/* O instante que cada um esta renderizando (sob assFilaTrava). */
+typedef struct { long long t; unsigned epoch, ger; int ativo; } AssReserva;
+static AssReserva assReserva[ASS_AJ_MAX];
+static pthread_cond_t assAjCond = PTHREAD_COND_INITIALIZER;
+static int assAjQuer;              // renderers de antecipacao pedidos (0 = desligado)
+static long long assAjBaseMs;      // o instante do video no ultimo desenho
+static unsigned assAjBaseGer;
+static int assAjParado;            // video parado: nada a antecipar
+static double assAjEma = 60.0;     // ms de um render de antecipacao (media movel)
+#endif
+
+/* Modo antecipacao: ja existe (ou esta sendo feito) um quadro certo para o
+ * instante t? O ultimo render do principal, o quadro em tela, os da fila, o
+ * pedido em curso do principal e as reservas dos renderers de antecipacao. */
+static int ass_coberto_locked(long long t, unsigned ger) {
+  int i;
+  if (assValidoEpoch == assEpoch && assValidoGeracao == ger && t >= assValidoDe && t < assValidoAte) return 1;
+  if (assExibidoEpoch == assEpoch && assExibidoGer == ger && t >= assExibidoDe && t < assExibidoAte) return 1;
+  for (i = 0; i < assFilaN; i++)
+    if (assFila[i].generation == ger && t >= assFila[i].vDe && t < assFila[i].vAte) return 1;
+  if (assPrincipalOcupado && assPrincipalEpoch == assEpoch && assPrincipalGer == ger &&
+      t >= assPrincipalMs && t < assPrincipalMs + ASS_QUADRO_COBRE) return 1;
+#if ASS_PARALELO
+  for (i = 0; i < ASS_AJ_MAX; i++)
+    if (assReserva[i].ativo && assReserva[i].epoch == assEpoch && assReserva[i].ger == ger &&
+        t >= assReserva[i].t && t < assReserva[i].t + ASS_QUADRO_COBRE) return 1;
+#endif
+  return 0;
 }
 
 /* assperf (texcache): chave do CONTEUDO de uma imagem, para a textura de um
@@ -707,6 +871,7 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
     ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_MARGINS);
     ass_set_selective_style_override_enabled(assRenderer, 0);
     plainApl = *p; plainAplValido = 1;
+    assTrackVersao++;
     return;
   }
   s = &assTrack->styles[assTrack->default_style];
@@ -737,6 +902,7 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
   ass_set_selective_style_override(assRenderer, s);
   ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_MARGINS);
   plainApl = *p; plainAplValido = 1;
+  assTrackVersao++;
 }
 
 static void ass_plain_reflow_locked(long long t) {
@@ -782,6 +948,36 @@ static int ass_estilo_autor_locked(void) {
 #if defined(NV_TPK) && defined(ASS_NV_API)
 static int assBenchAtivo;   // sob assTrava; o bench liga os cronometros por conta propria
 
+/* Fios do blur e minimo da divisao: valem para o processo inteiro, entao sao
+ * aplicados assim que a folha muda (do fio GL, a cada quadro desenhado, e do
+ * worker e do bench) — antes so o worker aplicava, e com o video pausado o
+ * bench rodava com o valor anterior (logs de 23/10: "blur threads=4" sempre). */
+static void ass_globais_aplicar(void) {
+  static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+  static int fiosAplicados = -1;
+#if ASS_PARALELO
+  static size_t minAplicado;
+#endif
+  int f = assperf_fios();
+  pthread_mutex_lock(&m);
+  if (f != fiosAplicados) {
+    int got = ass_nv_set_threads(f);
+    printf("[assperf] blur threads: %d%s\n", got, got != f ? " (fewer threads could be started)" : "");
+    fflush(stdout);
+    fiosAplicados = f;
+  }
+#if ASS_PARALELO
+  { size_t mn = assperf_par_min();
+    if (mn != minAplicado) {
+      ass_nv_set_par_min(mn);
+      printf("[assperf] blur split minimum: %u lanes\n", (unsigned)mn);
+      fflush(stdout);
+      minAplicado = mn;
+    } }
+#endif
+  pthread_mutex_unlock(&m);
+}
+
 /* Cronometros do libass do ultimo ass_render_frame (sob assTrava, logo depois
  * dele) para a janela de 10 s. */
 static void ass_estagios_colher_locked(ASS_Renderer *r, AssperfEstagios *e) {
@@ -794,6 +990,14 @@ static void ass_estagios_colher_locked(ASS_Renderer *r, AssperfEstagios *e) {
   for (i = 0; i < 8; i++) e->stageMs[i] = p.ns_stage[i] / 1e6;
   e->frames = p.frames; e->events = p.events; e->images = p.images;
   for (i = 0; i < 3; i++) { e->hit[i] = p.cache_hit[i]; e->miss[i] = p.cache_miss[i]; }
+  e->renderers = 1;
+#if ASS_PARALELO
+  { ASS_NvParStats ps;
+    ass_nv_par_stats_take(&ps);
+    e->parJobs = ps.jobs; e->parSplit = ps.split; e->parSmall = ps.small; e->parBusy = ps.busy; e->parOne = ps.single;
+    e->parLanes = ps.lanes; e->parLanesSplit = ps.lanes_split;
+    if (__atomic_load_n(&assAjPipe, __ATOMIC_RELAXED)) e->renderers = 1 + assperf_paralelo(); }
+#endif
 }
 #endif
 
@@ -827,13 +1031,7 @@ static void ass_aplicar_assperf_locked(void) {
       motorAplicado = m;
     }
     if (!assBenchAtivo) ass_nv_perf_enable(assperf_get(AP_ESTAGIOS));
-    { static int fiosAplicados = -1;
-      int f = assperf_fios();
-      if (f != fiosAplicados) {
-        int got = ass_nv_set_threads(f);
-        printf("[assperf] blur threads: %d%s\n", got, got != f ? " (fewer threads could be started)" : "");
-        fiosAplicados = f;
-      } } }
+    ass_globais_aplicar(); }
 #endif
 #if !defined(__EMSCRIPTEN__) && defined(SYS_gettid)
   { int p = assperf_get(AP_PRIORIDADE);
@@ -892,6 +1090,8 @@ static void *ass_worker_loop(void *unused) {
     vw = layPedVW; vh = layPedVH; esc = layPedEscala;
     plain = plainPed; plainValid = plainPedValido;
     assPedidoPendente = 0;
+    assPrincipalOcupado = 1; assPrincipalMs = (long long)llround(ms);
+    assPrincipalEpoch = epoch; assPrincipalGer = generation;
     pthread_mutex_unlock(&assFilaTrava);
 
     clock_gettime(CLOCK_MONOTONIC, &a);
@@ -948,6 +1148,8 @@ static void *ass_worker_loop(void *unused) {
       if (!igual) {
         pronto = ass_frame_copiar(images, &frame, assperf_get(AP_TEXCACHE), !assperf_get(AP_UPLOAD));
         frame.ms = t; frame.inicioMax = -1;
+        frame.vDe = t;
+        frame.vAte = validoDe != LLONG_MAX && validoAte > t ? validoAte : t + ASS_QUADRO_COBRE;
         frame.ox = ox; frame.oy = oy; frame.k = k;
         frame.esc = (float)((double)k * resol);
         { int i;
@@ -991,6 +1193,10 @@ static void *ass_worker_loop(void *unused) {
     } else if (!igual && !pronto) {
       assValidoDe = LLONG_MAX; assValidoAte = LLONG_MIN;
     }
+    assPrincipalOcupado = 0;
+#if ASS_PARALELO
+    if (assAjPipe) pthread_cond_broadcast(&assAjCond);   // a cobertura mudou
+#endif
     ass_frame_liberar(&frame);
     pthread_mutex_unlock(&assFilaTrava);
   }
@@ -1010,6 +1216,203 @@ static int ass_worker_iniciar(void) {
   pthread_mutex_unlock(&assFilaTrava);
   return ok;
 }
+
+#if ASS_PARALELO
+/* ===== renderers de antecipacao: o fio ===================================
+ * Escolhe o proximo instante da grade (23,976 fps) que nada cobre, a partir
+ * de agora + o tempo medio de um render deles (o quadro fica pronto quando
+ * chega a vez dele), reserva, renderiza com o proprio renderer e a propria
+ * copia da faixa, e poe o quadro na fila em ordem de instante. */
+static void ass_aj_soltar(AssAj *aj) {
+  if (!aj->r && !aj->t) return;
+  pthread_mutex_lock(&assTrava);
+  if (aj->t) ass_free_track(aj->t);
+  if (aj->r) ass_renderer_done(aj->r);
+  pthread_mutex_unlock(&assTrava);
+  aj->t = NULL; aj->r = NULL; aj->temFontes = 0; aj->trackVersao = 0; aj->trackGeracao = 0;
+}
+
+/* Sob assFilaTrava. 1 = reservou o instante *t. */
+static int ass_aj_escolher_locked(int id, long long *t) {
+  long long base, lim, s0;
+  double ema;
+  int k;
+  unsigned ger = assAjBaseGer;
+  if (!assAjPipe || assAjParado || id >= assAjQuer || !assWorkerCriado) return 0;
+  if (ger != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE)) return 0;
+  /* Fila quase cheia: o desenho ainda nao alcancou; espera. */
+  if (assFilaN >= ASS_FILA_CAP - 1 || ass_fila_bytes_locked() >= ASS_FILA_PIPE_BYTES / 4u * 3u) return 0;
+  ema = assAjEma < 20.0 ? 20.0 : assAjEma > 400.0 ? 400.0 : assAjEma;
+  base = assAjBaseMs + (long long)(ema * 1.15 + 8.0);
+  lim = base + (long long)(ASS_QUADRO_MS * (assAjQuer + 2));
+  s0 = (long long)ceil((double)base / ASS_QUADRO_MS);
+  for (k = 0; k < 64; k++) {
+    long long c = llround((double)(s0 + k) * ASS_QUADRO_MS);
+    if (c > lim) break;
+    if (ass_coberto_locked(c, ger)) continue;
+    assReserva[id].t = c; assReserva[id].epoch = assEpoch; assReserva[id].ger = ger; assReserva[id].ativo = 1;
+    *t = c;
+    return 1;
+  }
+  return 0;
+}
+
+/* As chaves do renderer de antecipacao = as do principal. */
+static void ass_aj_configurar(AssAj *aj, int lw, int lh, int vw, int vh, double esc, int bits) {
+  static const int glifos[4] = { 0, 1000, 4000, 10000 };
+  static const int cacheMb[4] = { 32, 64, 128, 16 };
+  static const int hinting[4] = { ASS_HINTING_LIGHT, ASS_HINTING_NONE, ASS_HINTING_NORMAL, ASS_HINTING_NATIVE };
+  unsigned v = assperf_versao();
+  if (lw != aj->lw || lh != aj->lh) { ass_set_frame_size(aj->r, lw, lh); aj->lw = lw; aj->lh = lh; }
+  if (vw != aj->vw || vh != aj->vh) { ass_set_storage_size(aj->r, vw, vh); aj->vw = vw; aj->vh = vh; }
+  if (esc != aj->esc) { ass_set_font_scale(aj->r, esc); aj->esc = esc; }
+  if (v != aj->apVersao) {
+    ass_set_cache_limits(aj->r, glifos[assperf_get(AP_GLIFOS) & 3], cacheMb[assperf_get(AP_CACHE) & 3]);
+    ass_set_hinting(aj->r, (ASS_Hinting)hinting[assperf_get(AP_HINTING) & 3]);
+    ass_set_shaper(aj->r, assperf_get(AP_SHAPER) ? ASS_SHAPING_SIMPLE : ASS_SHAPING_COMPLEX);
+    ass_nv_set_engine(aj->r, assperf_get(AP_MOTOR) ? 1 : 0);
+    aj->apVersao = v;
+  }
+  if (bits != aj->bits) { ass_set_selective_style_override_enabled(aj->r, bits); aj->bits = bits; }
+}
+
+static void *ass_aj_loop(void *u) {
+  int id = (int)(intptr_t)u;
+  AssAj *aj = &assAj[id];
+  int ocioso = 0;   // esperas seguidas sem trabalho (100 ms cada)
+  ass_lib_iniciar_travas();
+  pthread_setspecific(assAjChave, (void *)1);
+  for (;;) {
+    long long t = 0, validoAte = LLONG_MAX;
+    unsigned epoch, ger;
+    double esc, resol, ms = 0.0;
+    float ox, oy;
+    int lw, lh, vw, vh, k, ok, bits = 0, pronto = 0, publicado = 0;
+    AssCpuFrame frame;
+    struct timespec a, b;
+    memset(&frame, 0, sizeof frame);
+    pthread_mutex_lock(&assFilaTrava);
+    for (;;) {
+      struct timespec ate;
+      if (id >= assAjQuer || ocioso >= 50) {
+        /* Desligado, ou 5 s sem nada a fazer (legenda fechada, outra faixa):
+         * solta o renderer e a copia da faixa e sai; o desenho recria. */
+        pthread_mutex_unlock(&assFilaTrava);
+        ass_aj_soltar(aj);
+        pthread_mutex_lock(&assFilaTrava);
+        assReserva[id].ativo = 0;
+        aj->vivo = 0;
+        pthread_mutex_unlock(&assFilaTrava);
+        return NULL;
+      }
+      if (ass_aj_escolher_locked(id, &t)) break;
+      clock_gettime(CLOCK_REALTIME, &ate);
+      ate.tv_nsec += 100000000L;
+      if (ate.tv_nsec >= 1000000000L) { ate.tv_sec++; ate.tv_nsec -= 1000000000L; }
+      if (pthread_cond_timedwait(&assAjCond, &assFilaTrava, &ate) != 0) ocioso++;
+    }
+    ocioso = 0;
+    epoch = assEpoch; ger = assAjBaseGer;
+    ox = layPedX; oy = layPedY; lw = layPedW; lh = layPedH; k = layPedK;
+    resol = assperf_escala();
+    lw = (int)lround((double)lw * k * resol); lh = (int)lround((double)lh * k * resol);
+    if (lw < 16) lw = 16;
+    if (lh < 16) lh = 16;
+    vw = layPedVW; vh = layPedVH; esc = layPedEscala;
+    pthread_mutex_unlock(&assFilaTrava);
+
+    /* A faixa: copia quando o principal a mudou (lote novo, estilo, outra). */
+    pthread_mutex_lock(&assTrava);
+    ok = ger == __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) && ger == assTrackGeracao && assTrack && assLib &&
+         !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
+    if (ok && (!aj->t || aj->trackVersao != assTrackVersao || aj->trackGeracao != ger)) {
+      ASS_Track *c = ass_nv_track_clone(assTrack);
+      if (c) {
+        if (aj->t) ass_free_track(aj->t);
+        aj->t = c; aj->trackVersao = assTrackVersao; aj->trackGeracao = ger;
+      } else ok = 0;
+    }
+    bits = ass_estilo_autor_locked() ? ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE : 0;
+    if (ok && !aj->r) {
+      aj->r = ass_renderer_init(assLib);
+      aj->temFontes = 0; aj->apVersao = ~0u; aj->lw = aj->lh = aj->vw = aj->vh = -1; aj->esc = -1.0; aj->bits = -1;
+      if (!aj->r) ok = 0;
+    }
+    pthread_mutex_unlock(&assTrava);
+
+    if (ok) {
+      ASS_Image *img;
+      int changed = 0;
+      pthread_rwlock_rdlock(&assLibRw);
+      { unsigned ep = __atomic_load_n(&assLibEpoca, __ATOMIC_ACQUIRE);
+        if (!aj->temFontes || aj->libEpoca != ep) {
+          ass_set_fonts(aj->r, assFallbackFont[0] ? assFallbackFont : NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+          aj->temFontes = 1; aj->libEpoca = ep;
+        } }
+      ass_aj_configurar(aj, lw, lh, vw, vh, esc, bits);
+      clock_gettime(CLOCK_MONOTONIC, &a);
+      img = ass_render_frame(aj->r, aj->t, t, &changed);
+      clock_gettime(CLOCK_MONOTONIC, &b);
+      { AssperfEstagios e;
+        ass_estagios_colher_locked(aj->r, &e);
+        if (assperf_get(AP_ESTAGIOS)) assperf_med_estagios(&e); }
+      pronto = ass_frame_copiar(img, &frame, assperf_get(AP_TEXCACHE), !assperf_get(AP_UPLOAD));
+      pthread_rwlock_unlock(&assLibRw);
+      ms = ass_ms_entre(&a, &b);
+      if (pronto) {
+        int i, anima = 0;
+        for (i = 0; i < aj->t->n_events && !anima; i++) {
+          const ASS_Event *ev = &aj->t->events[i];
+          long long ini = ev->Start, fimE = ev->Start + ev->Duration;
+          if (ini > t) { if (ini < validoAte) validoAte = ini; }
+          else if (fimE > t) { if (fimE < validoAte) validoAte = fimE; if (ass_evento_anima(ev)) anima = 1; }
+        }
+        frame.ms = t; frame.inicioMax = -1;
+        frame.ox = ox; frame.oy = oy; frame.k = k;
+        frame.esc = (float)((double)k * resol);
+        frame.vDe = t;
+        frame.vAte = !anima && validoAte > t ? validoAte : t + ASS_QUADRO_COBRE;
+        frame.doAjudante = 1;
+        for (i = 0; i < aj->t->n_events; i++) {
+          long long ini = aj->t->events[i].Start;
+          if (ini <= t && ini + aj->t->events[i].Duration > t && ini > frame.inicioMax) frame.inicioMax = ini;
+        }
+      }
+    }
+
+    pthread_mutex_lock(&assFilaTrava);
+    if (ok && pronto && assAjPipe && epoch == assEpoch && ger == __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) &&
+        assReserva[id].ativo && assReserva[id].t == t && assReserva[id].epoch == epoch) {
+      frame.generation = ger;
+      frame.serial = ++assSerial;
+      ass_fila_inserir_locked(&frame);
+      assProduziu = 0;   // o principal nao pode mais dizer "igual ao publicado"
+      publicado = 1;
+    }
+    assReserva[id].ativo = 0;
+    if (ok) assAjEma = assAjEma * 0.8 + ms * 0.2;
+    pthread_cond_broadcast(&assAjCond);
+    pthread_mutex_unlock(&assFilaTrava);
+    ass_frame_liberar(&frame);
+    if (ok) assperf_med_ajudante(ms, publicado);
+    else { struct timespec z = { 0, 30000000L }; nanosleep(&z, NULL); }
+  }
+  return NULL;
+}
+
+/* Sob assFilaTrava (fio GL): sobe os fios que faltam. */
+static void ass_aj_garantir_locked(void) {
+  int i;
+  if (assAjParado) return;   // pausado: nada a antecipar (os fios sobem quando o video anda)
+  for (i = 0; i < assAjQuer && i < ASS_AJ_MAX; i++) {
+    if (assAj[i].vivo) continue;
+    if (pthread_create(&assAj[i].fio, NULL, ass_aj_loop, (void *)(intptr_t)i) == 0) {
+      pthread_detach(assAj[i].fio);
+      assAj[i].vivo = 1;
+    }
+  }
+}
+#endif
 
 static void ass_apagar_texturas_locked(void) {
   int i;
@@ -1555,6 +1958,7 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
       if (fimE > assCoberturaFim) assCoberturaFim = fimE;
     } }
   incPronto = !desalinhou && incEvN == assTrack->n_events;
+  if (aceitas || removidos || reconstruir) assTrackVersao++;
   pthread_mutex_unlock(&assTrava);
   if (aceitas || removidos || reconstruir) {
     pthread_mutex_lock(&assFilaTrava);
@@ -1594,7 +1998,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   copia = (char *)malloc(tamanho + 1u);
   if (!copia) { ass_diag("libass: memoria insuficiente para documento"); pthread_mutex_unlock(&assTrava); return 0; }
   memcpy(copia, corpo, tamanho); copia[tamanho] = 0;
-  track = ass_read_memory(assLib, copia, tamanho, "UTF-8");
+  track = ass_read_memory_lib(assLib, copia, tamanho, "UTF-8");
   free(copia);
   if (!track || track->n_events <= 0) {
     if (track) ass_free_track(track);
@@ -1615,6 +2019,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   if (assTrack) ass_free_track(assTrack);
   assTrack = track;
   ass_trilha_tailandes(track);
+  assTrackVersao++;
   plainTimingValid = 0;
   /* Authored ASS retains its own margins after a converted plain track. */
   ass_set_selective_style_override_enabled(assRenderer, 0);
@@ -1825,6 +2230,7 @@ void assrender_limpar(void) {
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  assTrackVersao++;
   assEventos = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -1847,6 +2253,7 @@ void assrender_limpar_fontes(void) {
   ass_atuais_limpar_locked();
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  assTrackVersao++;
   assEventos = 0; assFontes = 0; assResolucaoFonte = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -1901,14 +2308,14 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
        * velha: adicionar fonte so acontece antes de carregar o documento. */
       if (assNFontesVistas >= ASS_FONTES_MAX ||
           assBytesFontesVistas + tamanho > ASS_FONTES_TETO_BYTES) {
-        ass_clear_fonts(assLib);
+        ass_clear_fonts_lib(assLib);
         // ass_clear_fonts removes every memory face, including the imported
         // device-local selection. Restore it before attachments and system
         // fonts so the selection keeps the same precedence after rollover.
         if (assFonteLocal[0]) {
           size_t localN = 0;
           unsigned char *local = ass_fonte_local_ler(assFonteLocal, &localN);
-          if (local) ass_add_font(assLib, assFonteLocal, (const char *)local, (int)localN);
+          if (local) ASS_ADD_FONT(assLib, assFonteLocal, (const char *)local, (int)localN);
           assFonteRegistrada = local != NULL;
           free(local);
         } else assFonteRegistrada = 0;
@@ -1916,7 +2323,7 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
         ass_aplicar_fontes_locked();
         assNFontesVistas = 0; assBytesFontesVistas = 0;
       }
-      ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
+      ASS_ADD_FONT(assLib, nome, (const char *)dados, (int)tamanho);
       { AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
         snprintf(v->nome, sizeof v->nome, "%s", nome);
         v->tam = tamanho; v->amostra = am; }
@@ -2140,6 +2547,129 @@ static int ass_bench_passe(int simd, const AssBenchPed *pd, unsigned long long *
   return ok;
 }
 
+#if ASS_PARALELO
+/* Bench com N renderers AO MESMO TEMPO (o que o modo "Parallel renderers"
+ * faz na tela): o quadro i vai para o renderer i % N; cada um com o seu
+ * renderer frio e a sua copia da faixa, a biblioteca compartilhada. Mede o
+ * tempo de PAREDE dos 240 quadros (o que importa para a fluidez) e compara
+ * cada quadro com o passe de 1 renderer. */
+typedef struct {
+  ASS_Renderer *r;
+  ASS_Track *t;
+  int k, n;
+  long long ini;
+  unsigned long long *hashes;
+  double renderMs, hashMs, maxMs, stageMs[8];
+  unsigned imagens, comLegenda;
+} AssBenchPar;
+
+static void *ass_bench_par_fio(void *u) {
+  AssBenchPar *p = u;
+  int i, k;
+  ASS_NvPerf pf;
+  ass_lib_iniciar_travas();
+  pthread_setspecific(assAjChave, (void *)1);
+  ass_nv_perf_take(&pf);
+  for (i = p->k; i < ASS_BENCH_QUADROS; i += p->n) {
+    long long t = p->ini + ((long long)i * 1001 + 12) / 24;
+    struct timespec a, b, c;
+    ASS_Image *img;
+    unsigned n = 0;
+    double ms;
+    pthread_rwlock_rdlock(&assLibRw);
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    img = ass_render_frame(p->r, p->t, t, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    p->hashes[i] = ass_bench_hash(img, &n);
+    clock_gettime(CLOCK_MONOTONIC, &c);
+    pthread_rwlock_unlock(&assLibRw);
+    ms = ass_ms_entre(&a, &b);
+    p->renderMs += ms; p->hashMs += ass_ms_entre(&b, &c);
+    if (ms > p->maxMs) p->maxMs = ms;
+    p->imagens += n;
+    if (n) p->comLegenda++;
+  }
+  ass_nv_perf_take(&pf);
+  for (k = 0; k < 8; k++) p->stageMs[k] = pf.ns_stage[k] / 1e6;
+  return NULL;
+}
+
+/* 1 = completo. `ref` = hashes do passe de 1 renderer (NULL = nao compara). */
+static int ass_bench_paralelo(int nr, int simd, const AssBenchPed *pd, const unsigned long long *ref,
+                              char *motivo, size_t nm) {
+  AssBenchPar p[ASS_AJ_MAX];
+  pthread_t fio[ASS_AJ_MAX];
+  unsigned long long *h;
+  unsigned fontes;
+  long long ini = pd->fim - 10000 < 0 ? 0 : pd->fim - 10000;
+  struct timespec a, b;
+  int i, ok = 1, criados = 0, iguais = 0;
+  double parede, hashMed = 0, ocupado = 0, maxMs = 0, stage[8] = { 0 };
+  ASS_NvParStats ps;
+  if (nr < 2 || nr > ASS_AJ_MAX) return 1;
+  h = calloc(ASS_BENCH_QUADROS, sizeof *h);
+  if (!h) { snprintf(motivo, nm, "out of memory"); return 0; }
+  memset(p, 0, sizeof p);
+  pthread_mutex_lock(&assTrava);
+  if (!assLib || !assTrack || pd->geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) || assTrackGeracao != pd->geracao) {
+    pthread_mutex_unlock(&assTrava);
+    free(h);
+    snprintf(motivo, nm, "no ASS track drawing");
+    return 0;
+  }
+  for (i = 0; i < nr; i++) {
+    p[i].r = ass_renderer_igual_locked();
+    p[i].t = ass_nv_track_clone(assTrack);
+    if (!p[i].r || !p[i].t) { ok = 0; break; }
+    ass_nv_set_engine(p[i].r, simd);
+    p[i].k = i; p[i].n = nr; p[i].ini = ini; p[i].hashes = h;
+  }
+  fontes = assFontesVersao;
+  pthread_mutex_unlock(&assTrava);
+  if (!ok) snprintf(motivo, nm, "could not create %d renderers", nr);
+  ass_nv_par_stats_take(&ps);
+  clock_gettime(CLOCK_MONOTONIC, &a);
+  for (i = 0; ok && i < nr; i++) {
+    if (pthread_create(&fio[i], NULL, ass_bench_par_fio, &p[i]) != 0) { ok = 0; snprintf(motivo, nm, "could not start a thread"); break; }
+    criados++;
+  }
+  for (i = 0; i < criados; i++) pthread_join(fio[i], NULL);
+  clock_gettime(CLOCK_MONOTONIC, &b);
+  ass_nv_par_stats_take(&ps);
+  pthread_mutex_lock(&assTrava);
+  if (ok && (fontes != assFontesVersao || pd->geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE))) {
+    ok = 0; snprintf(motivo, nm, "the track or its fonts changed during the parallel pass");
+  }
+  for (i = 0; i < nr; i++) {
+    if (p[i].t) ass_free_track(p[i].t);
+    if (p[i].r) ass_renderer_done(p[i].r);
+  }
+  pthread_mutex_unlock(&assTrava);
+  if (ok) {
+    int k;
+    unsigned imagens = 0, comLegenda = 0;
+    for (i = 0; i < nr; i++) {
+      hashMed += p[i].hashMs / nr; ocupado += p[i].renderMs;
+      if (p[i].maxMs > maxMs) maxMs = p[i].maxMs;
+      for (k = 0; k < 8; k++) stage[k] += p[i].stageMs[k];
+      imagens += p[i].imagens; comLegenda += p[i].comLegenda;
+    }
+    parede = ass_ms_entre(&a, &b) - hashMed;   // o hash de conferencia nao entra
+    if (ref) for (i = 0; i < ASS_BENCH_QUADROS; i++) if (ref[i] == h[i]) iguais++;
+    printf("[assperf] bench parallel %d renderers: wall %.0f ms -> %.1f ms/frame | each renderer %.1f ms per frame it renders, max %.1f"
+           " | blur %.1f raster %.1f ms/frame | %u of %d frames with subtitles, %u images | %s%d/%d frames identical to 1 renderer"
+           " | blur split: jobs %u split %u below-min %u busy %u\n",
+           nr, parede, parede / ASS_BENCH_QUADROS, ocupado / ASS_BENCH_QUADROS, maxMs,
+           stage[4] / ASS_BENCH_QUADROS, stage[3] / ASS_BENCH_QUADROS, comLegenda, ASS_BENCH_QUADROS, imagens,
+           ref ? (iguais == ASS_BENCH_QUADROS ? "OK " : "DIFFERENT ") : "", ref ? iguais : 0, ref ? ASS_BENCH_QUADROS : 0,
+           ps.jobs, ps.split, ps.small, ps.busy);
+    fflush(stdout);
+  }
+  free(h);
+  return ok;
+}
+#endif
+
 static void ass_bench_logar(const char *nome, const AssBenchRes *r) {
   char per[200];
   size_t o = 0;
@@ -2164,15 +2694,24 @@ static void *ass_bench_fio(void *u) {
   int okC = 0, okN = 0, simd = assperf_get(AP_MOTOR) ? 1 : 0, w, h;
   long long ini = pd.fim - 10000 < 0 ? 0 : pd.fim - 10000;
   free(u);
+  ass_globais_aplicar();   // os fios do blur da folha valem para este bench, mesmo pausado
   pthread_mutex_lock(&assTrava);
   assBenchAtivo = 1;
   ass_nv_perf_enable(1);
   w = layAplW; h = layAplH;
   pthread_mutex_unlock(&assTrava);
   printf("[assperf] bench: start | window %.1f-%.1f s of this track | %d frames on the 41.7 ms grid | %dx%d | cold caches"
-         " | mode=%s | engine option=%s | blur threads=%d\n",
+         " | mode=%s | engine option=%s | blur threads=%d (panel %d)"
+#if ASS_PARALELO
+         " | blur split minimum %u lanes"
+#endif
+         "\n",
          ini / 1000.0, pd.fim / 1000.0, ASS_BENCH_QUADROS, w, h,
-         pd.modo == 2 ? "C vs NEON" : "this engine", simd ? "NEON" : "C", ass_nv_get_threads());
+         pd.modo == 2 ? "C vs NEON" : "this engine", simd ? "NEON" : "C", ass_nv_get_threads(), assperf_fios()
+#if ASS_PARALELO
+         , (unsigned)ass_nv_get_par_min()
+#endif
+         );
   fflush(stdout);
   if (pd.modo == 2) {
     hc = calloc(ASS_BENCH_QUADROS, sizeof *hc);
@@ -2203,11 +2742,32 @@ static void *ass_bench_fio(void *u) {
                iguais == ASS_BENCH_QUADROS ? "identical" : "DIFFERENT pictures");
     }
   } else {
-    okN = ass_bench_passe(simd, &pd, NULL, &rn, motivo, sizeof motivo);
+#if ASS_PARALELO
+    /* 1 renderer, depois 2 e 3 ao mesmo tempo, comparados quadro a quadro. */
+    ASS_NvParStats ps;
+    hn = calloc(ASS_BENCH_QUADROS, sizeof *hn);
+    ass_nv_par_stats_take(&ps);
+#endif
+    okN = ass_bench_passe(simd, &pd, hn, &rn, motivo, sizeof motivo);
     if (okN) {
       ass_bench_logar(rn.motor ? "NEON" : "C", &rn);
       snprintf(resumo, sizeof resumo, "Bench %s: avg %.1f ms/frame, max %.0f ms, %u frames with subtitles",
                rn.motor ? "NEON" : "C", rn.totalMs / ASS_BENCH_QUADROS, rn.maxMs, rn.comLegenda);
+#if ASS_PARALELO
+      ass_nv_par_stats_take(&ps);
+      printf("[assperf] bench blur split (1 renderer, %d blur threads, minimum %u lanes): jobs %u split %u (%d%%)"
+             " | one thread: below minimum %u, pool busy %u, 1 thread %u | lanes split %d%%\n",
+             ass_nv_get_threads(), (unsigned)ass_nv_get_par_min(), ps.jobs, ps.split,
+             ps.jobs ? (int)(100.0 * ps.split / ps.jobs + 0.5) : 0, ps.small, ps.busy, ps.single,
+             ps.lanes ? (int)(100.0 * (double)ps.lanes_split / (double)ps.lanes + 0.5) : 0);
+      fflush(stdout);
+      { int nr;
+        for (nr = 2; nr <= 3 && !motivo[0]; nr++)
+          if (!ass_bench_paralelo(nr, simd, &pd, hn, motivo, sizeof motivo)) break; }
+      if (!motivo[0])
+        snprintf(resumo, sizeof resumo, "Bench %s: 1 renderer %.1f ms/frame, max %.0f ms (2 and 3 renderers: see the log)",
+                 rn.motor ? "NEON" : "C", rn.totalMs / ASS_BENCH_QUADROS, rn.maxMs);
+#endif
     }
   }
   if (motivo[0]) {
@@ -2514,7 +3074,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
                        float x, float y, float w, float h) {
   unsigned generation;
   int i, n = 0, reset, corChave, reenviar, novoCaminho, segurar, saltou = 0, quadroNovo = 0;
-  int corAtiva, cr, cg, cb, foraTrava, adiante = 0, fixo;
+  int corAtiva, cr, cg, cb, foraTrava, adiante = 0, fixo, pipe = 0;
   long long agora, pedido;
   AssCpuFrame novo;
   struct timespec td0, td1;
@@ -2525,8 +3085,13 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   generation = __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE);
   agora = (long long)llround(posSeg * 1000.0) + (long long)atrasoMs;
 #if defined(NV_TPK) && defined(ASS_NV_API)
+  ass_globais_aplicar();   // fios do blur / minimo da divisao: na hora, mesmo pausado
   ass_bench_talvez(agora, generation);
   ass_snap_talvez(agora, generation);
+#endif
+#if ASS_PARALELO
+  /* "Parallel renderers": so para ASS com estilo (o texto simples e leve). */
+  pipe = assperf_paralelo() > 1 && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 #endif
   /* assperf: caminho de desenho novo (qualquer chave de upload ligada) e
    * render ahead. Tudo em "old": o mesmo de sempre, linha por linha. */
@@ -2537,7 +3102,9 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
    * 3 vezes seguidas. Ai nao se adianta nada: a pausa mostra o quadro exato. */
   if (agora == assUltimoAgora) { if (assParadoN < 1000) assParadoN++; } else assParadoN = 0;
   assUltimoAgora = agora;
-  if (fixo != 0 && assParadoN < 3) {
+  /* Modo antecipacao: os renderers proprios ja fazem os quadros adiantados e
+   * a fila os segura ate a vez; o principal so cobre o instante atual. */
+  if (fixo != 0 && assParadoN < 3 && !pipe) {
     if (fixo > 0) adiante = fixo;
     else {
       double renderMs;
@@ -2549,7 +3116,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     }
     assperf_med_adiante((double)adiante);
   }
-  segurar = adiante > 0 && assperf_get(AP_SEGURAR);
+  segurar = pipe || (adiante > 0 && assperf_get(AP_SEGURAR));
   pedido = agora + adiante;
   if (novoCaminho != assCaminhoNovoAntes) {
     /* Trocou de caminho com a faixa ligada: nada de um serve ao outro. */
@@ -2563,6 +3130,19 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   pthread_mutex_lock(&assFilaTrava);
   if (!assWorkerCriado) { pthread_mutex_unlock(&assFilaTrava); return 0; }
   assFilaTeto = segurar ? ASS_FILA_MAX : 1;
+  if (pipe != assAjPipe) {
+    /* Entrou ou saiu do modo antecipacao: a fila e de um modo so. */
+    __atomic_store_n(&assAjPipe, pipe, __ATOMIC_RELAXED);
+    ass_fila_limpar_locked();
+    assExibidoDe = LLONG_MAX; assExibidoAte = LLONG_MIN;
+    assTemUltimoPedido = 0;
+  }
+#if ASS_PARALELO
+  assAjQuer = pipe ? assperf_paralelo() : 0;
+  assAjBaseMs = agora; assAjBaseGer = generation; assAjParado = assParadoN >= 3;
+  if (pipe) ass_aj_garantir_locked();
+  pthread_cond_broadcast(&assAjCond);
+#endif
   /* SALTO de verdade (seek): o quadro velho mostra outra cena e sai. ERA 200
    * ms — e o currentTime da C9 anda 197..247 ms por evento, 77 % acima de 200
    * (log de 23/09): a legenda era apagada a cada evento e piscava 2-4 vezes
@@ -2588,9 +3168,14 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   { int vale = assperf_get(AP_MUDANCA) && assTemUltimoPedido && assUltimoPedidoGeracao == generation &&
                assValidoEpoch == assEpoch && assValidoGeracao == generation &&
                pedido >= assValidoDe && pedido < assValidoAte;
+    /* Modo antecipacao: o principal so e chamado se nada cobre o instante
+     * (nem um quadro na fila ou em tela, nem um render em curso). */
+    if (pipe && !vale && assTemUltimoPedido && assUltimoPedidoGeracao == generation)
+      vale = ass_coberto_locked(pedido, generation);
   if (!vale && (!assTemUltimoPedido || assUltimoPedidoGeracao != generation ||
        fabs((double)pedido - assUltimoPedidoMs) >= 5.0) &&
-      (!segurar || (assFilaN < ASS_FILA_MAX && ass_fila_bytes_locked() < ASS_FILA_BYTES))) {
+      (!segurar || (pipe ? assFilaN < ASS_FILA_CAP && ass_fila_bytes_locked() < ASS_FILA_PIPE_BYTES
+                         : assFilaN < ASS_FILA_MAX && ass_fila_bytes_locked() < ASS_FILA_BYTES))) {
     assUltimoPedidoMs = (double)pedido;
     assUltimoPedidoGeracao = generation;
     assTemUltimoPedido = 1;
@@ -2616,6 +3201,10 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       ass_fila_tirar_locked(0, &novo);
       quadroNovo = 1;
       assMed.trocas++;
+      if (pipe) {
+        assExibidoDe = novo.vDe; assExibidoAte = novo.vAte; assExibidoEpoch = assEpoch; assExibidoGer = generation;
+        assperf_med_ajudante_exibido(novo.doAjudante);
+      }
     } }
   reset = assTexResetar; assTexResetar = 0;
   corAtiva = assCorAtiva; cr = assCorR; cg = assCorG; cb = assCorB;
