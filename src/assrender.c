@@ -766,6 +766,19 @@ static void ass_plain_reflow_locked(long long t) {
   plainNextBoundary = next; plainActiveSet = active;
 }
 
+/* assperf "Your style on styled ASS = Ignored": o ASS com estilo do autor
+ * desenha como o autor fez (cores, borda, caixa, fonte, opacidade da folha
+ * Estilo NAO entram), e o tamanho da folha nao escala os letreiros
+ * posicionados (ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE, o padrao do libass e
+ * do mpv). Texto simples segue a folha como sempre. Sob assTrava. */
+static int ass_estilo_autor_locked(void) {
+#ifdef NV_TPK
+  return assperf_get(AP_ESTILO) && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
+#else
+  return 0;
+#endif
+}
+
 #if defined(NV_TPK) && defined(ASS_NV_API)
 static int assBenchAtivo;   // sob assTrava; o bench liga os cronometros por conta propria
 
@@ -813,7 +826,14 @@ static void ass_aplicar_assperf_locked(void) {
              m && !got ? " - NEON not available in this libass build" : "");
       motorAplicado = m;
     }
-    if (!assBenchAtivo) ass_nv_perf_enable(assperf_get(AP_ESTAGIOS)); }
+    if (!assBenchAtivo) ass_nv_perf_enable(assperf_get(AP_ESTAGIOS));
+    { static int fiosAplicados = -1;
+      int f = assperf_fios();
+      if (f != fiosAplicados) {
+        int got = ass_nv_set_threads(f);
+        printf("[assperf] blur threads: %d%s\n", got, got != f ? " (fewer threads could be started)" : "");
+        fiosAplicados = f;
+      } } }
 #endif
 #if !defined(__EMSCRIPTEN__) && defined(SYS_gettid)
   { int p = assperf_get(AP_PRIORIDADE);
@@ -894,7 +914,13 @@ static void *ass_worker_loop(void *unused) {
         ass_set_font_scale(assRenderer, esc);
         layAplEscala = esc;
       }
-      if (plainValid) ass_plain_style_locked(&plain);
+      if (plainValid) {
+        PlainAssStyle ps = plain;
+        if (ass_estilo_autor_locked()) ps.overrides = 0;   // estilos do autor de volta
+        ass_plain_style_locked(&ps);
+      }
+      if (ass_estilo_autor_locked())
+        ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
 #if defined(NV_TPK) && defined(ASS_NV_API)
@@ -2033,12 +2059,28 @@ static unsigned long long ass_bench_hash(ASS_Image *img, unsigned *n) {
   return h;
 }
 
-/* 1 = completo; 0 = abortado (motivo em `motivo`). */
-static int ass_bench_passe(int simd, const AssBenchPed *pd, unsigned long long *hashes,
-                           AssBenchRes *res, char *motivo, size_t nm) {
+/* Um ASS_Renderer novo (caches vazios) com tudo o que o principal usa: o
+ * bench e o snapshot desenham o mesmo que a tela. Sob assTrava. */
+static ASS_Renderer *ass_renderer_igual_locked(void) {
   static const int glifos[4] = { 0, 1000, 4000, 10000 };
   static const int cacheMb[4] = { 32, 64, 128, 16 };
   static const int hinting[4] = { ASS_HINTING_LIGHT, ASS_HINTING_NONE, ASS_HINTING_NORMAL, ASS_HINTING_NATIVE };
+  ASS_Renderer *r = ass_renderer_init(assLib);
+  if (!r) return NULL;
+  ass_set_fonts(r, assFallbackFont[0] ? assFallbackFont : NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_frame_size(r, layAplW, layAplH);
+  ass_set_storage_size(r, layAplVW > 0 ? layAplVW : layAplW, layAplVH > 0 ? layAplVH : layAplH);
+  ass_set_font_scale(r, layAplEscala > 0 ? layAplEscala : 1.0);
+  ass_set_cache_limits(r, glifos[assperf_get(AP_GLIFOS) & 3], cacheMb[assperf_get(AP_CACHE) & 3]);
+  ass_set_hinting(r, (ASS_Hinting)hinting[assperf_get(AP_HINTING) & 3]);
+  ass_set_shaper(r, assperf_get(AP_SHAPER) ? ASS_SHAPING_SIMPLE : ASS_SHAPING_COMPLEX);
+  ass_set_selective_style_override_enabled(r, ass_estilo_autor_locked() ? ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE : 0);
+  return r;
+}
+
+/* 1 = completo; 0 = abortado (motivo em `motivo`). */
+static int ass_bench_passe(int simd, const AssBenchPed *pd, unsigned long long *hashes,
+                           AssBenchRes *res, char *motivo, size_t nm) {
   ASS_Renderer *r;
   unsigned fontes;
   long long ini = pd->fim - 10000;
@@ -2052,15 +2094,8 @@ static int ass_bench_passe(int simd, const AssBenchPed *pd, unsigned long long *
     snprintf(motivo, nm, "no ASS track drawing");
     return 0;
   }
-  r = ass_renderer_init(assLib);
+  r = ass_renderer_igual_locked();
   if (!r) { pthread_mutex_unlock(&assTrava); snprintf(motivo, nm, "ass_renderer_init failed"); return 0; }
-  ass_set_fonts(r, assFallbackFont[0] ? assFallbackFont : NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_frame_size(r, layAplW, layAplH);
-  ass_set_storage_size(r, layAplVW > 0 ? layAplVW : layAplW, layAplVH > 0 ? layAplVH : layAplH);
-  ass_set_font_scale(r, layAplEscala > 0 ? layAplEscala : 1.0);
-  ass_set_cache_limits(r, glifos[assperf_get(AP_GLIFOS) & 3], cacheMb[assperf_get(AP_CACHE) & 3]);
-  ass_set_hinting(r, (ASS_Hinting)hinting[assperf_get(AP_HINTING) & 3]);
-  ass_set_shaper(r, assperf_get(AP_SHAPER) ? ASS_SHAPING_SIMPLE : ASS_SHAPING_COMPLEX);
   res->motor = ass_nv_set_engine(r, simd);
   fontes = assFontesVersao;
   pthread_mutex_unlock(&assTrava);
@@ -2135,9 +2170,9 @@ static void *ass_bench_fio(void *u) {
   w = layAplW; h = layAplH;
   pthread_mutex_unlock(&assTrava);
   printf("[assperf] bench: start | window %.1f-%.1f s of this track | %d frames on the 41.7 ms grid | %dx%d | cold caches"
-         " | mode=%s | engine option=%s\n",
+         " | mode=%s | engine option=%s | blur threads=%d\n",
          ini / 1000.0, pd.fim / 1000.0, ASS_BENCH_QUADROS, w, h,
-         pd.modo == 2 ? "C vs NEON" : "this engine", simd ? "NEON" : "C");
+         pd.modo == 2 ? "C vs NEON" : "this engine", simd ? "NEON" : "C", ass_nv_get_threads());
   fflush(stdout);
   if (pd.modo == 2) {
     hc = calloc(ASS_BENCH_QUADROS, sizeof *hc);
@@ -2212,6 +2247,263 @@ static void ass_bench_talvez(long long agora, unsigned geracao) {
 }
 #endif
 
+#if defined(NV_TPK) && defined(ASS_NV_API)
+/* ===== assperf: ASS SNAPSHOT (TPK) ==========================================
+ * Na folha, "ASS snapshot -> Take now" com o video pausado no quadro errado:
+ *  1. texto no log ([assperf] snap ...): o cabecalho do script (PlayRes,
+ *     YCbCr Matrix, ScaledBorderAndShadow), o que a folha Estilo do player
+ *     pede, as linhas ativas naquele instante (texto inteiro) com o estilo e as
+ *     cores de cada uma, e as imagens que o libass entregou (cor, alfa,
+ *     tamanho, cobertura);
+ *  2. figuras na pagina do log (metade da resolucao, BMP):
+ *     /ass-snap-libass.bmp       o quadro do libass sobre cinza 50%
+ *     /ass-snap-libass-alpha.bmp a cobertura dele (branco = opaco)
+ *     /ass-snap-screen.bmp       o que o app de fato pintou (glReadPixels,
+ *                                logo depois das legendas, antes do resto)
+ *     /ass-snap-screen-alpha.bmp o alfa da tela (0 = video aparece)
+ * As duas primeiras dizem se o libass pinta certo; as duas ultimas, se o
+ * desenho no fio GL muda alguma coisa. Nada vai para a rede. */
+#define SNAP_W 960
+#define SNAP_H 540
+
+static unsigned char *ass_bmp24(const unsigned char *rgb, int w, int h, size_t *n) {
+  size_t linha = ((size_t)w * 3 + 3) & ~(size_t)3, tam = 54 + linha * (size_t)h;
+  unsigned char *b = calloc(1, tam);
+  int y, x;
+  if (!b) return NULL;
+  b[0] = 'B'; b[1] = 'M';
+#define LE32(o, v) do { b[o] = (unsigned char)(v); b[o + 1] = (unsigned char)((v) >> 8); \
+                        b[o + 2] = (unsigned char)((v) >> 16); b[o + 3] = (unsigned char)((v) >> 24); } while (0)
+  LE32(2, (unsigned)tam); LE32(10, 54u); LE32(14, 40u); LE32(18, (unsigned)w); LE32(22, (unsigned)h);
+  b[26] = 1; b[28] = 24; LE32(34, (unsigned)(linha * (size_t)h));
+#undef LE32
+  for (y = 0; y < h; y++) {
+    unsigned char *d = b + 54 + (size_t)(h - 1 - y) * linha;
+    const unsigned char *s = rgb + (size_t)y * (size_t)w * 3;
+    for (x = 0; x < w; x++) { d[3 * x] = s[3 * x + 2]; d[3 * x + 1] = s[3 * x + 1]; d[3 * x + 2] = s[3 * x]; }
+  }
+  *n = tam;
+  return b;
+}
+
+static void ass_snap_guardar_rgb(const char *nome, const unsigned char *rgb, int w, int h) {
+  size_t n = 0;
+  unsigned char *b = ass_bmp24(rgb, w, h, &n);
+  if (b) assperf_snap_guardar(nome, b, n);
+}
+
+/* Texto do snapshot: um buffer que cresce, uma linha "[assperf] snap" cada. */
+typedef struct { char *b; size_t n, cap; } SnapTxt;
+static void snap_linha(SnapTxt *t, const char *fmt, ...) {
+  char l[1400];
+  va_list va;
+  int k;
+  va_start(va, fmt);
+  k = vsnprintf(l, sizeof l, fmt, va);
+  va_end(va);
+  if (k < 0) return;
+  if ((size_t)k >= sizeof l) k = (int)sizeof l - 1;
+  printf("[assperf] snap %s\n", l);
+  if (t->n + (size_t)k + 2 > t->cap) {
+    size_t nc = (t->cap ? t->cap * 2 : 16384) + (size_t)k;
+    char *nb = realloc(t->b, nc);
+    if (!nb) return;
+    t->b = nb; t->cap = nc;
+  }
+  memcpy(t->b + t->n, l, (size_t)k); t->n += (size_t)k; t->b[t->n++] = '\n';
+}
+
+static const char *snap_matriz(int m) {
+  static const char *nomes[] = { "missing", "unknown", "None", "TV.601", "PC.601", "TV.709", "PC.709",
+                                 "TV.240M", "PC.240M", "TV.FCC", "PC.FCC" };
+  return m >= 0 && m < (int)(sizeof nomes / sizeof nomes[0]) ? nomes[m] : "?";
+}
+
+typedef struct { long long t; unsigned geracao; } AssSnapPed;
+static int assSnapTela;   // fio GL: ler a tela no proximo quadro desenhado
+
+static void *ass_snap_fio(void *u) {
+  AssSnapPed pd = *(AssSnapPed *)u;
+  SnapTxt tx = { NULL, 0, 0 };
+  ASS_Renderer *r = NULL;
+  ASS_Image *img, *it;
+  unsigned char *tela = NULL, *rgb = NULL, *alf = NULL;
+  int fw = 0, fh = 0, i, nimg = 0, ativos = 0;
+  free(u);
+  pthread_mutex_lock(&assTrava);
+  if (!assLib || !assRenderer || !assTrack || pd.geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) ||
+      assTrackGeracao != pd.geracao || layAplW <= 0) {
+    pthread_mutex_unlock(&assTrava);
+    printf("[assperf] snap: no ASS track drawing\n"); fflush(stdout);
+    assperf_bench_estado(0, "Snapshot: no ASS track drawing");
+    return NULL;
+  }
+  snap_linha(&tx, "at %.3f s | frame %dx%d storage %dx%d font scale %.3f | PlayRes %dx%d | LayoutRes %dx%d | "
+             "YCbCr Matrix %s | ScaledBorderAndShadow %d | WrapStyle %d | Kerning %d | %d events, %d styles in libass",
+             pd.t / 1000.0, layAplW, layAplH, layAplVW, layAplVH, layAplEscala,
+             assTrack->PlayResX, assTrack->PlayResY, assTrack->LayoutResX, assTrack->LayoutResY,
+             snap_matriz((int)assTrack->YCbCrMatrix), assTrack->ScaledBorderAndShadow, assTrack->WrapStyle,
+             assTrack->Kerning, assTrack->n_events, assTrack->n_styles);
+  snap_linha(&tx, "player style: your-style option=%s | plain text track=%d | Style sheet overrides bits=0x%x "
+             "(1 colour 2 font 4 outline colour 8 border 16 box 32 position 64 bold) applied=%d colour=%06x outline=%06x "
+             "border=%d box=%d bold=%d font=%s",
+             assperf_get(AP_ESTILO) ? "Ignored" : "Applies", assTextoSimples, plainPedValido ? plainPed.overrides : 0,
+             plainAplValido ? plainApl.overrides : 0, plainPed.rgb, plainPed.outlineRgb, plainPed.border,
+             plainPed.background, plainPed.bold, plainPed.font);
+  { int usados[512] = { 0 }, nu = 0;
+    for (i = 0; i < assTrack->n_events; i++) {
+      const ASS_Event *e = &assTrack->events[i];
+      if (e->Start > pd.t || e->Start + e->Duration <= pd.t) continue;
+      ativos++;
+      if (ativos <= 150)
+        snap_linha(&tx, "event %d: layer %d %.3f-%.3f style=%s effect=%s | %.1100s", i, e->Layer,
+                   e->Start / 1000.0, (e->Start + e->Duration) / 1000.0,
+                   e->Style >= 0 && e->Style < assTrack->n_styles && assTrack->styles[e->Style].Name ? assTrack->styles[e->Style].Name : "?",
+                   e->Effect ? e->Effect : "", e->Text ? e->Text : "");
+      if (e->Style >= 0 && e->Style < assTrack->n_styles && nu < 512) {
+        int k, novo = 1;
+        for (k = 0; k < nu; k++) if (usados[k] == e->Style) novo = 0;
+        if (novo) usados[nu++] = e->Style;
+      }
+    }
+    for (i = 0; i < nu; i++) {
+      const ASS_Style *s = &assTrack->styles[usados[i]];
+      snap_linha(&tx, "style %s: font=%s size=%.1f primary=%08X secondary=%08X outline=%08X back=%08X "
+                 "bold=%d borderstyle=%d outline=%.2f shadow=%.2f scale=%.0f/%.0f align=%d margins=%d/%d/%d blur=%.2f",
+                 s->Name ? s->Name : "?", s->FontName ? s->FontName : "?", s->FontSize,
+                 s->PrimaryColour, s->SecondaryColour, s->OutlineColour, s->BackColour,
+                 s->Bold, s->BorderStyle, s->Outline, s->Shadow, s->ScaleX * 100, s->ScaleY * 100,
+                 s->Alignment, s->MarginL, s->MarginR, s->MarginV, s->Blur);
+    } }
+  snap_linha(&tx, "%d event(s) active (the first 150 listed)", ativos);
+
+  r = ass_renderer_igual_locked();
+  fw = layAplW; fh = layAplH;
+  img = r ? ass_render_frame(r, assTrack, pd.t, NULL) : NULL;
+  pthread_mutex_unlock(&assTrava);
+
+  /* As imagens sao do renderer do snapshot: validas ate o ass_renderer_done. */
+  tela = calloc((size_t)fw * (size_t)fh, 4);
+  if (tela) {
+    for (i = 0; i < fw * fh; i++) { tela[4 * i] = tela[4 * i + 1] = tela[4 * i + 2] = 128; tela[4 * i + 3] = 0; }
+    for (it = img; it; it = it->next) {
+      unsigned cr = it->color >> 24, cg = (it->color >> 16) & 255, cb = (it->color >> 8) & 255;
+      unsigned op = 255u - (it->color & 255u);
+      long cheio = 0, cobre = 0;
+      int x, y, maxA = 0;
+      for (y = 0; y < it->h; y++) {
+        int py = it->dst_y + y;
+        const unsigned char *src = it->bitmap + (size_t)y * (size_t)it->stride;
+        if (py < 0 || py >= fh) continue;
+        for (x = 0; x < it->w; x++) {
+          int px = it->dst_x + x;
+          unsigned a = (unsigned)src[x] * op / 255u;
+          if (src[x] > maxA) maxA = src[x];
+          if (src[x]) cobre++;
+          if (src[x] >= 250) cheio++;
+          if (px < 0 || px >= fw || !a) continue;
+          { unsigned char *d = tela + 4 * ((size_t)py * (size_t)fw + (size_t)px);
+            d[0] = (unsigned char)((cr * a + d[0] * (255u - a) + 127u) / 255u);
+            d[1] = (unsigned char)((cg * a + d[1] * (255u - a) + 127u) / 255u);
+            d[2] = (unsigned char)((cb * a + d[2] * (255u - a) + 127u) / 255u);
+            d[3] = (unsigned char)(a + d[3] * (255u - a) / 255u); }
+        }
+      }
+      nimg++;
+      if (nimg <= 80 || (long)it->w * it->h > 200000)
+        snap_linha(&tx, "image %d: %s colour=%02X%02X%02X alpha=%u (ASS &H%02X) at %d,%d %dx%d max=%d covered=%ld full(>=250)=%ld",
+                   nimg, it->type == IMAGE_TYPE_CHARACTER ? "fill" : it->type == IMAGE_TYPE_OUTLINE ? "outline" : "shadow",
+                   cr, cg, cb, op, it->color & 255u, it->dst_x, it->dst_y, it->w, it->h, maxA, cobre, cheio);
+    }
+    rgb = malloc((size_t)SNAP_W * SNAP_H * 3);
+    alf = malloc((size_t)SNAP_W * SNAP_H * 3);
+    if (rgb && alf) {
+      int x, y;
+      for (y = 0; y < SNAP_H; y++)
+        for (x = 0; x < SNAP_W; x++) {
+          const unsigned char *s = tela + 4 * ((size_t)(y * fh / SNAP_H) * (size_t)fw + (size_t)(x * fw / SNAP_W));
+          unsigned char *d = rgb + 3 * ((size_t)y * SNAP_W + x), *da = alf + 3 * ((size_t)y * SNAP_W + x);
+          d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+          da[0] = da[1] = da[2] = s[3];
+        }
+      ass_snap_guardar_rgb("ass-snap-libass.bmp", rgb, SNAP_W, SNAP_H);
+      ass_snap_guardar_rgb("ass-snap-libass-alpha.bmp", alf, SNAP_W, SNAP_H);
+    }
+  }
+  snap_linha(&tx, "%d image(s) from libass (%dx%d frame). Pictures: http://<TV IP>:8099/ass-snap-libass.bmp, "
+             "/ass-snap-libass-alpha.bmp, /ass-snap-screen.bmp, /ass-snap-screen-alpha.bmp", nimg, fw, fh);
+  free(rgb); free(alf); free(tela);
+  if (r) { pthread_mutex_lock(&assTrava); ass_renderer_done(r); pthread_mutex_unlock(&assTrava); }
+  if (tx.b) assperf_snap_guardar("ass-snap.txt", (unsigned char *)tx.b, tx.n);
+  fflush(stdout);
+  __atomic_store_n(&assSnapTela, 1, __ATOMIC_RELEASE);
+  assperf_bench_estado(0, "Snapshot taken: see the Subtitles log and /ass-snap-*.bmp");
+  return NULL;
+}
+
+/* Fio GL: a chave virou "Take now" -> volta a Off e o snapshot sai num fio. */
+static void ass_snap_talvez(long long agora, unsigned geracao) {
+  pthread_t fio;
+  AssSnapPed *pd;
+  if (!assperf_get(AP_SNAP)) return;
+  assperf_definir(AP_SNAP, 0);
+  pd = malloc(sizeof *pd);
+  if (!pd) return;
+  pd->t = agora < 0 ? 0 : agora; pd->geracao = geracao;
+  if (pthread_create(&fio, NULL, ass_snap_fio, pd) != 0) { free(pd); return; }
+  pthread_detach(fio);
+}
+
+/* Fio GL, logo depois das legendas: le o que foi pintado (snapshot). */
+static void ass_snap_ler_tela(void) {
+  GLint vp[4];
+  int w, h, y0, x, y;
+  unsigned char *faixa, *rgb, *alf;
+  double soma[4] = { 0 };
+  if (!__atomic_exchange_n(&assSnapTela, 0, __ATOMIC_ACQ_REL)) return;
+  glGetIntegerv(GL_VIEWPORT, vp);
+  w = vp[2]; h = vp[3];
+  if (w <= 0 || h <= 0) return;
+  faixa = malloc((size_t)w * 4 * 16);
+  rgb = malloc((size_t)SNAP_W * SNAP_H * 3);
+  alf = malloc((size_t)SNAP_W * SNAP_H * 3);
+  if (!faixa || !rgb || !alf) { free(faixa); free(rgb); free(alf); return; }
+  for (y = 0; y < SNAP_H; y++) {
+    /* a linha y da figura (de cima) e a linha h-1-sy do GL (de baixo) */
+    int sy = y * h / SNAP_H;
+    y0 = h - 1 - sy;
+    glReadPixels(vp[0], vp[1] + y0, w, 1, GL_RGBA, GL_UNSIGNED_BYTE, faixa);
+    for (x = 0; x < SNAP_W; x++) {
+      const unsigned char *s = faixa + 4 * (size_t)(x * w / SNAP_W);
+      unsigned char *d = rgb + 3 * ((size_t)y * SNAP_W + x), *da = alf + 3 * ((size_t)y * SNAP_W + x);
+      d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; da[0] = da[1] = da[2] = s[3];
+      soma[0] += s[0]; soma[1] += s[1]; soma[2] += s[2]; soma[3] += s[3];
+    }
+  }
+  ass_snap_guardar_rgb("ass-snap-screen.bmp", rgb, SNAP_W, SNAP_H);
+  ass_snap_guardar_rgb("ass-snap-screen-alpha.bmp", alf, SNAP_W, SNAP_H);
+  printf("[assperf] snap screen: %dx%d framebuffer read after the subtitles | average R %.0f G %.0f B %.0f alpha %.0f"
+         " | gl error 0x%x\n", w, h, soma[0] / (SNAP_W * SNAP_H), soma[1] / (SNAP_W * SNAP_H),
+         soma[2] / (SNAP_W * SNAP_H), soma[3] / (SNAP_W * SNAP_H), (unsigned)glGetError());
+  fflush(stdout);
+  free(faixa); free(rgb); free(alf);
+}
+
+/* Cartao de teste de cor: branco 100/90/75/50 %, branco a 50 % de alfa e
+ * preto, 120x120 cada, no alto da tela, pelo mesmo blending das legendas. */
+static void ass_cartao_desenhar(void) {
+  static const float cor[6][4] = {
+    { 1, 1, 1, 1 }, { .9f, .9f, .9f, 1 }, { .75f, .75f, .75f, 1 }, { .5f, .5f, .5f, 1 }, { 1, 1, 1, .5f }, { 0, 0, 0, 1 }
+  };
+  int i;
+  if (!assperf_get(AP_CARTAO)) return;
+  gfx_tex_aspect_atual = 0.0f;
+  for (i = 0; i < 6; i++)
+    gfx_rect((GfxRect){ 600.0f + i * 130.0f, 40.0f, 120.0f, 120.0f }, 0, GFX_COR, 0, 0, 0, 0.0f,
+             cor[i][0], cor[i][1], cor[i][2], cor[i][3]);
+}
+#endif
+
 /* assperf (render ahead): estado do fio GL. */
 static double assAdianteEma;          // ms; "Auto"
 static double assUploadEma;           // ms do upload de um quadro novo
@@ -2234,6 +2526,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   agora = (long long)llround(posSeg * 1000.0) + (long long)atrasoMs;
 #if defined(NV_TPK) && defined(ASS_NV_API)
   ass_bench_talvez(agora, generation);
+  ass_snap_talvez(agora, generation);
 #endif
   /* assperf: caminho de desenho novo (qualquer chave de upload ligada) e
    * render ahead. Tudo em "old": o mesmo de sempre, linha por linha. */
@@ -2407,6 +2700,10 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     pthread_mutex_unlock(&assFilaTrava);
   }
   ass_frame_liberar(&novo);
+#if defined(NV_TPK) && defined(ASS_NV_API)
+  ass_cartao_desenhar();
+  ass_snap_ler_tela();
+#endif
   clock_gettime(CLOCK_MONOTONIC, &td1);
   assperf_med_quadro(ass_ms_entre(&td0, &td1));
   assperf_med_tick();

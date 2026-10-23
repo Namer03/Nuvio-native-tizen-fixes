@@ -5550,7 +5550,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
     /* assperf "Subtitle opacity on ASS": o ASS com estilo do autor (mascaras
      * brancas de typeset) e conteudo do filme; a opacidade da folha de Estilo
      * deixava o video aparecer por baixo (Kaguya, INBOX). Texto simples segue. */
-    if (assperf_get(AP_OPACIDADE) && !assrender_texto_simples()) alpha = entrada;
+    if (assperf_get(AP_ESTILO) && !assrender_texto_simples()) alpha = entrada;
     if (entrada > 0.999f) assperf_med_alfa(alpha, opacidade);
 #endif
     assrender_pixels_por_unidade(gfx_px_por_unidade());

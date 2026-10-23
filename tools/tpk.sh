@@ -75,7 +75,8 @@ tpk_sdk
 # build image has no `patch`), to a fresh copy of the 0.17.5 tarball in
 # $CACHE/src/libass-nv; deps.sh builds a copy of that tree. The stamp is the
 # hash of the patches: change a patch and libass (only libass) is rebuilt.
-NV_ASS_STAMP=$(cat tools/tpk/libass-nv/patches/*.patch | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+# Extra CFLAGS for libass only (tools/tpk/libass-nv/cflags, plan Step 2) are part of the stamp.
+NV_ASS_STAMP=$(cat tools/tpk/libass-nv/patches/*.patch tools/tpk/libass-nv/cflags | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
 if [ "$(cat "$CACHE/src/libass-nv/.nv-stamp" 2>/dev/null)" != "$NV_ASS_STAMP" ]; then
   echo "[deps] libass 0.17.5 + tools/tpk/libass-nv/patches"
   mkdir -p "$CACHE/src"
@@ -87,6 +88,7 @@ if [ "$(cat "$CACHE/src/libass-nv/.nv-stamp" 2>/dev/null)" != "$NV_ASS_STAMP" ];
   for p in tools/tpk/libass-nv/patches/*.patch; do
     patch -d "$CACHE/src/libass-nv" -p1 -s --forward < "$p" || { echo "libass patch falhou: $p" >&2; exit 1; }
   done
+  tr -d '\n' < tools/tpk/libass-nv/cflags > "$CACHE/src/libass-nv/.nv-cflags"
   printf "%s" "$NV_ASS_STAMP" > "$CACHE/src/libass-nv/.nv-stamp"
 fi
 

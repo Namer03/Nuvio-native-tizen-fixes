@@ -12,7 +12,14 @@
 #include <stdio.h>
 #include <string.h>
 
-#define AU_LINHAS (AP_N + 1)          // 0 = preset, 1.. = as chaves
+/* Linhas da folha: o preset e as chaves que ainda se ajustam, nesta ordem.
+ * As chaves fixas (assperf_fixa: decididas nos testes na TV) nao aparecem. */
+static const int AU_ORDEM[] = {
+  AP_ESTILO, AP_FIOS, AP_ESCALA, AP_ADIANTE, AP_CACHE, AP_HINTING, AP_FONTES,
+  AP_PODA, AP_RELAY, AP_SNAP, AP_CARTAO, AP_BENCH, AP_ESTAGIOS, AP_LOG,
+};
+#define AU_NCHAVES ((int)(sizeof AU_ORDEM / sizeof AU_ORDEM[0]))
+#define AU_LINHAS (AU_NCHAVES + 1)          // 0 = preset, 1.. = as chaves
 #define AU_POR_COLUNA ((AU_LINHAS + 1) / 2)
 #define AU_LINHA_H 50.0f
 #define AU_TOPO 64.0f
@@ -32,14 +39,13 @@ float assperfui_altura(void) {
 
 static void mudar(int d) {
   if (foco == 0) {
-    // Recommended -> Legacy -> Lightest; de "Custom" vai para Recommended.
+    // Recommended <-> Lightest; de "Custom"/"Safe" vai para Recommended.
     const char *n = assperf_preset_nome();
-    int atual = !strcmp(n, "Recommended") ? 0 : !strcmp(n, "Legacy") ? 1 : !strcmp(n, "Lightest") ? 2 : -1;
-    int prox = atual < 0 ? 0 : (atual + (d < 0 ? 2 : 1)) % 3;
-    assperf_preset(prox);
+    (void)d;
+    assperf_preset(!strcmp(n, "Recommended") ? 2 : 0);
     return;
   }
-  { int id = foco - 1, n = assperf_n_valores(id), v = assperf_get(id);
+  { int id = AU_ORDEM[foco - 1], n = assperf_n_valores(id), v = assperf_get(id);
     if (n < 2) return;
     assperf_definir(id, (v + (d < 0 ? n - 1 : 1)) % n); }
 }
@@ -56,8 +62,8 @@ int assperfui_tecla(SDL_Keycode k) {
 
 static void linha(int i, GfxRect r, float a) {
   int sel = i == foco;
-  const char *rot = i == 0 ? "Preset" : assperf_rotulo(i - 1);
-  const char *val = i == 0 ? assperf_preset_nome() : assperf_valor_rotulo(i - 1, assperf_get(i - 1));
+  const char *rot = i == 0 ? "Preset" : assperf_rotulo(AU_ORDEM[i - 1]);
+  const char *val = i == 0 ? assperf_preset_nome() : assperf_valor_rotulo(AU_ORDEM[i - 1], assperf_get(AU_ORDEM[i - 1]));
   int velho = i > 0 && strstr(val, "(old)") != NULL;
   if (sel) plrui_linha_foco(r, 16.0f, a);
   { TxtLinha lr = txt_linha_corta(TXT_G20B, rot, 243, 242, 239, sel ? 255 : 200, r.w * 0.56f - 20.0f);
@@ -91,9 +97,9 @@ void assperfui_corpo(GfxRect c, float a) {
   }
   y += AU_POR_COLUNA * AU_LINHA_H + 12.0f;
   { char med[200];
-    const char *ajuda = foco == 0 ? "Recommended = every fix on. Legacy = exactly the old behaviour. "
+    const char *ajuda = foco == 0 ? "Recommended = the tested settings (NEON, authored style, 3 blur threads). "
                                      "Lightest = Recommended + 75% render resolution, no hinting, 128 MB cache."
-                                  : assperf_ajuda(foco - 1);
+                                  : assperf_ajuda(AU_ORDEM[foco - 1]);
     txt_bloco_corta(TXT_G18M, ajuda, 243, 242, 239, x0, y, w, 26.0f, a * 0.85f, 2);
     assperf_med_texto(med, sizeof med);
     { TxtLinha lm = txt_linha_corta(TXT_G18M, med, 160, 200, 255, 255, w);

@@ -97,8 +97,9 @@ static long long track_end(ASS_Track *t)
     return end;
 }
 
-static int run(ASS_Library *lib, const char *file, int simd, Frame *out, int *n_out, double *ms)
+static int run(ASS_Library *lib, const char *file, int simd, int threads, Frame *out, int *n_out, double *ms)
 {
+    ass_nv_set_threads(threads);
     ASS_Renderer *r = ass_renderer_init(lib);
     ass_set_frame_size(r, W, H);
     ass_set_storage_size(r, W, H);
@@ -120,8 +121,8 @@ static int run(ASS_Library *lib, const char *file, int simd, Frame *out, int *n_
     ass_nv_perf_take(&p);
     *n_out = n;
     *ms = p.ns_frame / 1e6;
-    printf("  %-4s %4u frames %6u images  %9.1f ms  shape %.1f outline %.1f raster %.1f blur %.1f be %.1f compose %.1f clip %.1f  bitmap cache %u/%u\n",
-           simd ? "NEON" : "C", p.frames, p.images, p.ns_frame / 1e6,
+    printf("  %-4s x%d %4u frames %6u images  %9.1f ms  shape %.1f outline %.1f raster %.1f blur %.1f be %.1f compose %.1f clip %.1f  bitmap cache %u/%u\n",
+           simd ? "NEON" : "C", ass_nv_get_threads(), p.frames, p.images, p.ns_frame / 1e6,
            p.ns_stage[1] / 1e6, p.ns_stage[2] / 1e6, p.ns_stage[3] / 1e6, p.ns_stage[4] / 1e6,
            p.ns_stage[5] / 1e6, p.ns_stage[6] / 1e6, p.ns_stage[7] / 1e6,
            p.cache_hit[1], p.cache_hit[1] + p.cache_miss[1]);
@@ -143,31 +144,33 @@ int main(int argc, char **argv)
     load_fonts(lib, argv[1]);
     ass_nv_perf_enable(1);
 
-    static Frame a[MAX_FRAMES], b[MAX_FRAMES];
+    static Frame a[MAX_FRAMES], b[MAX_FRAMES], c[MAX_FRAMES];
     int bad = 0;
     double tc = 0, tn = 0;
     for (int i = 2; i < argc; i++) {
-        int na = 0, nb = 0;
-        double ma, mb;
+        int na = 0, nb = 0, nc = 0;
+        double ma, mb, mc;
         printf("%s\n", argv[i]);
-        if (run(lib, argv[i], 0, a, &na, &ma) || run(lib, argv[i], 1, b, &nb, &mb)) { bad = 1; continue; }
+        if (run(lib, argv[i], 0, 1, a, &na, &ma) || run(lib, argv[i], 1, 1, b, &nb, &mb) ||
+            run(lib, argv[i], 1, 4, c, &nc, &mc)) { bad = 1; continue; }
         tc += ma; tn += mb;
         int diff = 0, imgs = 0;
         for (int k = 0; k < na; k++) {
             imgs += a[k].imgs;
-            if (a[k].hash != b[k].hash || a[k].imgs != b[k].imgs) {
+            if (a[k].hash != b[k].hash || a[k].imgs != b[k].imgs ||
+                a[k].hash != c[k].hash || a[k].imgs != c[k].imgs) {
                 if (diff < 5)
                     printf("  DIFF at %d ms (%u vs %u images)\n", k * STEP_MS, a[k].imgs, b[k].imgs);
                 diff++;
             }
         }
-        if (na != nb) diff++;
+        if (na != nb || na != nc) diff++;
         if (!imgs) { printf("  no images rendered\n"); diff++; }
         printf("  %s: %d frames, %d differ\n", diff ? "FAIL" : "identical", na, diff);
         bad |= diff != 0;
     }
     printf("total C %.0f ms, NEON %.0f ms (x%.2f; emulated, not TV speed)\n", tc, tn, tn > 0 ? tc / tn : 0);
-    printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine bit-identical to C\n");
+    printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine (1 and 4 threads) bit-identical to C\n");
     ass_library_done(lib);
     return bad;
 }

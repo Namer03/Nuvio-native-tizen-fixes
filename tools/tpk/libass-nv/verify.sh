@@ -29,9 +29,11 @@ for f in "$S"/checkasm/*.c; do
 done
 gcc -o "$T/checkasm" "$T"/*.o $LIBS
 for seed in 1 22 333 4444 55555; do
-  if ! "$T/checkasm" $seed > "$T/checkasm.txt" 2>&1; then cat "$T/checkasm.txt"; exit 1; fi
+  # odd seeds: the NEON engine with 4 threads and every job split (threaded paths)
+  if [ $((seed % 2)) = 1 ]; then TH="ASS_NV_THREADS=4 ASS_NV_PAR_MIN=0"; else TH=; fi
+  if ! env $TH "$T/checkasm" $seed > "$T/checkasm.txt" 2>&1; then cat "$T/checkasm.txt"; exit 1; fi
   grep -q "NEON (armv7)" "$T/checkasm.txt" || { cat "$T/checkasm.txt"; echo "[verify] checkasm did not test the NEON engine" >&2; exit 1; }
-  echo "[verify] checkasm seed $seed: $(tail -n 1 "$T/checkasm.txt")"
+  echo "[verify] checkasm seed $seed ${TH:-1 thread}: $(tail -n 1 "$T/checkasm.txt")"
 done
 cat "$T/checkasm.txt"
 

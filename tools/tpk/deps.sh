@@ -63,7 +63,8 @@ fi
 NV_ASS_STAMP=$(cat /w/src/libass-nv/.nv-stamp)
 if [ ! -f $P/lib/libass.a ] || [ "$(cat $P/lib/.libass-nv 2>/dev/null)" != "$NV_ASS_STAMP" ]; then
   rm -rf ${TMPDIR:-/tmp}/libass-nv && cp -a /w/src/libass-nv ${TMPDIR:-/tmp}/libass-nv && cd ${TMPDIR:-/tmp}/libass-nv
-  CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" ./configure $HOST -q --prefix=$P --enable-static --disable-shared --disable-fontconfig --disable-require-system-font-provider --disable-enca --disable-libunibreak --disable-asm --enable-harfbuzz && make -j6 >/dev/null && make install >/dev/null || exit 1
+  # tools/tpk/libass-nv/cflags vem depois do -O2 do $CFLAGS da imagem (o ultimo -O vale).
+  CFLAGS="$CFLAGS $(cat .nv-cflags 2>/dev/null)" CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" ./configure $HOST -q --prefix=$P --enable-static --disable-shared --disable-fontconfig --disable-require-system-font-provider --disable-enca --disable-libunibreak --disable-asm --enable-harfbuzz && make -j6 >/dev/null && make install >/dev/null || exit 1
   printf "%s" "$NV_ASS_STAMP" > $P/lib/.libass-nv
   cd / && rm -rf ${TMPDIR:-/tmp}/libass-nv
 fi
