@@ -23,6 +23,7 @@
 #include <stddef.h>
 
 enum {
+  AP_MOTOR,        // libass bitmap engine: 0 plain C (old), 1 NEON (armv7 SIMD, bit-identical)
   AP_UPLOAD,       // 0 RGBA (old), 1 Alpha 8-bit + tint
   AP_TEXCACHE,     // 0 off (old), 1 reuse unchanged images
   AP_TEXANEL,      // texture recycle delay: 0 = 1 frame, 1 = 2 frames, 2 = 3 frames
@@ -41,6 +42,9 @@ enum {
   AP_RELAY,        // read subtitle blocks from the local relay stream: 0 off (old), 1 on
   AP_PRIORIDADE,   // render thread priority: 0 normal (old), 1 higher (try), 2 lower
   AP_MUDANCA,      // render only when the picture can change: 0 every UI frame (old), 1 on
+  AP_ESTAGIOS,     // libass stage timers in the 10 s log: 0 off, 1 on (measurement, not in presets)
+  AP_BENCH,        // ASS bench: 0 off, 1 run (this engine), 2 run C vs NEON (an action; back to 0 when it starts)
+  AP_OPACIDADE,    // styled ASS + the player's subtitle opacity: 0 applies (old), 1 ignored (ASS drawn as authored)
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
   AP_N
 };
@@ -85,11 +89,29 @@ void assperf_med_atraso(double ms);                               // quadro most
 void assperf_med_adiante(double ms);                              // adiantamento usado
 void assperf_med_relay(int blocos, int usados);                   // mkvfix -> mkvass
 void assperf_med_poda(int removidos);
+void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
 void assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // provas no computador
 void assperf_med_forcar(void);               // imprime a janela agora
 #endif
+// libass por etapa (o libass do .tpk tem cronometros: tools/tpk/libass-nv).
+// O worker manda um por render; sai na linha "[assperf] stages:" da janela.
+typedef struct {
+  int motor;                 // 0 C, 1 NEON, -1 desconhecido
+  double frameMs;            // dentro de ass_render_frame
+  double stageMs[8];         // other, shape, outline, raster, blur, be, compose, clip
+  unsigned frames, events, images;
+  unsigned hit[3], miss[3];  // caches outline, bitmap, composite
+} AssperfEstagios;
+void assperf_med_estagios(const AssperfEstagios *e);
+extern const char *const assperf_estagio_nome[8];
+// Chave de medida (log, cronometros, bench): fora dos presets e da guarda.
+int  assperf_e_medida(int id);
+// Bench: estado para a folha ("Running...") e o resumo do ultimo.
+void assperf_bench_estado(int rodando, const char *resumo);
+int  assperf_bench_rodando(void);
+
 // Linha curta para a folha ("render 4.1/38 ms · upload 0.6/3 ms · late 12 ms").
 void assperf_med_texto(char *dst, size_t n);
 

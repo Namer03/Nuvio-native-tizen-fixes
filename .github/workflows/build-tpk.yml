@@ -67,11 +67,16 @@ jobs:
       # Static SDL2/libass/etc. take a long time to build; reuse them.
       # restore + save are split so the cache is saved even when a later step
       # fails (plain actions/cache skips the save on failure).
+      # restore-keys: when only the libass patches (tools/tpk/libass-nv) or
+      # deps.sh change, the previous cache still comes back and tools/tpk.sh
+      # rebuilds just libass (its stamp is the hash of the patches).
       - name: Restore static dependencies cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.NUVIO_TPK_CACHE }}
-          key: tpk-deps-${{ hashFiles('tools/tpk/Dockerfile', 'tools/tpk/deps.sh') }}
+          key: tpk-deps-${{ hashFiles('tools/tpk/Dockerfile', 'tools/tpk/deps.sh', 'tools/tpk/libass-nv/patches/*') }}
+          restore-keys: |
+            tpk-deps-
 
       # The static FFmpeg for DTS/TrueHD -> AC3 (tools/build-dts-ffmpeg.sh, built
       # by tools/tpk.sh into $NUVIO_TPK_CACHE/prefix-dts) takes long under ARM
@@ -113,7 +118,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.NUVIO_TPK_CACHE }}
-          key: tpk-deps-${{ hashFiles('tools/tpk/Dockerfile', 'tools/tpk/deps.sh') }}
+          key: tpk-deps-${{ hashFiles('tools/tpk/Dockerfile', 'tools/tpk/deps.sh', 'tools/tpk/libass-nv/patches/*') }}
 
       # Only a finished FFmpeg build (tpk.sh writes .carimbo last) is cached.
       - name: Check FFmpeg (DTS) build
@@ -128,6 +133,23 @@ jobs:
         with:
           path: ${{ env.NUVIO_TPK_CACHE }}/prefix-dts
           key: tpk-dts-ffmpeg-${{ hashFiles('tools/build-dts-ffmpeg.sh') }}
+
+      # The TPK libass has an ARMv7 NEON bitmap engine (tools/tpk/libass-nv).
+      # Here, in the same linux/arm build image under qemu, libass's checkasm
+      # compares every NEON function with the C engine, and verify.c renders
+      # the sample scripts with both engines and compares every image byte for
+      # byte. Any difference fails the build (no .tpk is uploaded).
+      - name: Verify libass NEON engine (qemu-arm)
+        run: |
+          set -o pipefail
+          docker run --rm --platform linux/arm -v "$NUVIO_TPK_CACHE:/w" -v "$PWD:/work" -w /work \
+            nuvio-tpk-sdk sh tools/tpk/libass-nv/verify.sh 2>&1 | tee verify-libass.log
+          {
+            echo '### libass NEON engine (qemu-arm)'
+            echo '```'
+            grep -E '^\[verify\]|identical|differ|RESULT|frames' verify-libass.log | tail -n 30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # On failure, show the last lines of the build at the top of the run page.
       - name: Show build error summary

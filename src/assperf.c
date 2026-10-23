@@ -25,6 +25,9 @@ typedef struct {
 } ApDef;
 
 static const ApDef DEF[AP_N] = {
+  [AP_MOTOR] = { "motor", "Bitmap engine",
+    "NEON runs libass's blur, rasterizer and blending with ARM SIMD; the picture is bit-identical. C is libass's plain engine.",
+    1, 1, 2, { "C (old)", "NEON" } },
   [AP_UPLOAD] = { "upload", "Upload format",
     "Alpha 8-bit sends 1 byte per pixel and tints on the GPU; RGBA builds 4 bytes per pixel on the CPU.",
     1, 1, 2, { "RGBA (old)", "Alpha 8-bit" } },
@@ -79,6 +82,15 @@ static const ApDef DEF[AP_N] = {
   [AP_MUDANCA] = { "mudanca", "Render only on changes",
     "Skips libass when no event starts, ends or animates before the next moment: ~24 renders/s on frame-by-frame signs instead of 60.",
     1, 1, 2, { "Every frame (old)", "On" } },
+  [AP_ESTAGIOS] = { "estagios", "Stage timers",
+    "Adds an [assperf] stages: line to the 10 s log: libass time per frame split into shaping, raster, blur, compose, clip.",
+    1, 1, 2, { "Off", "On" } },
+  [AP_BENCH] = { "bench", "ASS bench",
+    "Pause first. \xe2\x86\x92 runs this engine, \xe2\x86\x90 runs C vs NEON: the 10 s before the playhead, re-rendered off-screen, cold caches.",
+    0, 0, 3, { "Off", "Run (this engine)", "Run C vs NEON" } },
+  [AP_OPACIDADE] = { "opacidade", "Subtitle opacity on ASS",
+    "Ignored draws styled ASS exactly as authored (white masks stay opaque). Applies multiplies it by Subtitles > Style > Opacity.",
+    1, 1, 2, { "Applies (old)", "Ignored" } },
   [AP_LOG] = { "log", "Subtitle log",
     "Summary writes one [assperf] line every 10 s. Detailed also logs each slow frame.",
     1, 1, 3, { "Off", "Summary (10 s)", "Detailed" } },
@@ -92,7 +104,7 @@ static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 #ifdef NV_TPK
 static void aplicarPreset(int p) {
   for (int i = 0; i < AP_N; i++) {
-    if (i == AP_LOG) continue;   // o log nao e comportamento: o preset nao mexe
+    if (assperf_e_medida(i)) continue;   // medida nao e comportamento: o preset nao mexe
     val[i] = p == 0 ? DEF[i].recomendado : p == 2 ? DEF[i].leve : 0;
   }
 }
@@ -118,6 +130,7 @@ void assperf_iniciar(void) {
     char *t = dados_ler(AP_ARQ), *marca;
     aplicarPreset(0);
     val[AP_LOG] = DEF[AP_LOG].recomendado;
+    val[AP_ESTAGIOS] = DEF[AP_ESTAGIOS].recomendado;
     if (t) {
       char *l = t, *nl;
       for (; l && *l; l = nl) {
@@ -133,14 +146,13 @@ void assperf_iniciar(void) {
       }
       free(t);
     }
+    val[AP_BENCH] = 0;   // uma acao: nunca volta ligada do arquivo
     marca = dados_ler(AP_MARCA);
     if (marca) {
       free(marca);
       dados_apagar(AP_MARCA);
       if (avisos_sessao_anterior_caiu()) {
-        int log = val[AP_LOG];
-        aplicarPreset(1);
-        val[AP_LOG] = log;
+        aplicarPreset(1);   // as chaves de medida ficam como estavam
         gravar();
         printf("[assperf] the previous session crashed while ASS subtitles were drawing with test options: "
                "everything is back to Legacy (old behaviour)\n");
@@ -182,11 +194,14 @@ int assperf_get(int id) {
 #endif
 }
 
+int assperf_e_medida(int id) { return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH; }
+
 int assperf_n_valores(int id) { return id >= 0 && id < AP_N ? DEF[id].n : 0; }
 const char *assperf_rotulo(int id) { return id >= 0 && id < AP_N ? DEF[id].rotulo : ""; }
 const char *assperf_ajuda(int id) { return id >= 0 && id < AP_N ? DEF[id].ajuda : ""; }
 const char *assperf_valor_rotulo(int id, int v) {
   if (id < 0 || id >= AP_N || v < 0 || v >= DEF[id].n) return "";
+  if (id == AP_BENCH && assperf_bench_rodando()) return "Running\xe2\x80\xa6";
   return DEF[id].valores[v];
 }
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
@@ -231,7 +246,7 @@ const char *assperf_preset_nome(void) {
   int rec = 1, leg = 1, lev = 1;
   for (int i = 0; i < AP_N; i++) {
     int v = assperf_get(i);
-    if (i == AP_LOG) continue;
+    if (assperf_e_medida(i)) continue;
     if (v != DEF[i].recomendado) rec = 0;
     if (v != 0) leg = 0;
     if (v != DEF[i].leve) lev = 0;
@@ -275,7 +290,7 @@ void assperf_faixa_ativa(int ativa) {
 #ifdef NV_TPK
   static int marcada;
   int teste = 0;
-  for (int i = 0; i < AP_N; i++) if (i != AP_LOG && assperf_get(i)) teste = 1;
+  for (int i = 0; i < AP_N; i++) if (!assperf_e_medida(i) && assperf_get(i)) teste = 1;
   if (ativa && teste) { if (!__atomic_exchange_n(&marcada, 1, __ATOMIC_ACQ_REL)) dados_gravar(AP_MARCA, "1\n"); }
   else if (__atomic_exchange_n(&marcada, 0, __ATOMIC_ACQ_REL)) dados_apagar(AP_MARCA);
 #else
@@ -296,7 +311,30 @@ static struct {
   // a ultima janela fechada, para a folha
   char texto[160];
   int lentos;   // linhas "detalhadas" nesta janela
+  float alfaMin, alfaOpc; int alfaN;   // assperf_med_alfa
+  // libass por etapa (assperf_med_estagios)
+  struct {
+    int motor;
+    unsigned frames, events, images, hit[3], miss[3];
+    double frameMs, frameMax, stageMs[8], piorStage[8];
+  } est;
 } M;
+
+const char *const assperf_estagio_nome[8] = {
+  "other", "shape", "outline", "raster", "blur", "be", "compose", "clip"
+};
+
+static int benchRodando;
+static char benchResumo[160];
+static time_t benchResumoT;   // a folha mostra o resumo por 2 min
+
+void assperf_bench_estado(int rodando, const char *resumo) {
+  pthread_mutex_lock(&trava);
+  if (resumo) { snprintf(benchResumo, sizeof benchResumo, "%s", resumo); benchResumoT = time(NULL); }
+  pthread_mutex_unlock(&trava);
+  __atomic_store_n(&benchRodando, rodando, __ATOMIC_RELEASE);
+}
+int assperf_bench_rodando(void) { return __atomic_load_n(&benchRodando, __ATOMIC_ACQUIRE); }
 
 static double agoraS(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -356,6 +394,29 @@ void assperf_med_relay(int blocos, int usados) {
   M.relayBlocos += blocos; M.relayUsados += usados;
   pthread_mutex_unlock(&medTrava);
 }
+void assperf_med_estagios(const AssperfEstagios *e) {
+  int i;
+  if (!e || !e->frames) return;
+  pthread_mutex_lock(&medTrava);
+  M.est.motor = e->motor;
+  M.est.frames += e->frames; M.est.events += e->events; M.est.images += e->images;
+  for (i = 0; i < 3; i++) { M.est.hit[i] += e->hit[i]; M.est.miss[i] += e->miss[i]; }
+  M.est.frameMs += e->frameMs;
+  for (i = 0; i < 8; i++) M.est.stageMs[i] += e->stageMs[i];
+  if (e->frames == 1 && e->frameMs > M.est.frameMax) {
+    M.est.frameMax = e->frameMs;
+    memcpy(M.est.piorStage, e->stageMs, sizeof M.est.piorStage);
+  }
+  pthread_mutex_unlock(&medTrava);
+}
+
+void assperf_med_alfa(float alfa, float opacidadeUsuario) {
+  pthread_mutex_lock(&medTrava);
+  if (!M.alfaN || alfa < M.alfaMin) M.alfaMin = alfa;
+  M.alfaOpc = opacidadeUsuario; M.alfaN++;
+  pthread_mutex_unlock(&medTrava);
+}
+
 void assperf_med_poda(int removidos) {
   pthread_mutex_lock(&medTrava);
   M.podados += removidos;
@@ -390,6 +451,29 @@ void assperf_med_tick(void) {
              aAvg, M.atrasoMin, M.atrasoMax, M.atrasos, adAvg,
              M.lotes, M.cheios, M.linhasNovas, M.total, M.lotes ? M.loteSoma / M.lotes : 0, M.loteMax,
              M.relayBlocos, M.relayUsados, M.podados);
+      if (M.alfaN)
+        printf("[assperf] draw alpha min=%.2f (Subtitles > Style > Opacity = %.0f%%, %s on styled ASS)\n",
+               M.alfaMin, M.alfaOpc * 100.0f, assperf_get(AP_OPACIDADE) ? "ignored" : "applied");
+      if (M.est.frames && assperf_get(AP_ESTAGIOS)) {
+        char per[200], pior[200];
+        size_t o1 = 0, o2 = 0;
+        int i;
+        double f = (double)M.est.frames;
+        per[0] = pior[0] = 0;
+        for (i = 1; i <= 8; i++) {   // other por ultimo
+          int s = i & 7;
+          o1 += (size_t)snprintf(per + o1, sizeof per - o1, "%s%s %.1f", i > 1 ? " " : "", assperf_estagio_nome[s], M.est.stageMs[s] / f);
+          o2 += (size_t)snprintf(pior + o2, sizeof pior - o2, "%s%s %.0f", i > 1 ? " " : "", assperf_estagio_nome[s], M.est.piorStage[s]);
+          if (o1 >= sizeof per || o2 >= sizeof pior) break;
+        }
+#define AP_PCT(k) (M.est.hit[k] + M.est.miss[k] ? (int)(100.0 * M.est.hit[k] / (M.est.hit[k] + M.est.miss[k]) + 0.5) : 0)
+        printf("[assperf] stages: engine=%s frames=%u avg=%.1f max=%.1f ms | ms/frame: %s | worst frame: %s"
+               " | cache hit outline %d%% bitmap %d%% composite %d%% (misses %u/%u/%u) | per frame: events %.1f images %.1f\n",
+               M.est.motor == 1 ? "NEON" : M.est.motor == 0 ? "C" : "?", M.est.frames, M.est.frameMs / f, M.est.frameMax,
+               per, pior, AP_PCT(0), AP_PCT(1), AP_PCT(2), M.est.miss[0], M.est.miss[1], M.est.miss[2],
+               M.est.events / f, M.est.images / f);
+#undef AP_PCT
+      }
       fflush(stdout);
     }
   }
@@ -403,6 +487,13 @@ void assperf_med_tick(void) {
 }
 
 void assperf_med_texto(char *dst, size_t n) {
+  pthread_mutex_lock(&trava);
+  if (benchResumo[0] && (assperf_bench_rodando() || time(NULL) - benchResumoT < 120)) {
+    snprintf(dst, n, "%s", benchResumo);
+    pthread_mutex_unlock(&trava);
+    return;
+  }
+  pthread_mutex_unlock(&trava);
   pthread_mutex_lock(&medTrava);
   snprintf(dst, n, "%s", M.texto[0] ? M.texto : "measuring\xe2\x80\xa6 (10 s windows)");
   pthread_mutex_unlock(&medTrava);

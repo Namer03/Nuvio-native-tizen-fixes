@@ -55,6 +55,7 @@
 #include "logotitulo.h"
 #include "extplayer.h"
 #include "corviva.h"
+#include "assperf.h"
 
 // A CASCA DO TIZEN PRECISA SABER SE O PLAYER ESTA NA TELA. tools/tizen-shell.html
 // traduz as teclas de midia do controle Samsung (play/pause, stop, avancar,
@@ -5542,8 +5543,16 @@ static void desenharLegendaPrincipal(float *topoPilha){
        * still follows the video rectangle and the author's styling. */
       if (assrender_texto_simples()) area = (PlrRect){0, 0, NV_TELA_W, NV_TELA_H};
     }
-    float alpha = (legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
-                   legEstilo.opacidade==1?.75f:1.f) * entrada;
+    float opacidade = legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
+                      legEstilo.opacidade==1?.75f:1.f;
+    float alpha = opacidade * entrada;
+#ifdef NV_TPK
+    /* assperf "Subtitle opacity on ASS": o ASS com estilo do autor (mascaras
+     * brancas de typeset) e conteudo do filme; a opacidade da folha de Estilo
+     * deixava o video aparecer por baixo (Kaguya, INBOX). Texto simples segue. */
+    if (assperf_get(AP_OPACIDADE) && !assrender_texto_simples()) alpha = entrada;
+    if (entrada > 0.999f) assperf_med_alfa(alpha, opacidade);
+#endif
     assrender_pixels_por_unidade(gfx_px_por_unidade());
     assrender_definir_layout(area.x, area.y, area.w, area.h,
                              assrender_texto_simples() ? 1920 : video_largura(),

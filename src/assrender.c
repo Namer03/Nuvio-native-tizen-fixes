@@ -411,8 +411,10 @@ static void ass_carregar_pasta_locked(void) {
           assPastaFontes, lidas, ignorados);
 }
 
+static unsigned assFontesVersao;   // muda a cada ass_set_fonts (o bench confere)
 static void ass_aplicar_fontes_locked(void) {
   if (!assRenderer) return;
+  assFontesVersao++;
   ass_set_fonts(assRenderer, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 }
@@ -764,6 +766,24 @@ static void ass_plain_reflow_locked(long long t) {
   plainNextBoundary = next; plainActiveSet = active;
 }
 
+#if defined(NV_TPK) && defined(ASS_NV_API)
+static int assBenchAtivo;   // sob assTrava; o bench liga os cronometros por conta propria
+
+/* Cronometros do libass do ultimo ass_render_frame (sob assTrava, logo depois
+ * dele) para a janela de 10 s. */
+static void ass_estagios_colher_locked(ASS_Renderer *r, AssperfEstagios *e) {
+  ASS_NvPerf p;
+  int i;
+  ass_nv_perf_take(&p);
+  memset(e, 0, sizeof *e);
+  e->motor = r ? ass_nv_get_engine(r) : -1;
+  e->frameMs = p.ns_frame / 1e6;
+  for (i = 0; i < 8; i++) e->stageMs[i] = p.ns_stage[i] / 1e6;
+  e->frames = p.frames; e->events = p.events; e->images = p.images;
+  for (i = 0; i < 3; i++) { e->hit[i] = p.cache_hit[i]; e->miss[i] = p.cache_miss[i]; }
+}
+#endif
+
 /* assperf: o que o renderer aplica das chaves (cache, hinting, shaper) e a
  * prioridade do fio. Sob assTrava, no worker, so quando a versao das chaves
  * muda. O Legacy repete exatamente o que ass_iniciar_locked faz. */
@@ -783,6 +803,18 @@ static void ass_aplicar_assperf_locked(void) {
     /* O texto simples RTL (arabe) PRECISA do HarfBuzz: o Simple so vale
      * para o ASS de verdade. */
     ass_set_shaper(assRenderer, assperf_get(AP_SHAPER) && !simples ? ASS_SHAPING_SIMPLE : ASS_SHAPING_COMPLEX); }
+#if defined(NV_TPK) && defined(ASS_NV_API)
+  /* libass do .tpk (tools/tpk/libass-nv): motor de bitmap e cronometros. */
+  { static int motorAplicado = -1;
+    int m = assperf_get(AP_MOTOR) ? 1 : 0;
+    if (m != motorAplicado) {
+      int got = ass_nv_set_engine(assRenderer, m);
+      printf("[assperf] bitmap engine: %s%s\n", got ? "NEON (armv7 SIMD)" : "C (plain)",
+             m && !got ? " - NEON not available in this libass build" : "");
+      motorAplicado = m;
+    }
+    if (!assBenchAtivo) ass_nv_perf_enable(assperf_get(AP_ESTAGIOS)); }
+#endif
 #if !defined(__EMSCRIPTEN__) && defined(SYS_gettid)
   { int p = assperf_get(AP_PRIORIDADE);
     if (p != assApPrioridade) {
@@ -865,6 +897,11 @@ static void *ass_worker_loop(void *unused) {
       if (plainValid) ass_plain_style_locked(&plain);
       ass_plain_reflow_locked(t);
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
+#if defined(NV_TPK) && defined(ASS_NV_API)
+      { AssperfEstagios e;
+        ass_estagios_colher_locked(assRenderer, &e);
+        if (assperf_get(AP_ESTAGIOS)) assperf_med_estagios(&e); }
+#endif
       /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
       if (assperf_get(AP_MUDANCA)) {
         int i, anima = 0;
@@ -1960,6 +1997,221 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
   }
 }
 
+#if defined(NV_TPK) && defined(ASS_NV_API)
+/* ===== assperf: ASS BENCH (TPK) =============================================
+ * A mesma carga a cada build: os 10 s ANTES do instante em que foi pedido
+ * (segundo inteiro), ja colhidos, re-renderizados fora da tela em uma grade de
+ * 41,7 ms (240 quadros, 23,976 fps) por um ASS_Renderer PROPRIO, criado frio
+ * (caches vazios) com o mesmo tamanho, escala, hinting, shaper e caches do
+ * principal. A trava da faixa e pega quadro a quadro, entao o desenho, a
+ * colheita e o render normal seguem; com o video pausado nada compete.
+ * "C vs NEON" faz dois passes (um renderer novo cada) e compara as imagens
+ * byte a byte. Nada vai para a rede: so os eventos que ja estao no libass. */
+#define ASS_BENCH_QUADROS 240
+
+typedef struct {
+  double totalMs, maxMs, stageMs[8];
+  unsigned quadros, comLegenda, imagens, hit[3], miss[3];
+  int motor;
+} AssBenchRes;
+
+typedef struct { int modo; long long fim; unsigned geracao; } AssBenchPed;
+
+static unsigned long long ass_bench_hash(ASS_Image *img, unsigned *n) {
+  unsigned long long h = 1469598103934665603ULL;
+  *n = 0;
+  for (; img; img = img->next) {
+    int y, x, hdr[5];
+    hdr[0] = img->w; hdr[1] = img->h; hdr[2] = img->dst_x; hdr[3] = img->dst_y; hdr[4] = (int)img->color;
+    for (x = 0; x < (int)sizeof hdr; x++) { h ^= ((unsigned char *)hdr)[x]; h *= 1099511628211ULL; }
+    for (y = 0; y < img->h; y++) {
+      const unsigned char *b = img->bitmap + (size_t)y * (size_t)img->stride;
+      for (x = 0; x < img->w; x++) { h ^= b[x]; h *= 1099511628211ULL; }
+    }
+    (*n)++;
+  }
+  return h;
+}
+
+/* 1 = completo; 0 = abortado (motivo em `motivo`). */
+static int ass_bench_passe(int simd, const AssBenchPed *pd, unsigned long long *hashes,
+                           AssBenchRes *res, char *motivo, size_t nm) {
+  static const int glifos[4] = { 0, 1000, 4000, 10000 };
+  static const int cacheMb[4] = { 32, 64, 128, 16 };
+  static const int hinting[4] = { ASS_HINTING_LIGHT, ASS_HINTING_NONE, ASS_HINTING_NORMAL, ASS_HINTING_NATIVE };
+  ASS_Renderer *r;
+  unsigned fontes;
+  long long ini = pd->fim - 10000;
+  int i, ok = 1;
+  memset(res, 0, sizeof *res);
+  if (ini < 0) ini = 0;
+  pthread_mutex_lock(&assTrava);
+  if (!assLib || !assRenderer || !assTrack || pd->geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) ||
+      assTrackGeracao != pd->geracao || layAplW <= 0 || layAplH <= 0) {
+    pthread_mutex_unlock(&assTrava);
+    snprintf(motivo, nm, "no ASS track drawing");
+    return 0;
+  }
+  r = ass_renderer_init(assLib);
+  if (!r) { pthread_mutex_unlock(&assTrava); snprintf(motivo, nm, "ass_renderer_init failed"); return 0; }
+  ass_set_fonts(r, assFallbackFont[0] ? assFallbackFont : NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_frame_size(r, layAplW, layAplH);
+  ass_set_storage_size(r, layAplVW > 0 ? layAplVW : layAplW, layAplVH > 0 ? layAplVH : layAplH);
+  ass_set_font_scale(r, layAplEscala > 0 ? layAplEscala : 1.0);
+  ass_set_cache_limits(r, glifos[assperf_get(AP_GLIFOS) & 3], cacheMb[assperf_get(AP_CACHE) & 3]);
+  ass_set_hinting(r, (ASS_Hinting)hinting[assperf_get(AP_HINTING) & 3]);
+  ass_set_shaper(r, assperf_get(AP_SHAPER) ? ASS_SHAPING_SIMPLE : ASS_SHAPING_COMPLEX);
+  res->motor = ass_nv_set_engine(r, simd);
+  fontes = assFontesVersao;
+  pthread_mutex_unlock(&assTrava);
+
+  for (i = 0; i < ASS_BENCH_QUADROS; i++) {
+    long long t = ini + ((long long)i * 1001 + 12) / 24;
+    ASS_Image *img;
+    ASS_NvPerf p;
+    struct timespec a, b;
+    double ms;
+    unsigned n;
+    int k;
+    pthread_mutex_lock(&assTrava);
+    if (!assTrack || pd->geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) ||
+        assTrackGeracao != pd->geracao || fontes != assFontesVersao) {
+      pthread_mutex_unlock(&assTrava);
+      snprintf(motivo, nm, "the track or its fonts changed at frame %d", i);
+      ok = 0;
+      break;
+    }
+    ass_nv_perf_take(&p);   // o que o render normal deixou (ele colhe logo depois do dele)
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    img = ass_render_frame(r, assTrack, t, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    ass_nv_perf_take(&p);
+    pthread_mutex_unlock(&assTrava);
+    /* As imagens sao do renderer do bench: validas ate o proximo render dele. */
+    if (hashes) hashes[i] = ass_bench_hash(img, &n);
+    else { n = 0; for (; img; img = img->next) n++; }
+    ms = ass_ms_entre(&a, &b);
+    res->totalMs += ms;
+    if (ms > res->maxMs) res->maxMs = ms;
+    for (k = 0; k < 8; k++) res->stageMs[k] += p.ns_stage[k] / 1e6;
+    for (k = 0; k < 3; k++) { res->hit[k] += p.cache_hit[k]; res->miss[k] += p.cache_miss[k]; }
+    res->quadros++;
+    res->imagens += n;
+    if (n) res->comLegenda++;
+  }
+  pthread_mutex_lock(&assTrava);
+  ass_renderer_done(r);
+  pthread_mutex_unlock(&assTrava);
+  return ok;
+}
+
+static void ass_bench_logar(const char *nome, const AssBenchRes *r) {
+  char per[200];
+  size_t o = 0;
+  int i;
+  double f = r->quadros ? (double)r->quadros : 1.0;
+  per[0] = 0;
+  for (i = 1; i <= 8 && o < sizeof per; i++) {
+    int s = i & 7;
+    o += (size_t)snprintf(per + o, sizeof per - o, "%s%s %.1f", i > 1 ? " " : "", assperf_estagio_nome[s], r->stageMs[s] / f);
+  }
+  printf("[assperf] bench %s: total %.0f ms | avg %.1f max %.1f ms/frame | %u of %u frames with subtitles, %u images"
+         " | ms/frame: %s | bitmap cache hit %d%%\n",
+         nome, r->totalMs, r->totalMs / f, r->maxMs, r->comLegenda, r->quadros, r->imagens, per,
+         r->hit[1] + r->miss[1] ? (int)(100.0 * r->hit[1] / (r->hit[1] + r->miss[1]) + 0.5) : 0);
+}
+
+static void *ass_bench_fio(void *u) {
+  AssBenchPed pd = *(AssBenchPed *)u;
+  AssBenchRes rc, rn;
+  unsigned long long *hc = NULL, *hn = NULL;
+  char motivo[120] = "", resumo[160];
+  int okC = 0, okN = 0, simd = assperf_get(AP_MOTOR) ? 1 : 0, w, h;
+  long long ini = pd.fim - 10000 < 0 ? 0 : pd.fim - 10000;
+  free(u);
+  pthread_mutex_lock(&assTrava);
+  assBenchAtivo = 1;
+  ass_nv_perf_enable(1);
+  w = layAplW; h = layAplH;
+  pthread_mutex_unlock(&assTrava);
+  printf("[assperf] bench: start | window %.1f-%.1f s of this track | %d frames on the 41.7 ms grid | %dx%d | cold caches"
+         " | mode=%s | engine option=%s\n",
+         ini / 1000.0, pd.fim / 1000.0, ASS_BENCH_QUADROS, w, h,
+         pd.modo == 2 ? "C vs NEON" : "this engine", simd ? "NEON" : "C");
+  fflush(stdout);
+  if (pd.modo == 2) {
+    hc = calloc(ASS_BENCH_QUADROS, sizeof *hc);
+    hn = calloc(ASS_BENCH_QUADROS, sizeof *hn);
+    if (!hc || !hn) snprintf(motivo, sizeof motivo, "out of memory");
+    else {
+      okC = ass_bench_passe(0, &pd, hc, &rc, motivo, sizeof motivo);
+      if (okC) ass_bench_logar("C", &rc);
+      if (okC) okN = ass_bench_passe(1, &pd, hn, &rn, motivo, sizeof motivo);
+      if (okN) ass_bench_logar(rn.motor ? "NEON" : "C (NEON not available)", &rn);
+    }
+    if (okC && okN) {
+      int i, iguais = 0, primeira = -1;
+      for (i = 0; i < ASS_BENCH_QUADROS; i++) {
+        if (hc[i] == hn[i]) iguais++;
+        else if (primeira < 0) primeira = i;
+      }
+      printf("[assperf] bench C vs NEON: %s %d/%d frames identical | NEON %.2fx faster (C %.0f ms, NEON %.0f ms, %.1f vs %.1f ms/frame)\n",
+             iguais == ASS_BENCH_QUADROS ? "OK" : "DIFFERENT", iguais, ASS_BENCH_QUADROS,
+             rn.totalMs > 0 ? rc.totalMs / rn.totalMs : 0.0,
+             rc.totalMs, rn.totalMs, rc.totalMs / ASS_BENCH_QUADROS, rn.totalMs / ASS_BENCH_QUADROS);
+      if (primeira >= 0)
+        printf("[assperf] bench: first different frame %d at %.3f s\n", primeira,
+               (ini + ((long long)primeira * 1001 + 12) / 24) / 1000.0);
+      snprintf(resumo, sizeof resumo, "Bench: C %.1f \xc2\xb7 NEON %.1f ms/frame (%.2fx) \xc2\xb7 %s",
+               rc.totalMs / ASS_BENCH_QUADROS, rn.totalMs / ASS_BENCH_QUADROS,
+               rn.totalMs > 0 ? rc.totalMs / rn.totalMs : 0.0,
+               iguais == ASS_BENCH_QUADROS ? "identical" : "DIFFERENT pictures");
+    }
+  } else {
+    okN = ass_bench_passe(simd, &pd, NULL, &rn, motivo, sizeof motivo);
+    if (okN) {
+      ass_bench_logar(rn.motor ? "NEON" : "C", &rn);
+      snprintf(resumo, sizeof resumo, "Bench %s: avg %.1f ms/frame, max %.0f ms, %u frames with subtitles",
+               rn.motor ? "NEON" : "C", rn.totalMs / ASS_BENCH_QUADROS, rn.maxMs, rn.comLegenda);
+    }
+  }
+  if (motivo[0]) {
+    printf("[assperf] bench: stopped - %s\n", motivo);
+    snprintf(resumo, sizeof resumo, "Bench stopped: %s", motivo);
+  }
+  fflush(stdout);
+  free(hc); free(hn);
+  pthread_mutex_lock(&assTrava);
+  assBenchAtivo = 0;
+  ass_nv_perf_enable(assperf_get(AP_ESTAGIOS));
+  pthread_mutex_unlock(&assTrava);
+  assperf_bench_estado(0, resumo);
+  return NULL;
+}
+
+/* Fio GL (assrender_desenhar): a chave virou "Run" -> volta a Off e o bench
+ * sai num fio proprio, com o instante atual como fim da janela. */
+static void ass_bench_talvez(long long agora, unsigned geracao) {
+  int modo = assperf_get(AP_BENCH);
+  pthread_t fio;
+  AssBenchPed *pd;
+  if (!modo) return;
+  assperf_definir(AP_BENCH, 0);
+  if (assperf_bench_rodando()) { printf("[assperf] bench: already running\n"); fflush(stdout); return; }
+  pd = malloc(sizeof *pd);
+  if (!pd) return;
+  pd->modo = modo; pd->geracao = geracao;
+  pd->fim = agora < 0 ? 0 : agora / 1000 * 1000;
+  assperf_bench_estado(1, "Bench running\xe2\x80\xa6 (pause the video for clean numbers)");
+  if (pthread_create(&fio, NULL, ass_bench_fio, pd) != 0) {
+    free(pd);
+    assperf_bench_estado(0, "Bench: could not start a thread");
+    return;
+  }
+  pthread_detach(fio);
+}
+#endif
+
 /* assperf (render ahead): estado do fio GL. */
 static double assAdianteEma;          // ms; "Auto"
 static double assUploadEma;           // ms do upload de um quadro novo
@@ -1980,6 +2232,9 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   memset(&novo, 0, sizeof novo);
   generation = __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE);
   agora = (long long)llround(posSeg * 1000.0) + (long long)atrasoMs;
+#if defined(NV_TPK) && defined(ASS_NV_API)
+  ass_bench_talvez(agora, generation);
+#endif
   /* assperf: caminho de desenho novo (qualquer chave de upload ligada) e
    * render ahead. Tudo em "old": o mesmo de sempre, linha por linha. */
   novoCaminho = assperf_get(AP_UPLOAD) || assperf_get(AP_TEXCACHE) || assperf_get(AP_FORATRAVA);
