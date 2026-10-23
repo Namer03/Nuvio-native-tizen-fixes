@@ -10,6 +10,10 @@
  * size, colour and the w bytes of every row. Exit status 1 on any difference.
  * Also checks that the stage timers (ass_nv_perf_*) count something.
  */
+/* 64-bit inodes (CI overlay fs): without this, 32-bit readdir() fails with
+ * EOVERFLOW and no font gets loaded. */
+#define _FILE_OFFSET_BITS 64
+
 #include <ass/ass.h>
 #include <dirent.h>
 #include <stdarg.h>
@@ -45,6 +49,8 @@ static Frame hash_frame(ASS_Image *img)
     return f;
 }
 
+static int n_fonts, n_msgs;
+
 static void load_fonts(ASS_Library *lib, const char *dir)
 {
     DIR *d = opendir(dir);
@@ -60,18 +66,23 @@ static void load_fonts(ASS_Library *lib, const char *dir)
         if (!fp) continue;
         fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
         char *buf = malloc(sz);
-        if (fread(buf, 1, sz, fp) == (size_t) sz)
+        if (fread(buf, 1, sz, fp) == (size_t) sz) {
             ass_add_font(lib, e->d_name, buf, sz);
+            n_fonts++;
+        }
         free(buf);
         fclose(fp);
     }
     closedir(d);
+    if (!n_fonts) { fprintf(stderr, "no fonts loaded from %s\n", dir); exit(2); }
 }
 
 static void quiet(int level, const char *fmt, va_list va, void *data)
 {
     (void) data;
-    if (level > 1) return;
+    if (level > 2 || n_msgs >= 40) return;
+    n_msgs++;
+    fprintf(stderr, "  libass[%d]: ", level);
     vfprintf(stderr, fmt, va);
     fputc('\n', stderr);
 }
@@ -100,6 +111,7 @@ static int run(ASS_Library *lib, const char *file, int simd, Frame *out, int *n_
     ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
     if (!t) { fprintf(stderr, "cannot read %s\n", file); return -1; }
     long long end = track_end(t);
+    printf("  track: %d events, %d styles, end %lld ms, %d fonts added\n", t->n_events, t->n_styles, end, n_fonts);
     ASS_NvPerf p;
     ass_nv_perf_take(&p);
     int n = 0;
