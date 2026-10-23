@@ -2443,6 +2443,14 @@ int player_pediu_salto_parte(int *k, double *pos) {
   *k = pedSaltoK; *pos = pedSaltoPos; pedSaltoK = -1;
   return 1;
 }
+static void buscarUsuario(double alvo);
+// Busca pedida pelo app (salto para um ponto de outra parte, ja aberta).
+void player_buscar_para(double s) {
+  if (!aberto || !comVideo || ehCanal() || !(s > 0.0)) return;
+  if (duracaoSeg > 1.0f && s > duracaoSeg - 1.0f) s = duracaoSeg - 1.0f;
+  posSeg = posVis = (float)s; posVisV = 0.0f; posVisSolto = 0;
+  buscarUsuario(s);
+}
 static int saltoOutraParte(double alvo) {
   double off, tot, p;
   int k;

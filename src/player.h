@@ -69,6 +69,8 @@ int player_pediu_parte(void);
 void player_definir_fonte_escolhida(int sim);
 // Barra do filme inteiro: o avanco caiu em outra parte (o indice na lista e o ponto nela).
 int player_pediu_salto_parte(int *k, double *pos);
+// Busca pedida pelo app (o ponto escolhido numa parte recem-aberta).
+void player_buscar_para(double s);
 // O fim do arquivo que toca e do app (a fileira de arquivos da fonte): sem pos-reproducao.
 void player_fim_proprio(int sim);
 int player_transporte_pedido_pendente(void);

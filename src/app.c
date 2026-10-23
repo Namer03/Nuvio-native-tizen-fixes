@@ -2674,6 +2674,7 @@ static int parteSalto = -1, parteSaltoUsaProx;
 static double parteSaltoPos = -1;
 static Uint32 parteSaltoDesde;
 static int parteFimArqFeito;           // a fileira do fim deste arquivo ja subiu
+static double parteSaltoDepois = -1;   // salto pela barra: abre do inicio, busca no 1o quadro
 static const char *parteFimComo = "end of stream";
 
 static void parteAviso(int k) {
@@ -2690,6 +2691,7 @@ static int nomeMp4(const char *nome) {
 static void parteZerar(void) {
   parteFase = PF_NADA; parteRetomada = 0; partePos = -1; parteRenovou = 0; parteArqK = -1;
   parteSalto = -1; parteForcar = 0; parteContagemFeita = 0; parteFimArqFeito = 0; parteFimPos = -1;
+  parteSaltoDepois = -1;
   partescartao_fechar();
   parteUrl[0] = 0; parteProx = -1; parteProxFase = 0; parteProxUrl[0] = 0;
   partes_link_cancelar();
@@ -2711,6 +2713,8 @@ static void parteTocar(const char *url, double pos) {
   parteFase = PF_ABRINDO; parteDesde = SDL_GetTicks(); parteGuardouEm = 0;
   parteProx = -1; parteProxFase = 0; parteProxUrl[0] = 0;
   parteFimArqFeito = 0; parteFimPos = -1; parteForcar = 0;
+  // O arquivo e das partes: nao e mais a escolha do automatico.
+  fonteVODAutomatica = 0; fonteVODDesde = 0; fonteManualDesde = 0;
   // O arquivo que toca: a saida do player guarda o ponto dele (partes.h).
   if (parteArqK >= 0 && parteArqK < parteArqLista.n) {
     char a[64];
@@ -2883,7 +2887,11 @@ static void parteTrocarPara(const PartesLista *sl, const char *alvo, int k, cons
   parteFimPos = -1; parteForcar = 0; parteContagemFeita = 0;
   partescartao_fechar();
   player_voltar_a_esperar();
-  parteTocar(u, pos);
+  // ABRE DO INICIO E BUSCA DEPOIS (log da TV, 23/10): aberto direto no meio,
+  // a TV leu 50-70 MB do comeco do arquivo antes do quadro (12-20 s); do
+  // inicio o quadro vem em ~7 s e a busca, com o indice, e rapida.
+  parteTocar(u, -1);
+  parteSaltoDepois = pos > 1.0 ? pos : -1;
   parteAviso(k);
 }
 // SALTO PARA OUTRA PARTE (botao do OSD, ou a barra do filme inteiro): pede o
@@ -3064,6 +3072,11 @@ static void vigiarPartes(void) {
     if (video_pronto() && video_pos() > 0.25 && !video_falhou()) {
       parteFase = PF_TOCANDO;
       printf("[partes] the file plays (%u ms)\n", (unsigned)(SDL_GetTicks() - parteDesde));
+      if (parteSaltoDepois > 1.0) {
+        printf("[partes] jumping to %.0f s in the part (opened from the start)\n", parteSaltoDepois);
+        player_buscar_para(parteSaltoDepois);
+      }
+      parteSaltoDepois = -1;
       fflush(stdout);
       return;
     }
@@ -3250,6 +3263,10 @@ static int aberturaVencida(Uint32 desde) {
   static int chaveAt = -1, chaveN = -1, chaveT = -1, semPerda;
   InicioAbertura g;
   int at;
+  // Arquivo aberto pelas partes: o prazo e o delas (45 s, so erro, sem trocar
+  // de fonte). Log da TV, 23/10: a parte 3 aberta no meio levou 20 s e o
+  // prazo de 15 s do automatico trocou para outra fonte, desfazendo a sessao.
+  if (parteFase != PF_NADA) return 0;
   if (!player_carregando() || desde <= INICIO_ABRE_SEM_SINAL_MS || video_fonte_tocou()) return 0;
   // O CAMINHO DO DV ABRINDO nao e fonte muda: o nosso demux abre o arquivo de
   // novo (22,8 s numa fonte lenta da C9, 08/10) e tem o recuo proprio (fonte
@@ -3495,6 +3512,9 @@ static void tentarProximaFonteVOD(void) {
   int atual, motivo = 0;
   if (!fonteVODAutomatica || player_id_canal()[0] || !player_aberto() ||
       player_quer_sair() || aguardandoFonte != 0 || !fonteVODDesde) return;
+  // As partes cuidam do proprio arquivo (prazo, link novo, erro): trocar de
+  // fonte aqui desfaria a sessao (log da TV, 23/10).
+  if (parteFase != PF_NADA) return;
   // Rede caiu com o video andando: a mesma fonte esta sendo recarregada
   // (video_reconexao.h). So vira troca de fonte quando ela desistir (falhou).
   if (video_reconectando()) return;
