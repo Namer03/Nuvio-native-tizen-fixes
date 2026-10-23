@@ -1,5 +1,6 @@
 #include "legenda.h"
 #include "assrender.h"
+#include "assperf.h"
 #include "rede.h"
 #include "idioma.h"
 #include <pthread.h>
@@ -882,10 +883,25 @@ int legenda_ligada_em(unsigned dono) {
 /* Lote seguinte da faixa `dono`. Diferente de legenda_atualizar_corpo, NUNCA
  * cai no caminho cheio: legenda desligada ou de outro dono e resposta de uma
  * faixa que ja saiu, e descarta. */
+/* assperf "App cue copy = Every 10 s": com o libass desenhando, a copia
+ * propria das falas (fallback do overlay, referencia do sync) so e refeita a
+ * cada 10 s — cada lote do mkvass re-lia o documento inteiro aqui tambem. O
+ * documento vai ao libass do mesmo jeito. 1 = pula a extracao desta vez. */
+static int pularExtracao(int ass, unsigned g) {
+  static unsigned ultG; static struct timespec ult;
+  struct timespec t;
+  if (!ass || !assperf_get(AP_CUES) || !assrender_ativo()) return 0;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  if (ultG == g && (t.tv_sec - ult.tv_sec) < 10) return 1;
+  ultG = g; ult = t;
+  return 0;
+}
+
 int legenda_atualizar_corpo_se(const char *corpo, unsigned dono) {
   LegendaCue *v=NULL; int n, i; double dur=0; int ass;
   if(!corpo||!legenda_ligada_em(dono))return 0;
   ass=legenda_eh_ass(corpo);
+  if (pularExtracao(ass, dono)) { assrender_atualizar(corpo, strlen(corpo), dono); return 1; }
   n=legenda_extrair(corpo,&v);
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);
@@ -905,6 +921,8 @@ void legenda_atualizar_corpo(const char *corpo) {
   LegendaCue *v=NULL; int n, i; double dur=0; int ass, ok; unsigned g=0;
   if(!corpo)return;
   ass=legenda_eh_ass(corpo);
+  pthread_mutex_lock(&trava); ok=ligada; g=geracao; pthread_mutex_unlock(&trava);
+  if (ok && pularExtracao(ass, g)) { assrender_atualizar(corpo, strlen(corpo), g); return; }
   n=legenda_extrair(corpo,&v);
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);

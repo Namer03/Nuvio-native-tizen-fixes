@@ -3,6 +3,7 @@
 #include "rede.h"
 #include "legenda.h"
 #include "assrender.h"
+#include "assperf.h"
 #include "dados.h"
 #include "imgsub.h"
 #include "pgs.h"
@@ -1902,7 +1903,15 @@ static int avancarFontes(Fio *f, int esperar) {
     if (!p || n < 2) { free(p); f->fontesPasso = 3; goto falhou; }
     ai = larguraDe(p[0]);
     an = ai > 0 && ai < n ? lerTam(p + ai, n - ai, &at) : -1;
-    if (an <= 0 || an > MKVASS_CORPO_MAX) { free(p); f->fontesPasso = 3; goto falhou; }
+    /* assperf "Attached fonts limit": o teto era MKVASS_CORPO_MAX (16 MB, o do
+     * corpo ASS), e as fontes CJK de um fansub passam disso — o log de 23/10
+     * dizia so "indisponiveis (HTTP 0, curl 0)". Agora o tamanho vai ao log. */
+    { long teto = (long)assperf_fontes_teto();
+      if (teto < MKVASS_CORPO_MAX) teto = MKVASS_CORPO_MAX;
+      if (an > 0)
+        printf("[mkvass] fontes anexadas: bloco Attachments de %.1f MB (limite %.0f MB)%s\n",
+               an / 1048576.0, teto / 1048576.0, an > teto ? ": grande demais, ficam as fontes do app" : "");
+      if (an <= 0 || an > teto) { free(p); f->fontesPasso = 3; goto falhou; } }
     if (ai + at + an <= n) {
       int ok = lerAttachments(f, p + ai + at, an);
       free(p); f->fontesPasso = 3;
@@ -3384,6 +3393,151 @@ static void despejar(Fio *f, double pos) {
 // acima do alvo do despejo (metade de MKVASS_CORPO_ALTO), nao alem do que o
 // ultimo despejo manteve: colher mais longe seria baixar o que o proximo
 // despejo joga fora. Abaixo do alvo ha espaco, e vale a janela de sempre.
+// --- assperf "Read subs from local relay" ------------------------------------
+//
+// O mkvfix ja passa o arquivo INTEIRO ao player da TV pelo 127.0.0.1 (so troca
+// o TrackType das legendas escondidas). Os blocos da legenda vem nesse fluxo,
+// segundos a frente do playhead (o buffer do player). O mkvfix os separa
+// (mkvass_relay_bloco) e o fio de colheita os aproveita aqui: o ponto do
+// indice que bate (Cluster + CueRelativePosition + tempo) vira colhido SEM
+// Range nenhum ao CDN — a fala chega antes e o TorBox recebe menos pedidos.
+// Bloco sem ponto que bata e descartado (nunca vira fala "solta").
+typedef struct { long long clPos, blkPos; int clHdr, temTs; unsigned long clTs; unsigned char *b; long n; } RelayBloco;
+#define RELAY_MAX 4096
+#define RELAY_BYTES (8L << 20)
+static pthread_mutex_t relayTrava = PTHREAD_MUTEX_INITIALIZER;
+static RelayBloco relayFila[RELAY_MAX];
+static int relayIni, relayN;
+static long relayBytes;
+static int relayFaixa;          // faixa do fio que colhe agora (0 = nenhum); atomico
+static MkvassPreparo *relayDono;
+
+int mkvass_relay_faixa(void) {
+  if (!assperf_get(AP_RELAY)) return 0;
+  return __atomic_load_n(&relayFaixa, __ATOMIC_ACQUIRE);
+}
+
+void mkvass_relay_bloco(long long clPos, int clHdr, unsigned long clTs, int temTs,
+                        long long blkPos, const unsigned char *b, long n) {
+  RelayBloco *r; int vazia; MkvassPreparo *dono = NULL;
+  if (!b || n <= 0 || n > (1L << 20)) return;
+  pthread_mutex_lock(&relayTrava);
+  while (relayN >= RELAY_MAX || (relayN && relayBytes + n > RELAY_BYTES)) {
+    RelayBloco *v = &relayFila[relayIni];
+    relayBytes -= v->n; free(v->b); v->b = NULL;
+    relayIni = (relayIni + 1) % RELAY_MAX; relayN--;
+  }
+  r = &relayFila[(relayIni + relayN) % RELAY_MAX];
+  r->b = malloc((size_t)n);
+  if (!r->b) { pthread_mutex_unlock(&relayTrava); return; }
+  memcpy(r->b, b, (size_t)n); r->n = n;
+  r->clPos = clPos; r->clHdr = clHdr; r->clTs = clTs; r->temTs = temTs; r->blkPos = blkPos;
+  vazia = relayN == 0;
+  relayN++; relayBytes += n;
+  if (vazia && relayDono) dono = reterEstado(relayDono);
+  pthread_mutex_unlock(&relayTrava);
+  // Acorda o fio que dorme esperando a posicao andar.
+  if (dono) {
+    pthread_mutex_lock(&dono->trava); pthread_cond_broadcast(&dono->sinal); pthread_mutex_unlock(&dono->trava);
+    soltarEstado(dono);
+  }
+}
+
+static void relayLimpar(void) {
+  pthread_mutex_lock(&relayTrava);
+  while (relayN) { free(relayFila[relayIni].b); relayFila[relayIni].b = NULL; relayIni = (relayIni + 1) % RELAY_MAX; relayN--; }
+  relayBytes = 0;
+  pthread_mutex_unlock(&relayTrava);
+}
+
+static void relayLigar(Fio *f, int ligar) {
+  pthread_mutex_lock(&relayTrava);
+  if (ligar) {
+    if (relayDono) soltarEstado(relayDono);
+    relayDono = reterEstado(estadoDoFio(f));
+    __atomic_store_n(&relayFaixa, f->faixa, __ATOMIC_RELEASE);
+  } else if (relayDono == estadoDoFio(f)) {
+    soltarEstado(relayDono); relayDono = NULL;
+    __atomic_store_n(&relayFaixa, 0, __ATOMIC_RELEASE);
+  }
+  pthread_mutex_unlock(&relayTrava);
+  if (ligar) relayLimpar();
+}
+
+// Track number e relativo de tempo de um bloco (elemento inteiro em b).
+static int relayTempoRel(const unsigned char *b, long n, long *trk, int *rel) {
+  int ui = 0, ut = 0, vt = 0; unsigned long id = lerId(b, n, &ui); long tam;
+  const unsigned char *bl; long blN;
+  if (id != ID_BLOCKGROUP && id != ID_SIMPLEBLOCK) return 0;
+  tam = lerTam(b + ui, n - ui, &ut);
+  if (tam < 4 || ui + ut + tam > n) return 0;
+  bl = b + ui + ut; blN = tam;
+  if (id == ID_BLOCKGROUP) {
+    Iter it = { bl, tam, 0 }; unsigned long gid; const unsigned char *gd; long gt;
+    bl = NULL;
+    while (proximo(&it, &gid, &gd, &gt)) if (gid == ID_BLOCK) { bl = gd; blN = gt; break; }
+    if (!bl) return 0;
+  }
+  *trk = lerVint(bl, blN, &vt);
+  if (*trk < 0 || vt + 3 > blN) return 0;
+  *rel = (int)(short)((bl[vt] << 8) | bl[vt + 1]);
+  return 1;
+}
+
+// O fio de colheita usa o que o mkvfix viu. Devolve quantos pontos colheu;
+// *urgente = 1 se algum e da cena de agora (entregar ja).
+static int relayDrenar(Fio *f, double pos, int *urgente) {
+  RelayBloco loc[256];
+  int n = 0, i, usados = 0;
+  *urgente = 0;
+  if (!f->pontos || f->varredura || f->imagem || f->faixa != __atomic_load_n(&relayFaixa, __ATOMIC_ACQUIRE)) {
+    if (f->varredura || f->imagem) relayLimpar();
+    return 0;
+  }
+  for (;;) {
+    pthread_mutex_lock(&relayTrava);
+    n = 0;
+    while (relayN && n < 256) {
+      loc[n++] = relayFila[relayIni];
+      relayBytes -= relayFila[relayIni].n; relayFila[relayIni].b = NULL;
+      relayIni = (relayIni + 1) % RELAY_MAX; relayN--;
+    }
+    pthread_mutex_unlock(&relayTrava);
+    if (!n) break;
+    for (i = 0; i < n; i++) {
+      RelayBloco *r = &loc[i];
+      long trk = -1; int rel = 0, lo = 0, hi = f->nPontos, k;
+      unsigned long tempo;
+      long long relPos = r->blkPos - (r->clPos + r->clHdr);
+      if (!r->temTs || !relayTempoRel(r->b, r->n, &trk, &rel) || trk != f->faixa ||
+          (long long)r->clTs + rel < 0) { free(r->b); continue; }
+      tempo = (unsigned long)((long long)r->clTs + rel);
+      // Primeiro ponto com tempo >= `tempo` (o indice e ordenado por tempo).
+      while (lo < hi) { int m = (lo + hi) / 2; if (f->pontos[m].tempo < tempo) lo = m + 1; else hi = m; }
+      for (k = lo; k < f->nPontos && f->pontos[k].tempo == tempo; k++) {
+        Ponto *pt = &f->pontos[k];
+        if (pt->cluster != r->clPos || (pt->rel != relPos && pt->rel != -1) || pt->colhido) continue;
+        { double t = segundosDe(f, tempo);
+          // Em janela (#384) so o que o despejo manteria: o resto seria jogado fora.
+          if (f->janela && (t < pos - MKVASS_ATRAS_SEG || t > pos + alcanceFrente(f))) break; }
+        { ClCache cl; long lido;
+          memset(&cl, 0, sizeof cl);
+          cl.pos = r->clPos; cl.hdr = r->clHdr; cl.ts = r->clTs; cl.temTs = 1;
+          lido = lerBloco(f, r->b, r->n, &cl, tempo);
+          if (lido > 0) {
+            pt->colhido = 1; f->nColhidos++; usados++;
+            if (segundosDe(f, tempo) < pos + MKVASS_URGENTE_SEG) *urgente = 1;
+          } }
+        break;
+      }
+      free(r->b);
+    }
+    assperf_med_relay(n, 0);
+  }
+  if (usados) assperf_med_relay(0, usados);
+  return usados;
+}
+
 static double alcanceFrente(const Fio *f) {
   // O leitor lateral conserva a janela depois de adotado por faixas.c.
   double a = f->lateral ? MKVASS_LATERAL_SEG : f->prebusca ? MKVASS_PREBUSCA_SEG : MKVASS_JANELA_SEG;
@@ -3625,6 +3779,7 @@ static void *trabalhar(void *arg) {
   // da proxima cena e sempre a primeira da fila. Antes so a janela era
   // colhida, e o fio dormia quando ela acabava.
   { int janelaCheia = 0; double janelaDe = -1;
+  if (!f->imagem) relayLigar(f, 1);
   while (minhaVez(f)) {
     double pos, ini, fim; int i, feitos = 0, colheuAlgo = 0;
     verAdocao(f);
@@ -3634,6 +3789,9 @@ static void *trabalhar(void *arg) {
     // (#384): faixas.c mede progresso por este numero crescer.
     pos = estadoDoFio(f)->pos; estadoDoFio(f)->nColhidos = f->nColhidos + (int)f->despejados; f->folgaJan = estadoDoFio(f)->folga;
     pthread_mutex_unlock(&estadoDoFio(f)->trava);
+    // assperf: o que o mkvfix ja viu no fluxo do player entra antes de
+    // qualquer Range (ver relayDrenar).
+    { int urg = 0; if (relayDrenar(f, pos, &urg) && urg && !f->prebusca) entregar(f); }
     while (feitos < MKVASS_RANGES_POR_SEG && minhaVez(f)) {
       double t; int j, noJanela;
       // #384: o corpo passou do que a TV guarda. Fica a janela do playhead; o
@@ -3652,6 +3810,7 @@ static void *trabalhar(void *arg) {
       }
       ini = pos - MKVASS_ATRAS_SEG;
       fim = pos + alcanceFrente(f);
+      { int urg = 0; if (relayDrenar(f, pos, &urg) && urg && !f->prebusca) entregar(f); }
       i = proximoPendente(f, ini, fim, &noJanela);
       // Pre-busca: a janela dos primeiros minutos esta colhida. Solta o video
       // e espera a adocao sem rede; o resto da faixa vem depois, adotada.
@@ -3787,6 +3946,7 @@ static void *trabalhar(void *arg) {
     }
   } }
 sair:
+  relayLigar(f, 0);
   // Saiu antes do fim (parar, troca de faixa, rede): guarda o que ha para a
   // proxima abertura nao repetir os Ranges ja pagos.
   pthread_mutex_lock(&estadoDoFio(f)->trava);
@@ -3795,6 +3955,7 @@ sair:
   if (f->nColhidos > 0 && estadoDe(estadoDoFio(f)) != MKVASS_COMPLETO) gravarSidecar(f, 0, 1);
 
 fim:
+  relayLigar(f, 0);
   guardarReferencia(f);
   soltarPrebusca(f);
   free(f->jan.p); f->jan.p = NULL;

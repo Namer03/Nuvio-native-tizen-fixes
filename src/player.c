@@ -4612,11 +4612,24 @@ void player_atualizar(float dt, Uint32 agora) {
 
   medirAssistido();
     { static Uint32 vodPosEm; static double vodPos; static int vodBuf;
+#ifdef NV_TPK
+      static int vodLogado;
+#endif
       unsigned agora = SDL_GetTicks(), buf = video_bufferando_ms();
       double pos = video_pos();
       if (!comVideo || !video_pronto() || ehCanal()) { vodPos = pos; vodPosEm = agora; vodBuf = 0; }
+#ifdef NV_TPK
+      /* Log de 23/10: depois de um seek PARA TRAS a posicao ficava abaixo de
+       * vodPos, "parado" disparava sozinho e, com buf == 0, a linha saia a
+       * CADA quadro (390 linhas em 7 s, printf + fflush no fio de desenho).
+       * Recuo tambem e andar; e o aviso sai uma vez por parada. */
+      else if (pos > vodPos + 0.05 || pos < vodPos - 0.5) { vodPos = pos; vodPosEm = agora; vodBuf = buf > 0; vodLogado = 0; }
+      else if (vodPosEm && (unsigned)(agora - vodPosEm) >= 8000u && !vodLogado && (!vodBuf || buf == 0)) {
+        vodLogado = 1;
+#else
       else if (pos > vodPos + 0.05) { vodPos = pos; vodPosEm = agora; vodBuf = buf > 0; }
       else if (vodPosEm && (unsigned)(agora - vodPosEm) >= 8000u && (!vodBuf || buf == 0)) {
+#endif
         vodBuf = 1;
         { int itens = 0; long bytes = 0; char mem[96] = "";
           tex_estatisticas(&itens, NULL, &bytes, NULL, NULL);

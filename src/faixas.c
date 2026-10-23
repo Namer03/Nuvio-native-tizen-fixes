@@ -30,6 +30,10 @@
 #include "faixasmkv.h"
 #define NV_ESCALA_TELA   // o arquivo inteiro mede pela tela virtual (escala.h)
 #include "escala.h"
+#ifdef NV_TPK
+#include "assperf.h"
+#include "assperfui.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -460,7 +464,12 @@ static int legendaAtiva(void) {
 static int modo;
 // Coluna dentro da folha de LEGENDA: 0 = lista, 1 = estilo.
 #define FX_COL_ESTILO 2
+#ifdef NV_TPK
+// .tpk: a 12a celula abre a folha de teste "ASS performance" (assperfui.h).
+#define FX_N_ESTILO   12
+#else
 #define FX_N_ESTILO   11
+#endif
 static int ctl = -1;       // ESTILO: item cujo controle esta aberto (-1 = a grade)
 
 static int nLinhas(int col);
@@ -493,6 +502,9 @@ void faixas_abrir(void) { faixas_abrir_em(0); }
 // com as duas colunas lado a lado (comparar o par escolhido e o motivo dele
 // existir); o que muda e onde o foco comeca.
 void faixas_abrir_em(int col) {
+#ifdef NV_TPK
+  assperfui_fechar();
+#endif
   int n;
   aberta = 1;
   modo = (col == 1) ? 1 : 0;
@@ -531,6 +543,9 @@ int faixas_estilo_topo(void) { return aberta && modo && coluna == FX_COL_ESTILO;
 float faixas_anim(void) { return anim; }
 void faixas_aba_estilo(int estilo) {
   if (!aberta || !modo) return;
+#ifdef NV_TPK
+  if (!estilo) assperfui_fechar();
+#endif
   coluna = estilo ? FX_COL_ESTILO : 1;
   ctl = -1;
 }
@@ -586,10 +601,13 @@ static int nLinhas(int col) {
 // Oito linhas "rotulo: valor". OK cicla o valor e aplica NA HORA — as
 // personalizacoes abaixo usam somente metodos presentes no firmware. A ultima
 // linha restaura o conjunto inteiro sem exigir dezenas de toques no controle.
-enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10 };
+enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10, EST_ASSPERF = 11 };
 static const char *const EST_ROT[FX_N_ESTILO] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
+#ifdef NV_TPK
+  , "ASS performance"
+#endif
 };
 static const char *const EST_FUNDO[5] = { "Nenhum", "Escuro 25%", "Escuro 50%",
                                           "Escuro 75%", "Escuro 100%" };
@@ -651,6 +669,9 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       int c = e->corBorda >= 0 && e->corBorda < VIDEO_LEG_NCORES ? e->corBorda : 0;
       snprintf(dst, tam, "%s", VIDEO_LEG_CORES_PT[c ? c - 1 : VIDEO_LEG_NCORES - 1]);
       break; }
+#ifdef NV_TPK
+    case EST_ASSPERF: snprintf(dst, tam, "%s", assperf_preset_nome()); break;
+#endif
     default: dst[0] = 0; break;   // "Restaurar padrao" e acao, nao valor
   }
 }
@@ -667,6 +688,11 @@ static void ciclarEstilo(int linha) {
     case EST_RESTAURAR:
       player_leg_estilo_restaurar();
       return;
+#ifdef NV_TPK
+    case EST_ASSPERF:
+      assperfui_abrir();
+      return;
+#endif
     default: return;
   }
   player_leg_estilo_mudou();
@@ -1220,6 +1246,10 @@ void faixas_evento(const SDL_Event *e) {
   }
   if (e->type != SDL_KEYDOWN) return;
   k = e->key.keysym.sym;
+#ifdef NV_TPK
+  // A folha "ASS performance" por cima do Estilo: Voltar volta ao Estilo.
+  if (coluna == FX_COL_ESTILO && assperfui_aberto()) { assperfui_tecla(k); return; }
+#endif
   // ESTILO: Voltar fecha antes o controle aberto (slider, paleta, fontes).
   if (coluna == FX_COL_ESTILO && estiloTecla(k, e->key.repeat)) return;
   if (k == SDLK_AC_BACK || k == SDLK_ESCAPE || k == SDLK_BACKSPACE) { aberta = 0; return; }
@@ -2105,6 +2135,9 @@ static void corpoEstilo(GfxRect c, float a) {
 
 static void corpoIlha(GfxRect c, float a, void *u) {
   (void)u;
+#ifdef NV_TPK
+  if ((faixas_estilo_topo() || (!aberta && animTopo > 0.5f)) && assperfui_aberto()) { assperfui_corpo(c, a); return; }
+#endif
   if (faixas_estilo_topo() || (!aberta && animTopo > 0.5f)) corpoEstilo(c, a);
   else if (modo) legendasui_corpo(c, a);
   else corpoLista(c, a);
@@ -2130,7 +2163,11 @@ static void faixas_desenharCorpo_(Uint32 agora) {
     { PlrIlhaPedido p;
       memset(&p, 0, sizeof p);
       p.w = est ? NV_TELA_W - 192.0f : IL_W;
+#ifdef NV_TPK
+      p.h = est ? (assperfui_aberto() ? assperfui_altura() : alturaEstilo()) : modo ? legendasui_altura() : alturaLista(0);
+#else
       p.h = est ? alturaEstilo() : modo ? legendasui_altura() : alturaLista(0);
+#endif
       p.corpo = corpoIlha;
       plrilha_pedir(&p); } }
 }
