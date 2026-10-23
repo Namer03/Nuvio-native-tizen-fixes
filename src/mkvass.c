@@ -1107,9 +1107,20 @@ static int montarCabecalho(Fio *f, const unsigned char *priv, long n) {
   return corpoAnexar(f, CORPO_EVENTOS, sizeof CORPO_EVENTOS - 1);
 }
 
+#ifdef NV_TPK
+#define MKVASS_FONTES_MAX 256
+#else
+#define MKVASS_FONTES_MAX 32
+#endif
+
 static int extensaoFonte(const char *nome, const char *mime) {
   const char *p = nome ? strrchr(nome, '.') : NULL;
   if (mime && (!strncasecmp(mime, "font/", 5) || !strncasecmp(mime, "application/x-font", 18))) return 1;
+#ifdef NV_TPK
+  if (mime && (!strcasecmp(mime, "application/vnd.ms-opentype") ||
+               !strcasecmp(mime, "application/x-truetype-font") ||
+               !strncasecmp(mime, "application/font-", 17))) return 1;
+#endif
   if (!p) return 0;
   return !strcasecmp(p, ".ttf") || !strcasecmp(p, ".otf") ||
          !strcasecmp(p, ".ttc") || !strcasecmp(p, ".otc");
@@ -1139,7 +1150,12 @@ static int lerAttachments(Fio *f, const unsigned char *p, long n) {
       } else if (fid == ID_FILEDATA) { dados = fd; dadosN = ft; }
     }
     if (!dados || dadosN <= 0 || !extensaoFonte(nome, mime)) continue;
-    if (f->nFontes >= 32) continue;
+    if (f->nFontes >= MKVASS_FONTES_MAX) {
+#ifdef NV_TPK
+      printf("[mkvass] fonte ignorada (teto de %d arquivos): %s\n", MKVASS_FONTES_MAX, nome);
+#endif
+      continue;
+    }
     {
       FonteMkv *nv = realloc(f->fontes, (size_t)(f->nFontes + 1) * sizeof *nv);
       if (!nv) return 0;
@@ -1152,6 +1168,10 @@ static int lerAttachments(Fio *f, const unsigned char *p, long n) {
       memcpy(f->fontes[f->nFontes].dados, dados, (size_t)dadosN);
       f->fontes[f->nFontes].tam = dadosN;
       f->nFontes++;
+#ifdef NV_TPK
+      if (assperf_get(AP_LOG) >= 1)
+        printf("[mkvass] fonte %d: %s (%.0f KB)\n", f->nFontes, nome[0] ? nome : "attachment.ttf", dadosN / 1024.0);
+#endif
     }
   }
   return 1;
@@ -1312,7 +1332,14 @@ static void nomeSidecar(const char *url, int faixa, char *dst, size_t tam) {
 #define MARCA_COMPLETO_V3 "; mkvass-estado: completo-v3\n"
 #define MARCA_V3_EVENTOS  7000
 #define MARCA_PARCIAL  "; mkvass-estado: parcial-v3 "
+#ifdef NV_TPK
+/* TPK: o teto de 32 arquivos cortava fontes de fansub (Kaguya: 32 de ~40, e
+ * Kozuka/Lato/PWFicelles caiam em ArialMT). A marca nova invalida os caches
+ * gravados com o corte. */
+#define MARCA_FONTES   "NVASS-FONTES-2\n"
+#else
 #define MARCA_FONTES   "NVASS-FONTES-1\n"
+#endif
 
 static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -1405,7 +1432,7 @@ static int lerFontesSidecar(Fio *f) {
   { const char *l = linhaCache(&p, &linhaN); char tmp[16];
     if (!l || !linhaN || linhaN >= sizeof tmp) { free(cache); return 0; }
     memcpy(tmp, l, linhaN); tmp[linhaN] = 0; count = strtol(tmp, NULL, 10);
-    if (count < 0 || count > 32) { free(cache); return 0; } }
+    if (count < 0 || count > MKVASS_FONTES_MAX) { free(cache); return 0; } }
   liberarFontes(f);
   for (i = 0; i < count; i++) {
     size_t nome64N = 0, nomeN = 0;
@@ -1467,7 +1494,7 @@ static int gravarFontesSidecar(Fio *f) {
   size_t cap = strlen(MARCA_FONTES) + 8u, usado;
   char *cache, *p;
   int i, ok;
-  if (!f->fontesCompletas || f->nFontes < 0 || f->nFontes > 32) return 0;
+  if (!f->fontesCompletas || f->nFontes < 0 || f->nFontes > MKVASS_FONTES_MAX) return 0;
   for (i = 0; i < f->nFontes; i++) {
     size_t nn = strlen(f->fontes[i].nome), dn = (size_t)f->fontes[i].tam;
     if (nn > 255 || dn == 0 || dn > MKVASS_CORPO_MAX) return 0;

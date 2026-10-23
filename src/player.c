@@ -5469,7 +5469,22 @@ static void desenharLegendaExternaCorpo(void) {
   if (junto) { g2.baseY = topo >= 0.0f ? topo : baseLegendaPrincipal(); legendasui_desenhar_secundaria(&g2); }
 }
 
+#ifdef NV_TPK
+/* Como a externa acima: o brilho do player (gfx_osd_mult, 0,80 no padrao e
+ * menos com o degrau automatico) multiplicava a COR do libass — a mascara
+ * branca do typeset virava cinza e as bordas claras escureciam (Kaguya,
+ * INBOX). A legenda e conteudo do filme: desenha a 1,0. */
+static void desenharLegendaPrincipalCorpo(float *topoPilha);
+static void desenharLegendaPrincipal(float *topoPilha) {
+  const float osd = gfx_osd_mult;
+  gfx_osd_mult = 1.0f;
+  desenharLegendaPrincipalCorpo(topoPilha);
+  gfx_osd_mult = osd;
+}
+static void desenharLegendaPrincipalCorpo(float *topoPilha){
+#else
 static void desenharLegendaPrincipal(float *topoPilha){
+#endif
   // Gate collector output, preserving native callback rendering below.
   int overlay = faixas_legenda_overlay();
   PlrRect bitmapArea = areaVideoLegenda();
