@@ -766,6 +766,14 @@ static void mfBombear(void) {
     if (e == MKVFIX_PRECISA && !mf.ativo && !cv.ativo && ativo && !parado && esperou < 20000u) {
       printf("[mkvfix] seek to %.1f s held %u ms for the check\n", mf.pendAlvo, (unsigned)esperou);
       mfLigar(mf.pendAlvo, "seek asked during the check (the TV can't seek this file as served)");
+    } else if (mkvfix_ocultas() > 0 && !mf.ativo && !mf.reabriuLeg && !cv.ativo && ativo && !parado && pronto) {
+      // A reabertura que esconde as legendas vem logo abaixo e usaria a
+      // posicao de AGORA (o seek recem-mandado ainda nao chegou: 0 s). Log da
+      // TV, 23/10: o Retomar em 459 s voltava ao inicio. Reabre ja no alvo.
+      mf.reabriuLeg = 1;
+      printf("[mkvfix] seek to %.1f s held %u ms for the check\n", mf.pendAlvo, (unsigned)esperou);
+      mfLigar(mf.pendAlvo, "subtitle tracks hidden from the TV player (it hangs on some ASS drawings)");
+      return;
     } else if (ativo && !parado && hBuscar) {
       printf("[mkvfix] seek to %.1f s held %u ms for the check: the TV seeks it directly\n",
              mf.pendAlvo, (unsigned)esperou);

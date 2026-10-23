@@ -2692,6 +2692,11 @@ static void parteZerar(void) {
   parteFase = PF_NADA; parteRetomada = 0; partePos = -1; parteRenovou = 0; parteArqK = -1;
   parteSalto = -1; parteForcar = 0; parteContagemFeita = 0; parteFimArqFeito = 0; parteFimPos = -1;
   parteSaltoDepois = -1;
+  // A deteccao automatica e "uma vez por link" DENTRO de uma reproducao:
+  // reabrir o mesmo filme (o mesmo link reusado) pergunta de novo (log da TV,
+  // 23/10: a 2a abertura tocou a parte 1 sem sessao e o fim dela marcou o
+  // filme como concluido).
+  parteAutoUrl[0] = 0; parteAutoEsperando = 0;
   partescartao_fechar();
   parteUrl[0] = 0; parteProx = -1; parteProxFase = 0; parteProxUrl[0] = 0;
   partes_link_cancelar();
@@ -2982,7 +2987,7 @@ static void vigiarPartes(void) {
   if (parteFase == PF_NADA) {
     // Sessao sem player (saiu) ou de outro alvo (outro titulo/episodio).
     if (partes_sessao_lista()) {
-      if (!player_aberto()) partes_sessao_parar("player closed");
+      if (!player_aberto()) { if (!player_quer_sair()) partes_sessao_parar("player closed"); }
       else { alvoPlayer(alvo, sizeof alvo); if (!partes_sessao_de(alvo)) partes_sessao_parar("another title"); }
     }
     if (!partes_disponivel() || !player_aberto() || player_quer_sair() || player_id_canal()[0]) {
@@ -3035,7 +3040,10 @@ static void vigiarPartes(void) {
   // (log da TV, 23/10: "parts session off: player closed" ANTES do fechamento,
   // e a parte 1 de 4 fechou como um filme de 25 min "concluido"). So depois
   // que o player fechou.
-  if (player_aberto() && player_quer_sair()) return;
+  // A animacao de saida zera player_aberto() ANTES do fecharSessao (log da
+  // TV, 23/10: "parts session off" antes do "[visto] encerramento", e a parte
+  // 2 sem ponto nem Continuar). pediuSair so cai no fecharSessao.
+  if (player_quer_sair()) return;
   if (!player_aberto() || player_id_canal()[0]) {
     partes_sessao_parar("player closed");
     parteZerar();
