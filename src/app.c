@@ -2887,6 +2887,10 @@ static void parteTrocarPara(const PartesLista *sl, const char *alvo, int k, cons
   parteFimPos = -1; parteForcar = 0; parteContagemFeita = 0;
   partescartao_fechar();
   player_voltar_a_esperar();
+  // Arquivo novo, faixas novas: a legenda automatica roda de novo e aplica a
+  // escolha lembrada (log da TV, 23/10: a parte 2 mostrava a marca na
+  // legenda, mas nada na tela ate escolher de novo).
+  faixas_reiniciar();
   // ABRE DO INICIO E BUSCA DEPOIS (log da TV, 23/10): aberto direto no meio,
   // a TV leu 50-70 MB do comeco do arquivo antes do quadro (12-20 s); do
   // inicio o quadro vem em ~7 s e a busca, com o indice, e rapida.

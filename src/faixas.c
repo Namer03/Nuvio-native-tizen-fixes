@@ -1398,10 +1398,17 @@ void faixas_atualizar(float dt, Uint32 agora) {
     int i = legOverlayEsperando;
     const VideoFaixa *f = video_legenda(i);
     video_sondar_mkv_agora();          // se o sourceInfo chegou depois da escolha
-    if (video_mkv_sondado() != 0) {
+    // Reabrindo (mkvfix pelo servidor local): espera a URL nova em vez de
+    // desistir da escolha.
+    if (video_mkv_sondado() != 0 && video_url_atual()[0]) {
       int ord = video_legenda_ordinal_mkv(i);
       legOverlayEsperando = -1;
-      if (f && vaiOverlay(f) && ord >= 0 && video_legenda_atual() == i && video_url_atual()[0]) {
+      // A TV pode ter perdido a faixa no meio (o mkvfix reabre com as
+      // legendas de texto ESCONDIDAS dela: sel=-1). Qualquer troca da pessoa
+      // passa por escolherLegenda, que zera legOverlayEsperando; entao -1 aqui
+      // nao e "desligou", e a faixa sumiu da TV (log da TV, 23/10: a legenda
+      // lembrada ficava "na TV: ?" e nao aparecia ate escolher de novo).
+      if (f && vaiOverlay(f) && ord >= 0 && (video_legenda_atual() == i || video_legenda_atual() < 0)) {
         printf("[legenda] sonda voltou: faixa %d (%s), o app assume\n", i, f->codec);
         overlayAssumir(i, ord);
       } else {
