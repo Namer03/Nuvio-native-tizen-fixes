@@ -440,6 +440,14 @@ static void atender(int c) {
     return;
   }
 #ifdef NV_TPK
+  /* Lista de executaveis das bin dirs (so nomes), para achar o daemon avoc. */
+  if (!strncmp(caminho, "/ass-bin", 8)) {
+    char *lista = malloc(65536);
+    size_t n = lista ? tpkscan_bin_lista(lista, 65536) : 0;
+    responderTexto(c, 200, "text/plain; charset=utf-8", NULL, lista ? lista : "", n);
+    free(lista);
+    return;
+  }
   /* Bibliotecas de imagem do sistema (tpkscan.c): a lista e cada arquivo,
    * so leitura, para estudar as funcoes de plano/saida de video. */
   if (!strncmp(caminho, "/ass-lib/", 9)) {

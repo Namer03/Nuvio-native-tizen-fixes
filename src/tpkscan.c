@@ -481,6 +481,29 @@ size_t tpkscan_lib_lista(char *dst, size_t n) {
   for (i = 0; DIRS[i]; i++) listar(DIRS[i], lista_cada, &l);
   l.o += (size_t)snprintf(l.dst + l.o, l.n - l.o, "\navoc daemon / executables (/usr/bin, read-only):\n");
   for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_cada, &l);
+  l.o += (size_t)snprintf(l.dst + l.o, l.n - l.o, "\nFull executable list: http://<TV IP>:8099/ass-bin\n");
+  return l.o;
+}
+
+/* Todos os executaveis das bin dirs (nomes + tamanho), para achar o daemon. */
+static void bin_lista_todos(const char *dir, const char *nome, void *u) {
+  LibLista *l = u;
+  char c[600];
+  struct stat st;
+  if (l->o + 200 >= l->n || strstr(nome, ".so")) return;
+  snprintf(c, sizeof c, "%s/%s", dir, nome);
+  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
+  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "%s/%s  (%ld KB)\n", dir, nome, (long)(st.st_size / 1024));
+}
+__attribute__((visibility("default")))
+size_t tpkscan_bin_lista(char *dst, size_t n) {
+  static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
+  LibLista l = { dst, n, 0 };
+  int i;
+  l.o = (size_t)snprintf(dst, n, "Executables in the system bin dirs (names + size, read-only).\n"
+                         "Only names containing \"avoc\" are downloadable via /ass-lib/<name>.\n"
+                         "If the daemon is named otherwise, note its exact name to allow it.\n\n");
+  for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_todos, &l);
   return l.o;
 }
 

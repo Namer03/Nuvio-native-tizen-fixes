@@ -11,5 +11,9 @@ void tpkscan_tick(void);
 #include <stddef.h>
 int    tpkscan_lib_caminho(const char *nome, char *c, size_t n);
 size_t tpkscan_lib_lista(char *dst, size_t n);
+// Pagina /ass-bin: nomes de TODOS os executaveis em /usr/bin, /usr/sbin, /bin
+// (so nomes + tamanho) para achar o nome do daemon avoc. Download continua
+// restrito a nomes com "avoc" em tpkscan_lib_caminho.
+size_t tpkscan_bin_lista(char *dst, size_t n);
 
 #endif
