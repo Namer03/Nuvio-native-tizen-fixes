@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Din kod visas så fort TV:n når tjänsten."),
   T("Seu código tem seis caracteres", "Din kod har sex tecken"),
   T("Seu código: %s", "Din kod: %s"),
+  T("Seu estilo no ASS", "Din stil på ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Din smak sträcker sig över %d år av berättelser: från %d till %d."),
   T("Seu mapa de gêneros", "Din genrekarta"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Ditt namn för vänner. Tomt = profilnamnet."),

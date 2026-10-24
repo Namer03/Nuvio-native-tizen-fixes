@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Je code verschijnt zodra de tv de dienst bereikt."),
   T("Seu código tem seis caracteres", "Je code is zes tekens lang"),
   T("Seu código: %s", "Jouw code: %s"),
+  T("Seu estilo no ASS", "Jouw stijl op ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Je smaak beslaat %d jaar aan verhalen: van %d tot %d."),
   T("Seu mapa de gêneros", "Je genrekaart"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Je naam voor vrienden. Leeg = profielnaam."),

@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "电视一连上服务，你的代码就会显示出来。"),
   T("Seu código tem seis caracteres", "你的代码是 6 位字符"),
   T("Seu código: %s", "你的代码：%s"),
+  T("Seu estilo no ASS", "ASS 使用你的样式"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "你的口味横跨 %d 年的故事：从 %d 年到 %d 年。"),
   T("Seu mapa de gêneros", "你的类型地图"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "好友看到的名字。留空则用个人资料名称。"),

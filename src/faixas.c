@@ -465,8 +465,9 @@ static int modo;
 // Coluna dentro da folha de LEGENDA: 0 = lista, 1 = estilo.
 #define FX_COL_ESTILO 2
 #ifdef NV_TPK
-// .tpk: a 12a celula abre a folha de teste "ASS performance" (assperfui.h).
-#define FX_N_ESTILO   12
+// .tpk: a 12a celula abre a folha de teste "ASS performance" (assperfui.h) e a
+// 13a liga/desliga o estilo da pessoa sobre o ASS estilizado (libass).
+#define FX_N_ESTILO   13
 #else
 #define FX_N_ESTILO   11
 #endif
@@ -601,12 +602,12 @@ static int nLinhas(int col) {
 // Oito linhas "rotulo: valor". OK cicla o valor e aplica NA HORA — as
 // personalizacoes abaixo usam somente metodos presentes no firmware. A ultima
 // linha restaura o conjunto inteiro sem exigir dezenas de toques no controle.
-enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10, EST_ASSPERF = 11 };
+enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10, EST_ASSPERF = 11, EST_SEU_ASS = 12 };
 static const char *const EST_ROT[FX_N_ESTILO] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef NV_TPK
-  , "ASS performance"
+  , "ASS performance", "Seu estilo no ASS"
 #endif
 };
 static const char *const EST_FUNDO[5] = { "Nenhum", "Escuro 25%", "Escuro 50%",
@@ -633,7 +634,13 @@ static int estCampoAss(int linha) {
 }
 static int estiloPreservadoAss(int linha) {
   int campo = estCampoAss(linha);
-  return campo && assrender_ativo() && !assrender_texto_simples() && !player_leg_estilo_tocado(campo);
+  if (!campo || !assrender_ativo() || assrender_texto_simples()) return 0;
+#ifdef NV_TPK
+  /* "Seu estilo no ASS" desligado: o ASS estilizado fica como o autor fez,
+   * mesmo nos campos que a pessoa ja mexeu (dono, 24/10). */
+  if (assperf_get(AP_ESTILO)) return 1;
+#endif
+  return !player_leg_estilo_tocado(campo);
 }
 
 static void valorEstilo(int linha, char *dst, size_t tam) {
@@ -671,6 +678,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       break; }
 #ifdef NV_TPK
     case EST_ASSPERF: snprintf(dst, tam, "%s", assperf_preset_nome()); break;
+    case EST_SEU_ASS: snprintf(dst, tam, "%s", i18n(assperf_get(AP_ESTILO) ? "Desligado" : "Ligado")); break;
 #endif
     default: dst[0] = 0; break;   // "Restaurar padrao" e acao, nao valor
   }
@@ -691,6 +699,9 @@ static void ciclarEstilo(int linha) {
 #ifdef NV_TPK
     case EST_ASSPERF:
       assperfui_abrir();
+      return;
+    case EST_SEU_ASS:
+      assperf_definir(AP_ESTILO, !assperf_get(AP_ESTILO));
       return;
 #endif
     default: return;

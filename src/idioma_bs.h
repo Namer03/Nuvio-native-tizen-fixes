@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Vaš kod se pojavljuje čim TV dosegne servis."),
   T("Seu código tem seis caracteres", "Vaš kod ima šest znakova"),
   T("Seu código: %s", "Tvoj kod: %s"),
+  T("Seu estilo no ASS", "Vaš stil na ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Vaš ukus obuhvata %d godina priča: od %d do %d."),
   T("Seu mapa de gêneros", "Vaša mapa žanrova"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Tvoje ime za prijatelje. Prazno = ime profila."),

@@ -4962,6 +4962,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Codul tău apare imediat ce televizorul contactează serviciul."),
   T("Seu código tem seis caracteres", "Codul tău are șase caractere"),
   T("Seu código: %s", "Codul tău: %s"),
+  T("Seu estilo no ASS", "Stilul tău pe ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Gustul tău acoperă %d ani de povești: din %d până în %d."),
   T("Seu mapa de gêneros", "Harta ta a genurilor"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Numele tău pentru prieteni. Gol folosește numele profilului."),

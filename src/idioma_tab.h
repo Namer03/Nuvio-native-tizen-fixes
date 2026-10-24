@@ -4962,6 +4962,7 @@
   { "Seu código aparece assim que a TV falar com o serviço.", "Your code shows up as soon as the TV reaches the service." },
   { "Seu código tem seis caracteres", "Your code is six characters long" },
   { "Seu código: %s", "Your code: %s" },
+  { "Seu estilo no ASS", "Your style on ASS" },
   { "Seu gosto atravessa %d anos de histórias: de %d a %d.", "Your taste spans %d years of stories: from %d to %d." },
   { "Seu mapa de gêneros", "Your genre map" },
   { "Seu nome para os amigos. Vazio usa o nome do perfil.", "Your name for friends. Leave empty to use the profile name." },

@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Kodemu muncul begitu TV terhubung ke layanan."),
   T("Seu código tem seis caracteres", "Kodemu terdiri dari enam karakter"),
   T("Seu código: %s", "Kodemu: %s"),
+  T("Seu estilo no ASS", "Gaya Anda pada ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Seleramu mencakup %d tahun cerita: dari %d sampai %d."),
   T("Seu mapa de gêneros", "Peta genremu"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Namamu untuk teman. Kosong = nama profil."),

@@ -5,10 +5,10 @@ Subject: [PATCH 5/5] libass: deferred blur (sharp composites + recipe for a GPU
  blur; ass_nv_defer_apply rebuilds the exact CPU picture)
 
 diff --git a/libass/ass.h b/libass/ass.h
-index 3fb7e54..4589c51 100644
+index 3fb7e54..b69ea73 100644
 --- a/libass/ass.h
 +++ b/libass/ass.h
-@@ -929,6 +929,77 @@ void ass_nv_par_stats_take(ASS_NvParStats *out);
+@@ -929,6 +929,88 @@ void ass_nv_par_stats_take(ASS_NvParStats *out);
   */
  ASS_Track *ass_nv_track_clone(ASS_Track *src);
  
@@ -75,7 +75,18 @@ index 3fb7e54..4589c51 100644
 +    unsigned deferred;   // of those: deferred
 +    unsigned kept_be;    // kept on the CPU: \be with the blur
 +    unsigned kept_clip;  // kept on the CPU: vector clip
++    unsigned kept_small; // kept on the CPU: smaller than the minimum area
++    /* CPU gaussian blurs actually run (cache misses), by the area of the
++     * blurred bitmap: < 16k, 16k-64k, 64k-256k, >= 256k pixels. */
++    unsigned cpu_n[4];
++    double cpu_ms[4];
 +} ASS_NvDeferStats;
++
++/**
++ * \brief Smallest bitmap (pixels, before the blur's padding) whose blur is
++ * deferred; smaller ones keep libass's CPU blur. 0 = every blur (default).
++ */
++void ass_nv_set_deferred_min_area(ASS_Renderer *priv, int pixels);
 +
 +/**
 + * \brief Copy this renderer's deferred-blur counters and reset them. Call it
@@ -169,10 +180,18 @@ index 53eac20..5d5b50a 100644
  
  // ass_cache_get() takes ownership of the bitmaps array and either frees it
 diff --git a/libass/ass_render.c b/libass/ass_render.c
-index 4466581..509141f 100644
+index 4466581..35c50f3 100644
 --- a/libass/ass_render.c
 +++ b/libass/ass_render.c
-@@ -2540,6 +2540,23 @@ static void render_and_combine_glyphs(RenderContext *state,
+@@ -22,6 +22,7 @@
+ #include <assert.h>
+ #include <math.h>
+ #include <string.h>
++#include <time.h>
+ #include <stdbool.h>
+ 
+ #ifdef CONFIG_UNIBREAK
+@@ -2540,6 +2541,21 @@ static void render_and_combine_glyphs(RenderContext *state,
                  double blur_scale_y = state->blur_scale_y * blur_radius_scale;
                  filter->blur_x = quantize_blur(info->blur * blur_scale_x, &shadow_mask_x);
                  filter->blur_y = quantize_blur(info->blur * blur_scale_y, &shadow_mask_y);
@@ -187,16 +206,27 @@ index 4466581..509141f 100644
 +                            render_priv->nv_defer_stats.kept_be++;
 +                        else if (state->clip_drawing_text.str)
 +                            render_priv->nv_defer_stats.kept_clip++;
-+                        else {
-+                            filter->flags |= FILTER_NV_DEFER;
-+                            render_priv->nv_defer_stats.deferred++;
-+                        }
++                        else
++                            filter->flags |= FILTER_NV_DEFER;   // counted after the cache (size)
 +                    }
 +                }
                  if (flags & FILTER_NONZERO_SHADOW) {
                      int32_t x = double_to_d6(info->shadow_x * state->border_scale_x);
                      int32_t y = double_to_d6(info->shadow_y * state->border_scale_y);
-@@ -2667,6 +2684,175 @@ int ass_be_padding(int be)
+@@ -2624,6 +2640,12 @@ static void render_and_combine_glyphs(RenderContext *state,
+         if (val->bm_s.buffer)
+             info->bm_s = &val->bm_s;
+         info->image = val;
++        if (info->filter.flags & FILTER_NV_DEFER) {
++            if (val->nv_defer)
++                render_priv->nv_defer_stats.deferred++;
++            else
++                render_priv->nv_defer_stats.kept_small++;
++        }
+         continue;
+     }
+ 
+@@ -2667,6 +2689,183 @@ int ass_be_padding(int be)
  
  static size_t nv_ass_composite_construct(void *key, void *value, void *priv);
  
@@ -214,6 +244,14 @@ index 4466581..509141f 100644
 +     * bordered fill stays sharp); if it ever did, keep the exact CPU path. */
 +    if (blur_fill && fix_o && v->bm.buffer && v->bm_o.buffer)
 +        return 0;
++    {
++        /* Small blurs are cheaper on the CPU than a GPU job. */
++        int64_t a = 0;
++        if (blur_fill && v->bm.buffer) a = (int64_t) v->bm.w * v->bm.h;
++        if (v->bm_o.buffer && (int64_t) v->bm_o.w * v->bm_o.h > a) a = (int64_t) v->bm_o.w * v->bm_o.h;
++        if (a < render_priv->nv_defer_min_area)
++            return 0;
++    }
 +    if (blur_fill && v->bm.buffer && !ass_nv_blur_pad(engine, &v->bm, r2x, r2y, v->nv_core[0]))
 +        return 0;
 +    if (v->bm_o.buffer && !ass_nv_blur_pad(engine, &v->bm_o, r2x, r2y, v->nv_core[1])) {
@@ -372,36 +410,66 @@ index 4466581..509141f 100644
  size_t ass_composite_construct(void *key, void *value, void *priv)
  {
      int nv_prev = ass_nv_stage_enter(ASS_NV_ST_COMPOSE);
-@@ -2757,6 +2943,10 @@ static size_t nv_ass_composite_construct(void *key, void *value, void *priv)
+@@ -2757,9 +2956,36 @@ static size_t nv_ass_composite_construct(void *key, void *value, void *priv)
      int flags = k->filter.flags;
      double r2x = restore_blur(k->filter.blur_x);
      double r2y = restore_blur(k->filter.blur_y);
+-    if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
+-        ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
+-    ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
 +    if ((flags & FILTER_NV_DEFER) && nv_defer_construct(render_priv, k, v, r2x, r2y))
 +        return sizeof(CompositeHashKey) + sizeof(CompositeHashValue) +
 +            k->bitmap_count * sizeof(BitmapRef) +
 +            bitmap_size(&v->bm) + bitmap_size(&v->bm_o) + bitmap_size(&v->bm_s);
-     if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
-         ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
-     ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
++    {
++        /* 0005: time the CPU gaussian blurs by size (for the app's choice of
++         * the GPU minimum area). */
++        int nv_g = r2x > 0.001 || r2y > 0.001;
++        int nv_f = (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3)) && v->bm.buffer;
++        int64_t nv_a = 0;
++        struct timespec nv_t0, nv_t1;
++        if (nv_f) nv_a = (int64_t) v->bm.w * v->bm.h;
++        if (v->bm_o.buffer && (int64_t) v->bm_o.w * v->bm_o.h > nv_a) nv_a = (int64_t) v->bm_o.w * v->bm_o.h;
++        if (nv_g) clock_gettime(CLOCK_MONOTONIC, &nv_t0);
++        if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
++            ass_synth_blur(&render_priv->engine, &v->bm, 0, r2x, r2y);
++        ass_synth_blur(&render_priv->engine, &v->bm_o, 0, r2x, r2y);
++        if (nv_g && (nv_f || v->bm_o.buffer)) {
++            int b = nv_a < 16384 ? 0 : nv_a < 65536 ? 1 : nv_a < 262144 ? 2 : 3;
++            clock_gettime(CLOCK_MONOTONIC, &nv_t1);
++            render_priv->nv_defer_stats.cpu_n[b] += (unsigned) (nv_f + (v->bm_o.buffer != NULL));
++            render_priv->nv_defer_stats.cpu_ms[b] += (nv_t1.tv_sec - nv_t0.tv_sec) * 1e3 + (nv_t1.tv_nsec - nv_t0.tv_nsec) / 1e6;
++        }
++        /* \be after the gaussian, as ass_synth_blur does it */
++        if (k->filter.be) {
++            if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
++                ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, 0, 0);
++            ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, 0, 0);
++        }
++    }
+ 
+     if (!(flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW))
+         ass_fix_outline(&v->bm, &v->bm_o);
 diff --git a/libass/ass_render.h b/libass/ass_render.h
-index e1eb7d2..25d9bd1 100644
+index e1eb7d2..2bc836a 100644
 --- a/libass/ass_render.h
 +++ b/libass/ass_render.h
-@@ -338,6 +338,9 @@ struct ass_renderer {
+@@ -338,6 +338,10 @@ struct ass_renderer {
      BitmapEngine engine;
  
      ASS_Style user_override_style;
 +
 +    int nv_defer_blur;              // 0005: deferred blur (ass_nv_set_deferred_blur)
++    int nv_defer_min_area;          // 0005: ass_nv_set_deferred_min_area
 +    ASS_NvDeferStats nv_defer_stats;
  };
  
  typedef struct render_priv {
 diff --git a/libass/ass_render_api.c b/libass/ass_render_api.c
-index 0dbb598..e340661 100644
+index 0dbb598..eaa0af1 100644
 --- a/libass/ass_render_api.c
 +++ b/libass/ass_render_api.c
-@@ -445,6 +445,23 @@ void ass_nv_flush_caches(ASS_Renderer *priv)
+@@ -445,6 +445,28 @@ void ass_nv_flush_caches(ASS_Renderer *priv)
      ass_reconfigure(priv);
  }
  
@@ -414,6 +482,11 @@ index 0dbb598..e340661 100644
 +int ass_nv_get_deferred_blur(ASS_Renderer *priv)
 +{
 +    return priv->nv_defer_blur;
++}
++
++void ass_nv_set_deferred_min_area(ASS_Renderer *priv, int pixels)
++{
++    priv->nv_defer_min_area = pixels > 0 ? pixels : 0;
 +}
 +
 +void ass_nv_defer_stats_take(ASS_Renderer *priv, ASS_NvDeferStats *out)

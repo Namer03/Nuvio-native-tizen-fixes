@@ -48,6 +48,8 @@ enum {
                    // 0 applies (old), 1 ignored (drawn as authored, like mpv / NuvioMobile)
   AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
   AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
+  AP_GPUMIN,       // smallest blur sent to the GPU: 0 all, 1 16k px, 2 64k px, 3 256k px
+  AP_JANELA,       // window hint test (colour, Exibe.cs): 0 off, 1.. one aux hint at a time
   AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events/styles/colours + images on the log page)
   AP_CARTAO,       // colour test card over the video: 0 off, 1 on
   AP_SCAN,         // scan display APIs: 0 off, 1 run (an action: read-only scan, see the log page)
@@ -98,9 +100,19 @@ void assperf_med_poda(int removidos);
 void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
 // Blur na GPU (assrender): um lote do fio GL com trabalho novo, e a conta do
 // libass por quadro (worker).
-void assperf_med_gpublur(unsigned blurs, unsigned finais, unsigned reusos, unsigned falhas, unsigned cpu,
-                         double ms, int medido);
-void assperf_med_adiado(unsigned comBlur, unsigned adiados, unsigned be, unsigned clip);
+typedef struct {
+  unsigned blurs, finais, reusos, falhas, cpu, adiantados, criadas, reaproveitadas;
+  double ms; int medido;
+  unsigned nTam[4]; double msTam[4];   // GPU, so com glFinish
+} AssperfGpu;
+void assperf_med_gpublur(const AssperfGpu *g);
+typedef struct {
+  unsigned comBlur, adiados, be, clip, pequenos;
+  unsigned cpuN[4]; double cpuMs[4];  // gaussianos que o libass fez na CPU, por tamanho
+} AssperfAdiado;
+void assperf_med_adiado(const AssperfAdiado *a);
+long assperf_gpu_min(void);                  // pixels (libass ass_nv_set_deferred_min_area)
+int  assperf_gpu_adiante(void);              // gaussianos novos por quadro de UI para a fila (pre-blur)
 void assperf_gpublur_formato(const char *s);   // "R16F" etc. (fio GL, uma vez)
 void assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s
 #ifdef NV_ASSPERF_TESTE

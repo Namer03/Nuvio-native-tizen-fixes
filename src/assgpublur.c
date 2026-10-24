@@ -53,7 +53,6 @@
 #define AGB_NIVEL_MAX 7
 #define AGB_BLUR_BYTES (32u * 1024u * 1024u)
 #define AGB_FINAL_BYTES (32u * 1024u * 1024u)
-#define AGB_POOL 16
 
 // ---- formato intermediario ------------------------------------------------------
 typedef struct { GLint interno; GLenum fmt, tipo; int bpp; const char *nome; } AgbFmt;
@@ -63,11 +62,12 @@ static int forcarRgba8;
 static GLint maxTex = 2048;
 
 // ---- programas ------------------------------------------------------------------
-static GLuint progReduz, progBlur[AGB_PARES_MAX + 1], progFinal;
+static GLuint progReduz, progBlur[AGB_PARES_MAX + 1], progFinal[AGB_PARES_MAX + 1];
 static GLint rzT, rzEsc, rzOff, rzEixo;
 static GLint blT[AGB_PARES_MAX + 1], blPasso[AGB_PARES_MAX + 1], blW0[AGB_PARES_MAX + 1],
              blW[AGB_PARES_MAX + 1], blO[AGB_PARES_MAX + 1];
-static GLint fnB, fnG, fnBEsc, fnSub, fnSaida, fnFonte, fnGOff, fnGTam, fnFix, fnDesl, fnTemG;
+typedef struct { GLint B, G, BEsc, Sub, Saida, Fonte, GOff, GTam, Fix, Desl, TemG, PassoY, Wy0, Wy, Oy; } AgbLocFinal;
+static AgbLocFinal fn[AGB_PARES_MAX + 1];
 static GLuint vbo, fbo;
 
 static const char *VS =
@@ -117,8 +117,12 @@ static const char *FS_BLUR_FMT =
 //   F(X) = 0 fora de src; o = borrado(X) (0..255); com fix:
 //   o > g ? o - floor(g/2) : 0, g = fill(X + uGOff) (0 fora do fill).
 //   valor = deslocamento do libass entre F(X), F(X-1,y), F(x,y-1), F(X-1,y-1).
-static const char *FS_FINAL =
+// NY > 0: o gaussiano vertical (sem reducao em y) e feito AQUI, nas linhas
+// exatas da textura, em vez de numa passada propria (uma passada a menos por
+// letreiro: na Mali cada passada custa caro, 24/10).
+static const char *FS_FINAL_FMT =
   FS_PREC
+  "#define NY %d\n"
   "varying vec2 vUv;\n"
   "uniform sampler2D uB, uG;\n"
   "uniform vec2 uBEsc;\n"     // 1 / (Wk * 2^kx), 1 / (Hk * 2^ky)
@@ -129,12 +133,29 @@ static const char *FS_FINAL =
   "uniform vec2 uGTam;\n"
   "uniform float uFix, uTemG;\n"
   "uniform vec2 uDesl;\n"     // shift / 64
+  "#if NY > 0\n"
+  "uniform float uPassoY, uWy0;\n"
+  "uniform float uWy[NY];\n"
+  "uniform float uOy[NY];\n"
+  "#endif\n"
+  "float amostra(vec2 c) {\n"
+  "#if NY > 0\n"
+  "  float v = texture2D(uB, c).r * uWy0;\n"
+  "  for (int i = 0; i < NY; i++) {\n"
+  "    vec2 o = vec2(0.0, uPassoY * uOy[i]);\n"
+  "    v += (texture2D(uB, c + o).r + texture2D(uB, c - o).r) * uWy[i];\n"
+  "  }\n"
+  "  return v;\n"
+  "#else\n"
+  "  return texture2D(uB, c).r;\n"
+  "#endif\n"
+  "}\n"
   "float dentro(vec2 p, vec2 t) {\n"
   "  vec2 a = step(vec2(0.0), p) * step(p, t - vec2(1.0));\n"
   "  return a.x * a.y;\n"
   "}\n"
   "float F(vec2 X) {\n"
-  "  float o = texture2D(uB, (X + 0.5) * uBEsc).r * 255.0;\n"
+  "  float o = amostra((X + 0.5) * uBEsc) * 255.0;\n"
   "  if (uFix > 0.5) {\n"
   "    vec2 gp = X + uGOff;\n"
   "    float g = texture2D(uG, (gp + 0.5) / uGTam).r * 255.0;\n"
@@ -203,6 +224,26 @@ static GLuint prog_blur(int n) {
   return p;
 }
 
+static GLuint prog_final(int n) {
+  char fs[3200];
+  GLuint p;
+  AgbLocFinal *l = &fn[n];
+  if (progFinal[n]) return progFinal[n];
+  snprintf(fs, sizeof fs, FS_FINAL_FMT, n);
+  p = ligar(fs);
+  if (!p) return 0;
+  l->B = glGetUniformLocation(p, "uB"); l->G = glGetUniformLocation(p, "uG");
+  l->BEsc = glGetUniformLocation(p, "uBEsc"); l->Sub = glGetUniformLocation(p, "uSub");
+  l->Saida = glGetUniformLocation(p, "uSaida"); l->Fonte = glGetUniformLocation(p, "uFonte");
+  l->GOff = glGetUniformLocation(p, "uGOff"); l->GTam = glGetUniformLocation(p, "uGTam");
+  l->Fix = glGetUniformLocation(p, "uFix"); l->Desl = glGetUniformLocation(p, "uDesl");
+  l->TemG = glGetUniformLocation(p, "uTemG");
+  l->PassoY = glGetUniformLocation(p, "uPassoY"); l->Wy0 = glGetUniformLocation(p, "uWy0");
+  l->Wy = glGetUniformLocation(p, "uWy"); l->Oy = glGetUniformLocation(p, "uOy");
+  progFinal[n] = p;
+  return p;
+}
+
 static int tem_ext(const char *lista, const char *nome) {
   size_t n = strlen(nome);
   const char *p = lista;
@@ -240,7 +281,7 @@ static struct {
   void *aPtr;
   GLboolean blend, tesoura, dither, mascara[4];
   int aberto, medir;
-  struct timespec t0;
+  struct timespec t0, tUlt;
   int trabalho;
 } E;
 
@@ -284,6 +325,7 @@ static void lote_trabalhar(void) {
   E.trabalho = 1;
   if (E.medir) glFinish();
   clock_gettime(CLOCK_MONOTONIC, &E.t0);
+  E.tUlt = E.t0;
   glDisable(GL_BLEND);
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DITHER);
@@ -346,18 +388,9 @@ int assgpublur_iniciar(void) {
   glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vboAnt);
   glGenFramebuffers(1, &fbo);
   progReduz = ligar(FS_REDUZ);
-  progFinal = ligar(FS_FINAL);
   if (progReduz) {
     rzT = glGetUniformLocation(progReduz, "uT"); rzEsc = glGetUniformLocation(progReduz, "uEsc");
     rzOff = glGetUniformLocation(progReduz, "uOff"); rzEixo = glGetUniformLocation(progReduz, "uEixo");
-  }
-  if (progFinal) {
-    fnB = glGetUniformLocation(progFinal, "uB"); fnG = glGetUniformLocation(progFinal, "uG");
-    fnBEsc = glGetUniformLocation(progFinal, "uBEsc"); fnSub = glGetUniformLocation(progFinal, "uSub");
-    fnSaida = glGetUniformLocation(progFinal, "uSaida"); fnFonte = glGetUniformLocation(progFinal, "uFonte");
-    fnGOff = glGetUniformLocation(progFinal, "uGOff"); fnGTam = glGetUniformLocation(progFinal, "uGTam");
-    fnFix = glGetUniformLocation(progFinal, "uFix"); fnDesl = glGetUniformLocation(progFinal, "uDesl");
-    fnTemG = glGetUniformLocation(progFinal, "uTemG");
   }
   {
     /* Meia precisao quando da para renderizar nela E filtrar (bilinear). */
@@ -375,7 +408,7 @@ int assgpublur_iniciar(void) {
 #ifndef NV_AGB_TESTE
   gfx_tex_esquecer(0);
 #endif
-  pronto = progReduz && progFinal && prog_blur(1) && vbo && fbo && alvo_ok(&fmtMeio);
+  pronto = progReduz && prog_final(0) && prog_final(1) && prog_blur(1) && vbo && fbo && alvo_ok(&fmtMeio);
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fboAnt);
   glBindTexture(GL_TEXTURE_2D, (GLuint)texAnt);
   printf("[assperf] gpu blur: %s | intermediate %s | %s | max texture %d\n", pronto ? "ready" : "NOT available",
@@ -387,10 +420,22 @@ int assgpublur_iniciar(void) {
 const char *assgpublur_formato(void) { return fmtMeio.nome ? fmtMeio.nome : "-"; }
 void assgpublur_forcar_rgba8(int on) { forcarRgba8 = on; }
 
-// ---- texturas temporarias ---------------------------------------------------------
-typedef struct { GLuint tex; int w, h, livre; unsigned uso; } AgbTemp;
-static AgbTemp pool[AGB_POOL];
-static unsigned poolRelogio;
+// ---- reserva de texturas ----------------------------------------------------------
+/* Criar textura na Mali custa (24/10: ~1,75 ms por letreiro entre alocacoes e
+ * passadas). As soltas voltam para esta reserva, por tipo e tamanho exato, e
+ * a proxima do mesmo tamanho reaproveita o armazenamento. */
+enum { TX_MEIO, TX_RGBA, TX_LUM };
+#define AGB_RESERVA 64
+#define AGB_RESERVA_BYTES (24u * 1024u * 1024u)
+typedef struct { GLuint tex; int tipo, w, h; unsigned uso; } AgbRes;
+static AgbRes reserva[AGB_RESERVA];
+static int nRes;
+static size_t bytesRes;
+static unsigned relogio;
+
+static size_t tx_bytes(int tipo, int w, int h) {
+  return (size_t)w * (size_t)h * (tipo == TX_MEIO ? (size_t)fmtMeio.bpp : tipo == TX_RGBA ? 4u : 1u);
+}
 
 static void tex_param(GLint filtro) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtro);
@@ -399,37 +444,68 @@ static void tex_param(GLint filtro) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-static GLuint tex_meio(int w, int h) {
+/* Textura do tipo e tamanho, ligada na unidade ativa. *nova = 1 quando o
+ * armazenamento acabou de ser criado (sem conteudo). */
+static GLuint res_pegar(int tipo, int w, int h, int *nova) {
+  int i;
   GLuint t = 0;
+  relogio++;
+  for (i = 0; i < nRes; i++)
+    if (reserva[i].tipo == tipo && reserva[i].w == w && reserva[i].h == h) {
+      t = reserva[i].tex;
+      bytesRes -= tx_bytes(tipo, w, h);
+      reserva[i] = reserva[--nRes];
+      glBindTexture(GL_TEXTURE_2D, t);
+      if (nova) *nova = 0;
+      S.reaproveitadas++;
+      return t;
+    }
   glGenTextures(1, &t);
   glBindTexture(GL_TEXTURE_2D, t);
-  glTexImage2D(GL_TEXTURE_2D, 0, fmtMeio.interno, w, h, 0, fmtMeio.fmt, fmtMeio.tipo, NULL);
-  tex_param(GL_LINEAR);
+  if (tipo == TX_MEIO) glTexImage2D(GL_TEXTURE_2D, 0, fmtMeio.interno, w, h, 0, fmtMeio.fmt, fmtMeio.tipo, NULL);
+  else if (tipo == TX_RGBA) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  /* TX_LUM: quem pede sobe o conteudo com glTexImage2D */
+  tex_param(tipo == TX_LUM ? GL_NEAREST : GL_LINEAR);
+  if (nova) *nova = 1;
+  S.criadas++;
   return t;
 }
 
-static AgbTemp *temp_pegar(int w, int h) {
-  int i, vaga = -1, velha = -1;
-  poolRelogio++;
-  for (i = 0; i < AGB_POOL; i++) {
-    AgbTemp *t = &pool[i];
-    if (t->tex && t->livre && t->w == w && t->h == h) { t->livre = 0; t->uso = poolRelogio; return t; }
-    if (!t->tex && vaga < 0) vaga = i;
-    if (t->tex && t->livre && (velha < 0 || t->uso < pool[velha].uso)) velha = i;
+static void res_soltar(GLuint t, int tipo, int w, int h) {
+  size_t b = tx_bytes(tipo, w, h);
+  if (!t) return;
+  while (nRes && (nRes >= AGB_RESERVA || bytesRes + b > AGB_RESERVA_BYTES)) {
+    int i, v = 0;
+    for (i = 1; i < nRes; i++) if (reserva[i].uso < reserva[v].uso) v = i;
+    glDeleteTextures(1, &reserva[v].tex);
+    bytesRes -= tx_bytes(reserva[v].tipo, reserva[v].w, reserva[v].h);
+    reserva[v] = reserva[--nRes];
   }
-  if (vaga < 0 && velha >= 0) { glDeleteTextures(1, &pool[velha].tex); pool[velha].tex = 0; vaga = velha; }
-  if (vaga < 0) return NULL;   // todas em uso neste pedido (nao acontece: um pedido usa 2)
-  pool[vaga].tex = tex_meio(w, h);
-  pool[vaga].w = w; pool[vaga].h = h; pool[vaga].livre = 0; pool[vaga].uso = poolRelogio;
-  return &pool[vaga];
+  if (b > AGB_RESERVA_BYTES) { glDeleteTextures(1, &t); return; }
+  reserva[nRes].tex = t; reserva[nRes].tipo = tipo; reserva[nRes].w = w; reserva[nRes].h = h;
+  reserva[nRes].uso = ++relogio;
+  nRes++;
+  bytesRes += b;
 }
-static void temp_soltar(AgbTemp *t) { if (t) t->livre = 1; }
+
+/* Sobe um bitmap compacto (GL_LUMINANCE) numa textura da reserva. */
+static GLuint subir_lum(const unsigned char *px, int w, int h, GLint filtro) {
+  int nova = 0;
+  GLuint t = res_pegar(TX_LUM, w, h, &nova);
+  if (nova) glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
+  else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtro);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
+  return t;
+}
 
 // ---- caches -----------------------------------------------------------------------
 typedef struct {
   unsigned long long chave;
   GLuint tex;
-  int w, h, kx, ky;    // tamanho da textura e niveis
+  int tipo, w, h, kx, ky;   // textura (tipo da reserva, tamanho) e niveis
+  int ny;                   // > 0: o gaussiano vertical fica para a passada final
+  float wy0, wy[AGB_PARES_MAX], oy[AGB_PARES_MAX];
   unsigned uso;
   size_t bytes;
 } AgbBlur;
@@ -457,7 +533,7 @@ static void blur_caber(size_t novo, unsigned quadro) {
     for (i = 0; i < nb; i++)
       if (quadro - cb[i].uso >= 2 && (v < 0 || cb[i].uso < cb[v].uso)) v = i;
     if (v < 0) break;
-    glDeleteTextures(1, &cb[v].tex);
+    res_soltar(cb[v].tex, cb[v].tipo, cb[v].w, cb[v].h);
     bytesB -= cb[v].bytes;
     cb[v] = cb[--nb];
   }
@@ -468,7 +544,7 @@ static void final_caber(size_t novo, unsigned quadro) {
     for (i = 0; i < nf; i++)
       if (quadro - cf[i].uso >= 2 && (v < 0 || cf[i].uso < cf[v].uso)) v = i;
     if (v < 0) break;
-    glDeleteTextures(1, &cf[v].tex);
+    res_soltar(cf[v].tex, TX_RGBA, cf[v].w, cf[v].h);
     bytesF -= (size_t)cf[v].w * (size_t)cf[v].h * 4u;
     cf[v] = cf[--nf];
   }
@@ -478,8 +554,9 @@ void assgpublur_apagar(void) {
   int i;
   for (i = 0; i < nb; i++) glDeleteTextures(1, &cb[i].tex);
   for (i = 0; i < nf; i++) glDeleteTextures(1, &cf[i].tex);
+  for (i = 0; i < nRes; i++) glDeleteTextures(1, &reserva[i].tex);
   free(cb); free(cf); cb = NULL; cf = NULL; nb = nf = capb = capf = 0; bytesB = bytesF = 0;
-  for (i = 0; i < AGB_POOL; i++) if (pool[i].tex) { glDeleteTextures(1, &pool[i].tex); pool[i].tex = 0; }
+  nRes = 0; bytesRes = 0;
 #ifndef NV_AGB_TESTE
   gfx_tex_esquecer(0);
 #endif
@@ -549,10 +626,13 @@ static int passo_blur(GLuint de, int w, int h, int eixo, int n, const float *w0,
 }
 
 // Borra a fonte e guarda no cache. NULL = falhou.
+//   reducoes (x, depois y) -> gaussiano x -> gaussiano y. Sem reducao em y o
+//   gaussiano y fica para a passada final (ny na entrada); sem gaussiano x
+//   tambem, a entrada E a textura da fonte (nenhuma passada aqui).
 static AgbBlur *borrar(const AgbPedido *p, unsigned long long chave, unsigned quadro) {
-  GLuint fonte = 0, atual;
-  AgbTemp *ta = NULL, *tb = NULL;
-  int kx, ky, w = p->srcW, h = p->srcH, i, nx, ny, ok = 1;
+  GLuint fonte, atual, destino = 0;
+  int atualTipo = TX_LUM, destTipo = TX_MEIO;
+  int kx, ky, w = p->srcW, h = p->srcH, i, nx, ny, ok = 1, adiaY;
   double vx, vy;
   float wx0, wy0, wx[AGB_PARES_MAX], ox[AGB_PARES_MAX], wy[AGB_PARES_MAX], oy[AGB_PARES_MAX];
   AgbBlur *e;
@@ -560,68 +640,78 @@ static AgbBlur *borrar(const AgbPedido *p, unsigned long long chave, unsigned qu
   plano(p->r2y, &ky, &vy);
   nx = pesos(vx, &wx0, wx, ox);
   ny = pesos(vy, &wy0, wy, oy);
+  adiaY = ky == 0 && ny > 0 && ny <= AGB_PARES_MAX;
   lote_trabalhar();
-  glGenTextures(1, &fonte);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, fonte);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, p->src);
-  tex_param(GL_LINEAR);
+  fonte = subir_lum(p->src, w, h, GL_LINEAR);
   atual = fonte;
   /* reducoes: x depois y */
-  glUseProgram(progReduz);
-  glUniform1i(rzT, 0);
   for (i = 0; i < kx + ky && ok; i++) {
-    int ex = i < kx;
+    int ex = i < kx, nova;
     int nw = ex ? (w + 1) / 2 : w, nh = ex ? h : (h + 1) / 2;
-    AgbTemp *t = temp_pegar(nw, nh);
-    if (!t) { ok = 0; break; }
+    GLuint t = res_pegar(TX_MEIO, nw, nh, &nova);
     glUseProgram(progReduz);
+    glUniform1i(rzT, 0);
     glUniform1f(rzEsc, ex ? 2.0f * (float)nw / (float)w : 2.0f * (float)nh / (float)h);
     glUniform1f(rzOff, ex ? 0.75f / (float)w : 0.75f / (float)h);
     glUniform2f(rzEixo, ex ? 1.0f : 0.0f, ex ? 0.0f : 1.0f);
     glBindTexture(GL_TEXTURE_2D, atual);
-    desenhar_em(t->tex, nw, nh);
-    if (ta) temp_soltar(ta);
-    ta = t; atual = t->tex; w = nw; h = nh;
+    desenhar_em(t, nw, nh);
+    res_soltar(atual, atualTipo, w, h);
+    atual = t; atualTipo = TX_MEIO; w = nw; h = nh;
   }
-  if (!ok) { temp_soltar(ta); glDeleteTextures(1, &fonte); return NULL; }
-  /* gaussiano: x num temporario, y no do cache (ou o que houver) */
+  /* gaussiano */
+  if (adiaY && !nx) {
+    destino = atual; destTipo = atualTipo; atual = 0;
+  } else {
+    int nova;
+    destino = res_pegar(TX_MEIO, w, h, &nova);
+    if (adiaY || !ny) {
+      if (nx) ok = passo_blur(atual, w, h, 0, nx, &wx0, wx, ox, destino);
+      else { float w1 = 1.0f, o1 = 0.0f, z = 0.0f; ok = passo_blur(atual, w, h, 1, 1, &w1, &z, &o1, destino); }
+    } else if (nx) {
+      GLuint tb = res_pegar(TX_MEIO, w, h, &nova);
+      ok = passo_blur(atual, w, h, 0, nx, &wx0, wx, ox, tb) && passo_blur(tb, w, h, 1, ny, &wy0, wy, oy, destino);
+      res_soltar(tb, TX_MEIO, w, h);
+    } else ok = passo_blur(atual, w, h, 1, ny, &wy0, wy, oy, destino);
+    res_soltar(atual, atualTipo, w, h);
+  }
+  if (!ok || glGetError() != GL_NO_ERROR) { res_soltar(destino, destTipo, w, h); return NULL; }
   {
-    GLuint destino = tex_meio(w, h);
-    size_t bytes = (size_t)w * (size_t)h * (size_t)fmtMeio.bpp;
-    if (nx && ny) {
-      tb = temp_pegar(w, h);
-      if (!tb) ok = 0;
-      else ok = passo_blur(atual, w, h, 0, nx, &wx0, wx, ox, tb->tex) && passo_blur(tb->tex, w, h, 1, ny, &wy0, wy, oy, destino);
-    } else if (nx) ok = passo_blur(atual, w, h, 0, nx, &wx0, wx, ox, destino);
-    else {
-      float w1 = 1.0f, o1 = 0.0f, z = 0.0f;
-      if (!ny) ok = passo_blur(atual, w, h, 1, 1, &w1, &z, &o1, destino);   // copia
-      else ok = passo_blur(atual, w, h, 1, ny, &wy0, wy, oy, destino);
-    }
-    temp_soltar(ta); temp_soltar(tb);
-    glDeleteTextures(1, &fonte);
-    if (!ok || glGetError() != GL_NO_ERROR) { glDeleteTextures(1, &destino); return NULL; }
+    size_t bytes = tx_bytes(destTipo, w, h);
     blur_caber(bytes, quadro);
     if (nb == capb) {
       int nc = capb ? capb * 2 : 32;
       AgbBlur *nv = realloc(cb, (size_t)nc * sizeof *nv);
-      if (!nv) { glDeleteTextures(1, &destino); return NULL; }
+      if (!nv) { res_soltar(destino, destTipo, w, h); return NULL; }
       cb = nv; capb = nc;
     }
     e = &cb[nb++];
-    e->chave = chave; e->tex = destino; e->w = w; e->h = h; e->kx = kx; e->ky = ky; e->uso = quadro; e->bytes = bytes;
+    memset(e, 0, sizeof *e);
+    e->chave = chave; e->tex = destino; e->tipo = destTipo; e->w = w; e->h = h; e->kx = kx; e->ky = ky;
+    e->uso = quadro; e->bytes = bytes;
+    if (adiaY) {
+      e->ny = ny; e->wy0 = wy0;
+      memcpy(e->wy, wy, sizeof wy); memcpy(e->oy, oy, sizeof oy);
+      if (destTipo == TX_LUM) {   // a fonte vira a entrada: filtro bilinear para a ampliacao
+        glBindTexture(GL_TEXTURE_2D, destino);
+        tex_param(GL_LINEAR);
+      }
+    }
     bytesB += bytes;
     S.blurs++;
     return e;
   }
 }
 
+static int balde(long area) { return area < 16384 ? 0 : area < 65536 ? 1 : area < 262144 ? 2 : 3; }
+
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chaveOut) {
   unsigned long long kb, kf;
   AgbBlur *b = NULL;
-  GLuint fillTex = 0, out = 0;
-  int i;
+  GLuint fillTex = 0, out = 0, prog;
+  int i, novoBlur = 0, nova;
+  AgbLocFinal *l;
   *chaveOut = 0;
   if (pronto != 1 || !p->src || p->w <= 0 || p->h <= 0 || p->srcW <= 0 || p->srcH <= 0 ||
       p->srcW > maxTex || p->srcH > maxTex || p->w > maxTex || p->h > maxTex ||
@@ -642,35 +732,39 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
       cf[i].uso = quadro; S.reusos++; *chaveOut = kf;
       return cf[i].tex;
     }
+  if (p->soCache) return 0;
   for (i = 0; i < nb; i++) if (cb[i].chave == kb) { b = &cb[i]; b->uso = quadro; break; }
-  if (!b) b = borrar(p, kb, quadro);
+  if (!b) { b = borrar(p, kb, quadro); novoBlur = 1; }
   if (!b) { S.falhas++; return 0; }
+  prog = prog_final(b->ny);
+  if (!prog) { S.falhas++; return 0; }
+  l = &fn[b->ny];
   lote_trabalhar();
   final_caber((size_t)p->w * (size_t)p->h * 4u, quadro);
-  glGenTextures(1, &out);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, out);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, p->w, p->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  tex_param(GL_LINEAR);
+  out = res_pegar(TX_RGBA, p->w, p->h, &nova);
   if (p->fix && p->fill) {
     glActiveTexture(GL_TEXTURE1);
-    glGenTextures(1, &fillTex);
-    glBindTexture(GL_TEXTURE_2D, fillTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, p->fillW, p->fillH, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, p->fill);
-    tex_param(GL_NEAREST);
+    fillTex = subir_lum(p->fill, p->fillW, p->fillH, GL_NEAREST);
   }
-  glUseProgram(progFinal);
-  glUniform1i(fnB, 0);
-  glUniform1i(fnG, 1);
-  glUniform2f(fnBEsc, 1.0f / (float)ldexp((double)b->w, b->kx), 1.0f / (float)ldexp((double)b->h, b->ky));
-  glUniform2f(fnSub, (float)p->subX, (float)p->subY);
-  glUniform2f(fnSaida, (float)p->w, (float)p->h);
-  glUniform2f(fnFonte, (float)p->srcW, (float)p->srcH);
-  glUniform2f(fnGOff, (float)p->fillDx, (float)p->fillDy);
-  glUniform2f(fnGTam, fillTex ? (float)p->fillW : 1.0f, fillTex ? (float)p->fillH : 1.0f);
-  glUniform1f(fnFix, p->fix ? 1.0f : 0.0f);
-  glUniform1f(fnTemG, fillTex ? 1.0f : 0.0f);
-  glUniform2f(fnDesl, (float)p->shiftX / 64.0f, (float)p->shiftY / 64.0f);
+  glUseProgram(prog);
+  glUniform1i(l->B, 0);
+  glUniform1i(l->G, 1);
+  glUniform2f(l->BEsc, 1.0f / (float)ldexp((double)b->w, b->kx), 1.0f / (float)ldexp((double)b->h, b->ky));
+  glUniform2f(l->Sub, (float)p->subX, (float)p->subY);
+  glUniform2f(l->Saida, (float)p->w, (float)p->h);
+  glUniform2f(l->Fonte, (float)p->srcW, (float)p->srcH);
+  glUniform2f(l->GOff, (float)p->fillDx, (float)p->fillDy);
+  glUniform2f(l->GTam, fillTex ? (float)p->fillW : 1.0f, fillTex ? (float)p->fillH : 1.0f);
+  glUniform1f(l->Fix, p->fix ? 1.0f : 0.0f);
+  glUniform1f(l->TemG, fillTex ? 1.0f : 0.0f);
+  glUniform2f(l->Desl, (float)p->shiftX / 64.0f, (float)p->shiftY / 64.0f);
+  if (b->ny) {
+    glUniform1f(l->PassoY, 1.0f / (float)b->h);
+    glUniform1f(l->Wy0, b->wy0);
+    glUniform1fv(l->Wy, b->ny, b->wy);
+    glUniform1fv(l->Oy, b->ny, b->oy);
+  }
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, b->tex);
   desenhar_em(out, p->w, p->h);
@@ -678,20 +772,33 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   if (fillTex) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
-    glDeleteTextures(1, &fillTex);
+    res_soltar(fillTex, TX_LUM, p->fillW, p->fillH);
     glActiveTexture(GL_TEXTURE0);
   }
-  if (glGetError() != GL_NO_ERROR) { glDeleteTextures(1, &out); S.falhas++; return 0; }
+  if (glGetError() != GL_NO_ERROR) { res_soltar(out, TX_RGBA, p->w, p->h); S.falhas++; return 0; }
   if (nf == capf) {
     int nc = capf ? capf * 2 : 64;
     AgbFinal *nv = realloc(cf, (size_t)nc * sizeof *nv);
-    if (!nv) { glDeleteTextures(1, &out); S.falhas++; return 0; }
+    if (!nv) { res_soltar(out, TX_RGBA, p->w, p->h); S.falhas++; return 0; }
     cf = nv; capf = nc;
   }
   cf[nf].chave = kf; cf[nf].tex = out; cf[nf].w = p->w; cf[nf].h = p->h; cf[nf].uso = quadro;
   nf++;
   bytesF += (size_t)p->w * (size_t)p->h * 4u;
   S.finais++;
+  if (p->adiantado) S.adiantados++;
+  if (E.medir) {
+    /* custo real deste pedido na GPU, por tamanho (so com os cronometros) */
+    struct timespec t;
+    double ms;
+    int k = balde(p->area > 0 ? p->area : (long)p->srcW * p->srcH);
+    glFinish();
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    ms = (double)(t.tv_sec - E.tUlt.tv_sec) * 1000.0 + (double)(t.tv_nsec - E.tUlt.tv_nsec) / 1e6;
+    E.tUlt = t;
+    S.msTam[k] += ms;
+    if (novoBlur) S.nTam[k]++;
+  }
   *chaveOut = kf;
   return out;
 }

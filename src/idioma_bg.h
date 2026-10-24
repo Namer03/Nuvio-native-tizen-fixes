@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Кодът ви се появява веднага щом телевизорът достигне услугата."),
   T("Seu código tem seis caracteres", "Кодът ви е с дължина шест символа"),
   T("Seu código: %s", "Вашият код: %s"),
+  T("Seu estilo no ASS", "Вашият стил върху ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Вкусът ви обхваща %d години истории: от %d до %d."),
   T("Seu mapa de gêneros", "Вашата карта на жанровете"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Името ви за приятелите. Празно = името на профила."),

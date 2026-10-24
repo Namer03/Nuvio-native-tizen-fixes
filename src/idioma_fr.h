@@ -4962,6 +4962,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Votre code apparaît dès que la TV joint le service."),
   T("Seu código tem seis caracteres", "Votre code compte six caractères"),
   T("Seu código: %s", "Votre code : %s"),
+  T("Seu estilo no ASS", "Votre style sur ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Vos goûts couvrent %d ans d'histoires: de %d à %d."),
   T("Seu mapa de gêneros", "Votre carte des genres"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Votre nom pour vos amis. Vide = nom du profil."),

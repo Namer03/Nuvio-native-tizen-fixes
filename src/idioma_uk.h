@@ -4962,6 +4962,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Ваш код з'явиться, щойно телевізор зв'яжеться зі службою."),
   T("Seu código tem seis caracteres", "Ваш код складається з шести символів"),
   T("Seu código: %s", "Ваш код: %s"),
+  T("Seu estilo no ASS", "Ваш стиль для ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Ваш смак охоплює %d років історій: від %d до %d."),
   T("Seu mapa de gêneros", "Ваша карта жанрів"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Ваше ім'я для друзів. Порожнє — ім'я профілю."),

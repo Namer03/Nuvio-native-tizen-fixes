@@ -227,13 +227,14 @@ static int run_parallel(ASS_Library *lib, const char *file, int nr, Frame *out, 
 }
 
 /* 0005: deferred blur renderer (NEON), every frame rebuilt from the recipes. */
-static int run_defer(ASS_Library *lib, const char *file, Frame *out, int frames, ASS_NvDeferStats *st)
+static int run_defer(ASS_Library *lib, const char *file, Frame *out, int frames, ASS_NvDeferStats *st, int min_area)
 {
     ASS_Renderer *r = ass_renderer_init(lib);
     ass_set_frame_size(r, W, H);
     ass_set_storage_size(r, W, H);
     ass_set_fonts(r, NULL, "Roboto", ASS_FONTPROVIDER_NONE, NULL, 0);
     if (ass_nv_set_engine(r, 1) != 1 || ass_nv_set_deferred_blur(r, 1) != 1) return -1;
+    ass_nv_set_deferred_min_area(r, min_area);
     ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
     if (!t) return -1;
     ass_nv_defer_stats_take(r, st);
@@ -289,22 +290,25 @@ int main(int argc, char **argv)
             }
         printf("  3 renderers at once (track clones, shared library): %s, %d differ\n", pdiff ? "FAIL" : "identical", pdiff);
         diff += pdiff;
-        /* 0005: deferred blur, recipes applied on the CPU = the normal path. */
-        ASS_NvDeferStats st;
-        unsigned d0 = n_deferred, f0 = n_defer_fail;
-        if (run_defer(lib, argv[i], d, na, &st)) { printf("  deferred blur: FAIL to run\n"); bad = 1; continue; }
-        int ddiff = 0;
-        for (int k = 0; k < na; k++)
-            if (d[k].hash != b[k].hash || d[k].imgs != b[k].imgs) {
-                if (ddiff < 5)
-                    printf("  DEFERRED DIFF at %d ms (%u vs %u images)\n", k * STEP_MS, d[k].imgs, b[k].imgs);
-                ddiff++;
-            }
-        printf("  deferred blur, recipes on the CPU: %s, %d differ | %u images from recipes, %u failed"
-               " | blurred composites %u: deferred %u, kept for \\be %u, for vector clip %u\n",
-               ddiff || n_defer_fail != f0 ? "FAIL" : "identical", ddiff, n_deferred - d0, n_defer_fail - f0,
-               st.blurred, st.deferred, st.kept_be, st.kept_clip);
-        diff += ddiff + (int) (n_defer_fail - f0);
+        /* 0005: deferred blur, recipes applied on the CPU = the normal path;
+         * every blur deferred, then only those of 64k pixels or more. */
+        for (int ma = 0; ma <= 65536; ma += 65536) {
+            ASS_NvDeferStats st;
+            unsigned d0 = n_deferred, f0 = n_defer_fail;
+            if (run_defer(lib, argv[i], d, na, &st, ma)) { printf("  deferred blur: FAIL to run\n"); bad = 1; break; }
+            int ddiff = 0;
+            for (int k = 0; k < na; k++)
+                if (d[k].hash != b[k].hash || d[k].imgs != b[k].imgs) {
+                    if (ddiff < 5)
+                        printf("  DEFERRED DIFF at %d ms (%u vs %u images)\n", k * STEP_MS, d[k].imgs, b[k].imgs);
+                    ddiff++;
+                }
+            printf("  deferred blur (min area %d), recipes on the CPU: %s, %d differ | %u images from recipes, %u failed"
+                   " | blurred composites %u: deferred %u, kept for \\be %u, vector clip %u, size %u\n",
+                   ma, ddiff || n_defer_fail != f0 ? "FAIL" : "identical", ddiff, n_deferred - d0, n_defer_fail - f0,
+                   st.blurred, st.deferred, st.kept_be, st.kept_clip, st.kept_small);
+            diff += ddiff + (int) (n_defer_fail - f0);
+        }
         bad |= diff != 0;
     }
     printf("total C %.0f ms, NEON %.0f ms (x%.2f; emulated, not TV speed)\n", tc, tn, tn > 0 ? tc / tn : 0);

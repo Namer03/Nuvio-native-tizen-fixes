@@ -253,6 +253,9 @@ static void responderTexto(int c, int codigo, const char *tipo, const char *extr
 }
 
 #ifdef NV_TPK
+#include "tpkscan.h"
+#include <fcntl.h>
+#include <sys/stat.h>
 #include "assperf.h"
 typedef struct { int c; const char *tipo; } LrSnapEnvio;
 static int lrSnapEnviar(void *u, const unsigned char *b, size_t n) {
@@ -437,6 +440,36 @@ static void atender(int c) {
     return;
   }
 #ifdef NV_TPK
+  /* Bibliotecas de imagem do sistema (tpkscan.c): a lista e cada arquivo,
+   * so leitura, para estudar as funcoes de plano/saida de video. */
+  if (!strncmp(caminho, "/ass-lib/", 9)) {
+    char nome[128], arq[600];
+    const char *q = strchr(caminho, '?');
+    size_t l = q ? (size_t)(q - caminho) : strlen(caminho);
+    if (l <= 9) {
+      char *lista = malloc(65536);
+      size_t n = lista ? tpkscan_lib_lista(lista, 65536) : 0;
+      responderTexto(c, 200, "text/plain; charset=utf-8", NULL, lista ? lista : "", n);
+      free(lista);
+      return;
+    }
+    if (l - 9 >= sizeof nome) { responderTexto(c, 404, "text/plain", NULL, "", 0); return; }
+    memcpy(nome, caminho + 9, l - 9); nome[l - 9] = 0;
+    if (!tpkscan_lib_caminho(nome, arq, sizeof arq)) { responderTexto(c, 403, "text/plain", NULL, "", 0); return; }
+    { int fd = open(arq, O_RDONLY);
+      struct stat st;
+      char cab[512], buf[65536];
+      int k;
+      ssize_t r;
+      if (fd < 0 || fstat(fd, &st)) { if (fd >= 0) close(fd); responderTexto(c, 404, "text/plain", NULL, "", 0); return; }
+      k = snprintf(cab, sizeof cab, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %lu\r\n"
+                   "Content-Disposition: attachment; filename=\"%s\"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                   (unsigned long)st.st_size, nome);
+      if (enviarTudo(c, cab, (size_t)k) == 0)
+        while ((r = read(fd, buf, sizeof buf)) > 0) if (enviarTudo(c, buf, (size_t)r)) break;
+      close(fd); }
+    return;
+  }
   /* ASS snapshot (assperf, folha do player): figuras e texto do ultimo. */
   if (!strncmp(caminho, "/ass-snap", 9)) {
     char nome[64];

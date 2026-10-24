@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Ο κωδικός σου εμφανίζεται μόλις η τηλεόραση φτάσει στην υπηρεσία."),
   T("Seu código tem seis caracteres", "Ο κωδικός σου έχει έξι χαρακτήρες"),
   T("Seu código: %s", "Ο κωδικός σας: %s"),
+  T("Seu estilo no ASS", "Το στυλ σας στο ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Το γούστο σου καλύπτει %d χρόνια ιστοριών: από το %d έως το %d."),
   T("Seu mapa de gêneros", "Ο χάρτης των ειδών σου"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Το όνομά σας για τους φίλους. Κενό = όνομα προφίλ."),

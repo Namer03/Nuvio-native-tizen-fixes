@@ -21,7 +21,7 @@ typedef struct {
   const char *ajuda;     // uma linha na folha
   int recomendado, leve; // presets (o Legacy e sempre 0)
   int n;
-  const char *valores[6];
+  const char *valores[10];
   int fixa;              // 1 = decidida na TV (23/10): fora da folha, sempre `recomendado` no .tpk
 } ApDef;
 
@@ -48,8 +48,8 @@ static const ApDef DEF[AP_N] = {
     "With new-lines loading, events that ended this long before the playhead leave libass memory.",
     2, 2, 4, { "Off", "30 s", "2 min", "5 min" } },
   [AP_ADIANTE] = { "adiante", "Render ahead",
-    "Renders the moment the frame will actually be on screen. Auto measures render + upload time.",
-    1, 1, 6, { "Off (old)", "Auto", "50 ms", "100 ms", "150 ms", "250 ms" } },
+    "Renders the moment the frame will actually be on screen. 100 ms (tested 24/10) also gives the GPU blur time to prepare queued frames.",
+    3, 3, 6, { "Off (old)", "Auto", "50 ms", "100 ms", "150 ms", "250 ms" } },
   [AP_SEGURAR] = { "segurar", "Early frames",
     "With render ahead, a frame that is ready early waits for its moment instead of showing at once.",
     1, 1, 2, { "Show at once", "Hold until due" }, 1 },
@@ -98,6 +98,13 @@ static const ApDef DEF[AP_N] = {
   [AP_GPUBLUR] = { "gpublur", "Blur on GPU",
     "On: libass leaves the blur to the GPU (shaders) and the CPU does the rest. Very close to libass's blur, not bit-identical (Snapshot measures the difference). Off: libass's exact CPU blur.",
     1, 1, 2, { "Off (CPU, exact)", "On" } },
+  [AP_GPUMIN] = { "gpumin", "GPU blur from size",
+    "Only signs at least this big go to the GPU; smaller blurs stay on the CPU, where they are cheaper. The log times both by size (Stage timers On).",
+    2, 2, 4, { "All", "16k px", "64k px", "256k px" } },
+  [AP_JANELA] = { "janela", "Window hint (test)",
+    "Colour test: sets ONE window-system hint on our window (Off removes it). Turn on the Colour test card and watch whether the white patch gets brighter.",
+    0, 0, 9, { "Off", "luminescence=1", "luminescence=0", "luminescence=2", "avoc.control=1", "pq.hint=1",
+               "hwc.window=1", "hwc.dyn_opaque=1", "effect.video=1" } },
   [AP_SNAP] = { "snap", "ASS snapshot",
     "Pause on a wrong frame and press OK: logs every active line, its style and colours, and saves pictures (see the log page).",
     0, 0, 2, { "Off", "Take now" } },
@@ -170,6 +177,7 @@ void assperf_iniciar(void) {
     val[AP_SNAP] = 0;
     val[AP_CARTAO] = 0;
     val[AP_SCAN] = 0;
+    val[AP_JANELA] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -220,7 +228,8 @@ int assperf_get(int id) {
 }
 
 int assperf_e_medida(int id) {
-  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN;
+  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN ||
+         id == AP_JANELA;
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
 int assperf_fios(void) { int v = assperf_get(AP_FIOS); return v < 0 ? 1 : v > 3 ? 4 : v + 1; }
@@ -351,10 +360,12 @@ static struct {
     double frameMs, frameMax, stageMs[8], piorStage[8];
   } est;
   // blur na GPU
-  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes;
+  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes, gbAdiant, gbCriadas, gbReap;
   double gbMs, gbMax;
   int gbMedido;
-  unsigned adComBlur, adAdiados, adBe, adClip;
+  unsigned gbN[4]; double gbMsTam[4];
+  unsigned adComBlur, adAdiados, adBe, adClip, adPeq;
+  unsigned cpuN[4]; double cpuMs[4];
 } M;
 
 const char *const assperf_estagio_nome[8] = {
@@ -456,18 +467,28 @@ void assperf_gpublur_formato(const char *s) {
   snprintf(gbFormato, sizeof gbFormato, "%s", s ? s : "-");
   pthread_mutex_unlock(&medTrava);
 }
-void assperf_med_gpublur(unsigned blurs, unsigned finais, unsigned reusos, unsigned falhas, unsigned cpu,
-                         double ms, int medido) {
+void assperf_med_gpublur(const AssperfGpu *g) {
+  int i;
   pthread_mutex_lock(&medTrava);
-  M.gbBlurs += blurs; M.gbFinais += finais; M.gbReusos += reusos; M.gbFalhas += falhas; M.gbCpu += cpu;
-  if (blurs || finais) { M.gbLotes++; M.gbMs += ms; if (ms > M.gbMax) M.gbMax = ms; M.gbMedido = medido; }
+  M.gbBlurs += g->blurs; M.gbFinais += g->finais; M.gbReusos += g->reusos; M.gbFalhas += g->falhas; M.gbCpu += g->cpu;
+  M.gbAdiant += g->adiantados; M.gbCriadas += g->criadas; M.gbReap += g->reaproveitadas;
+  if ((g->blurs || g->finais) && g->ms > 0) { M.gbLotes++; M.gbMs += g->ms; if (g->ms > M.gbMax) M.gbMax = g->ms; M.gbMedido = g->medido; }
+  for (i = 0; i < 4; i++) { M.gbN[i] += g->nTam[i]; M.gbMsTam[i] += g->msTam[i]; }
   pthread_mutex_unlock(&medTrava);
 }
-void assperf_med_adiado(unsigned comBlur, unsigned adiados, unsigned be, unsigned clip) {
+void assperf_med_adiado(const AssperfAdiado *a) {
+  int i;
   pthread_mutex_lock(&medTrava);
-  M.adComBlur += comBlur; M.adAdiados += adiados; M.adBe += be; M.adClip += clip;
+  M.adComBlur += a->comBlur; M.adAdiados += a->adiados; M.adBe += a->be; M.adClip += a->clip; M.adPeq += a->pequenos;
+  for (i = 0; i < 4; i++) { M.cpuN[i] += a->cpuN[i]; M.cpuMs[i] += a->cpuMs[i]; }
   pthread_mutex_unlock(&medTrava);
 }
+long assperf_gpu_min(void) {
+  static const long px[4] = { 0, 16384, 65536, 262144 };
+  int v = assperf_get(AP_GPUMIN);
+  return px[v < 0 || v > 3 ? 0 : v];
+}
+int assperf_gpu_adiante(void) { return 3; }
 
 void assperf_med_alfa(float alfa, float opacidadeUsuario) {
   pthread_mutex_lock(&medTrava);
@@ -518,6 +539,21 @@ void assperf_med_tick(void) {
                M.gbLotes ? M.gbMs / M.gbLotes : 0.0, M.gbMax,
                M.gbMedido ? " (GPU time, glFinish)" : " (submit time; Stage timers On measures GPU time)",
                M.gbReusos, M.gbCpu, M.gbFalhas, M.adComBlur, M.adAdiados, M.adBe, M.adClip);
+      if (M.adComBlur || M.gbLotes || M.gbAdiant)
+        printf("[assperf] gpu blur 2: kept on CPU for size %u (minimum %ld px) | pictures made ahead for queued frames %u"
+               " | textures created %u, reused from the reserve %u\n",
+               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap);
+      { int i, alg = 0;
+        for (i = 0; i < 4; i++) alg |= M.cpuN[i] || M.gbN[i];
+        if (alg) {
+          static const char *const nome[4] = { "<16k", "16-64k", "64-256k", ">=256k" };
+          char b[400]; size_t o = 0;
+          for (i = 0; i < 4; i++)
+            o += (size_t)snprintf(b + o, sizeof b - o, "%s %s px: CPU %u x %.2f ms, GPU %u x %.2f ms", i ? " |" : "", nome[i],
+                                  M.cpuN[i], M.cpuN[i] ? M.cpuMs[i] / M.cpuN[i] : 0.0,
+                                  M.gbN[i], M.gbN[i] ? M.gbMsTam[i] / M.gbN[i] : 0.0);
+          printf("[assperf] blur cost by size (per blur; GPU only with Stage timers On):%s\n", b);
+        } }
       if (M.alfaN)
         printf("[assperf] draw alpha min=%.2f (Subtitles > Style > Opacity = %.0f%%, your style %s on styled ASS)\n",
                M.alfaMin, M.alfaOpc * 100.0f, assperf_get(AP_ESTILO) ? "ignored" : "applied");

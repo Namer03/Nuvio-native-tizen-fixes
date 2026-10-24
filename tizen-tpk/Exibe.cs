@@ -6,6 +6,9 @@
 // Tambem lista as "aux hints" que o gerenciador de janelas aceita nas nossas
 // janelas (Window.GetSupportedAuxiliaryHint*): so a lista, nenhuma e ligada.
 // (O teste de Window.SetBrightness saiu: devolveu False e nada mudou, 24/10.)
+// "Window hint (test)": poe UMA dica do gerenciador de janelas na janela
+// principal (AddAuxiliaryHint), das que o scan de 24/10 listou com cara de
+// brilho/plano; Off tira. O dono olha se o branco do cartao de teste sobe.
 // So no host Tizen 6+ (Program.cs). O C pede pela funcao registrada em
 // nv_tpk_exibe_registrar; tudo vai para o log com "[assperf]" (aba Subtitles).
 using System;
@@ -19,20 +22,71 @@ namespace NuvioTpk
 {
     static class Exibe
     {
-        [DllImport("libnuvio.so")] static extern void nv_tpk_exibe_registrar(IntPtr scan);
+        [DllImport("libnuvio.so")] static extern void nv_tpk_exibe_registrar(IntPtr scan, IntPtr janela);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnSemArg();
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnInt(int v);
 
-        // Referencia viva: o C guarda o ponteiro, o GC nao pode recolher.
+        // Referencias vivas: o C guarda os ponteiros, o GC nao pode recolher.
         static FnSemArg fScan;
+        static FnInt fJanela;
         static Func<object[]> janelas;
 
         public static void Registrar(Action<Action> post, Func<object[]> windows)
         {
             janelas = windows;
             fScan = () => { post(() => AuxHints()); Task.Run(() => Scan()); };
-            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan));
+            fJanela = v => post(() => Dica(v));
+            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan),
+                                   Marshal.GetFunctionPointerForDelegate(fJanela));
         }
+
+        // Mesma ordem da folha (assperf.c, AP_JANELA): 1.. = uma dica.
+        static readonly string[,] Dicas = {
+            { "wm.luminescence.mode", "1" }, { "wm.luminescence.mode", "0" }, { "wm.luminescence.mode", "2" },
+            { "wm.tvs.win.avoc.control", "1" }, { "wm.video.set.pq.hint", "1" }, { "wm.hwc.window", "1" },
+            { "wm.hwc.dynamic_opaque_window", "1" }, { "wm.comp.win.effect.video", "1" }
+        };
+        static uint dicaId;
+        static bool dicaPosta;
+
+        // Thread principal (post).
+        static void Dica(int v)
+        {
+            object[] ws;
+            try { ws = janelas != null ? janelas() : new object[0]; }
+            catch (Exception e) { LogD(e.GetType().Name + ": " + e.Message); return; }
+            object w = ws.Length > 0 ? ws[0] : null;
+            if (w == null) { LogD("no window"); return; }
+            var t = w.GetType();
+            try
+            {
+                if (dicaPosta)
+                {
+                    var rem = t.GetMethod("RemoveAuxiliaryHint", new[] { typeof(uint) });
+                    object r = rem != null ? rem.Invoke(w, new object[] { dicaId }) : "n/a";
+                    LogD("removed hint id " + dicaId + " -> " + Convert.ToString(r));
+                    dicaPosta = false;
+                }
+                if (v < 1 || v > Dicas.GetLength(0)) { LogD("off"); return; }
+                string nome = Dicas[v - 1, 0], valor = Dicas[v - 1, 1];
+                var add = t.GetMethod("AddAuxiliaryHint", new[] { typeof(string), typeof(string) });
+                if (add == null) { LogD(t.Name + " has no AddAuxiliaryHint in this TizenFX"); return; }
+                object id = add.Invoke(w, new object[] { nome, valor });
+                dicaId = Convert.ToUInt32(id);
+                dicaPosta = true;
+                var get = t.GetMethod("GetAuxiliaryHintValue", new[] { typeof(uint) });
+                string lido = get != null ? Convert.ToString(get.Invoke(w, new object[] { dicaId })) : "n/a";
+                LogD("set " + nome + "=" + valor + " -> id " + dicaId + ", window system reads back \"" + lido + "\"");
+            }
+            catch (TargetInvocationException e)
+            {
+                var x = e.InnerException ?? e;
+                LogD(x.GetType().Name + ": " + x.Message);
+            }
+            catch (Exception e) { LogD(e.GetType().Name + ": " + e.Message); }
+        }
+        static void LogD(string s) { try { NvVid.LogNativo("[assperf] window hint: " + s); } catch { } }
 
         // Thread principal (post): as aux hints de cada janela nossa.
         static void AuxHints()

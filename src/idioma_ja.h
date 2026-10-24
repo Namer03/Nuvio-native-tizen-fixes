@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "テレビがサービスに接続できると、すぐにコードが表示されます。"),
   T("Seu código tem seis caracteres", "あなたのコードは 6 文字です"),
   T("Seu código: %s", "あなたのコード: %s"),
+  T("Seu estilo no ASS", "ASS に自分のスタイル"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "あなたの好みは %d 年分の物語にまたがっています: %d 年から %d 年まで。"),
   T("Seu mapa de gêneros", "あなたのジャンルマップ"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "友だちに表示する名前。空欄ならプロフィール名。"),

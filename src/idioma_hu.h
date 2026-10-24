@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "A kódod megjelenik, amint a TV eléri a szolgáltatást."),
   T("Seu código tem seis caracteres", "A kódod hat karakter hosszú"),
   T("Seu código: %s", "A kódod: %s"),
+  T("Seu estilo no ASS", "Saját stílus az ASS-en"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Az ízlésed %d évnyi történetet ölel fel: %d és %d között."),
   T("Seu mapa de gêneros", "A műfajtérképed"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "A neved a barátoknak. Üresen a profilnév."),

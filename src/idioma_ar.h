@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "يظهر رمزك بمجرد وصول التلفاز إلى الخدمة."),
   T("Seu código tem seis caracteres", "رمزك مكوّن من ستة أحرف"),
   T("Seu código: %s", "رمزك: %s"),
+  T("Seu estilo no ASS", "نمطك على ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "يمتد ذوقك عبر %d عامًا من القصص: من %d إلى %d."),
   T("Seu mapa de gêneros", "خريطة أنواعك"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "اسمك لدى الأصدقاء. اتركه فارغًا لاستخدام اسم الملف الشخصي."),

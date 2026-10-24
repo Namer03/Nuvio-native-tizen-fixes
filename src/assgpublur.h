@@ -21,6 +21,9 @@ typedef struct {
   int subX, subY, w, h;              // a imagem dentro de src
   int fix, fillDx, fillDy;           // fill em (x + fillDx, y + fillDy) de src
   int shiftX, shiftY;                // 1/64 px, depois do fix
+  long area;                         // pixels do bitmap sem o acolchoamento (custo por tamanho)
+  int soCache;                       // 1 = so devolve o que ja esta pronto (nao borra)
+  int adiantado;                     // 1 = feito antes da hora (quadro na fila)
 } AgbPedido;
 
 typedef struct {
@@ -30,6 +33,10 @@ typedef struct {
   unsigned falhas;       // pedidos que a GPU nao fez (o chamador cai na CPU)
   double ms;             // tempo dos lotes com trabalho novo
   int medido;            // 1 = ms com glFinish (tempo real da GPU); 0 = so o envio
+  unsigned adiantados;   // texturas finais feitas para quadros ainda na fila
+  unsigned criadas, reaproveitadas;   // texturas novas / tiradas da reserva
+  unsigned nTam[4];      // so com glFinish: gaussianos novos por tamanho (<16k, 16-64k, 64-256k, >=256k px)
+  double msTam[4];       // e o tempo de GPU desses pedidos
 } AgbStats;
 
 // Fio GL. 1 = shaders e alvos prontos (uma vez; depois so devolve o resultado).

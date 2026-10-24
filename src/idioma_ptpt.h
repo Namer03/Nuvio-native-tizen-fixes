@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "O teu código aparece assim que a TV contactar o serviço."),
   T("Seu código tem seis caracteres", "O teu código tem seis caracteres"),
   T("Seu código: %s", "O seu código: %s"),
+  T("Seu estilo no ASS", "O seu estilo no ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "O teu gosto atravessa %d anos de histórias: de %d a %d."),
   T("Seu mapa de gêneros", "O teu mapa de géneros"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "O seu nome para os amigos. Vazio usa o nome do perfil."),

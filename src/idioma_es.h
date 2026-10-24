@@ -4962,6 +4962,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Tu código aparece en cuanto la TV hable con el servicio."),
   T("Seu código tem seis caracteres", "Tu código tiene seis caracteres"),
   T("Seu código: %s", "Tu código: %s"),
+  T("Seu estilo no ASS", "Tu estilo en ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Tu gusto abarca %d años de historias: de %d a %d."),
   T("Seu mapa de gêneros", "Tu mapa de géneros"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Tu nombre para los amigos. Vacío usa el del perfil."),

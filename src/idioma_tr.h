@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Kodun, TV hizmete ulaşır ulaşmaz görünür."),
   T("Seu código tem seis caracteres", "Kodun altı karakter uzunluğunda"),
   T("Seu código: %s", "Kodun: %s"),
+  T("Seu estilo no ASS", "ASS'de kendi stiliniz"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Zevkin %d yıllık hikâyeyi kapsıyor: %d ile %d arası."),
   T("Seu mapa de gêneros", "Tür haritan"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Arkadaşların için adın. Boş bırakılırsa profil adı kullanılır."),

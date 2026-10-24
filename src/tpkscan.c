@@ -51,11 +51,14 @@
 /* O teste de Window.SetBrightness saiu (24/10: devolveu False, nada mudou na
  * tela); o host so registra o scan .NET. */
 typedef void (*TsFnSem)(void);
+typedef void (*TsFnInt)(int);
 static TsFnSem hScanNet;
+static TsFnInt hJanela;   // "Window hint (test)": indice da dica (0 = tirar)
 
 __attribute__((visibility("default")))
-void nv_tpk_exibe_registrar(TsFnSem scanNet) {
+void nv_tpk_exibe_registrar(TsFnSem scanNet, TsFnInt janela) {
   hScanNet = scanNet;
+  hJanela = janela;
 }
 
 // ---- texto do scan ------------------------------------------------------------
@@ -374,6 +377,73 @@ static void scan_abrir_protocolos(ScanTxt *t) {
 
 typedef struct { ScanTxt *t; int libs, comAchado, simbolos; } ScanLib;
 
+/* Quem CHAMA as funcoes de plano/saida de video da Samsung (simbolos
+ * indefinidos com estes prefixos): mostra como os argumentos sao montados.
+ * Essas bibliotecas (e as das funcoes) podem ser baixadas pela pagina do log
+ * (/ass-lib/) para estudar as assinaturas. So leitura. */
+static const char *const PREF_USO[] = {
+  "Gfx_Videooutput", "Gfx_Set_Plane", "Gfx_Set_plane", "Gfx_Get_Top_Plane", "ppi_graphics_control",
+  "avoc_set_osd", "avoc_get_luminance", "avoc_set_luminance", "avoc_get_oled_logo", "ppi_ve_set_osd",
+  "ppi_ve_set_luminance", NULL
+};
+#define LIBS_EXPORT_MAX 48
+static char libsExport[LIBS_EXPORT_MAX][96];
+static int nLibsExport;
+static pthread_mutex_t exportTrava = PTHREAD_MUTEX_INITIALIZER;
+static void export_add(const char *nome) {
+  int i;
+  pthread_mutex_lock(&exportTrava);
+  for (i = 0; i < nLibsExport; i++) if (!strcmp(libsExport[i], nome)) break;
+  if (i == nLibsExport && nLibsExport < LIBS_EXPORT_MAX && strlen(nome) < sizeof libsExport[0])
+    snprintf(libsExport[nLibsExport++], sizeof libsExport[0], "%s", nome);
+  pthread_mutex_unlock(&exportTrava);
+}
+
+/* As bibliotecas de imagem e as que as chamam: nome sem barra, achado em
+ * /usr/lib, /lib ou /usr/lib/driver. 1 = pode baixar (caminho em `c`). */
+__attribute__((visibility("default")))
+int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
+  static const char *const FIXAS[] = { "libgfx-video-output", "libgraphics-control", "libvideoenhance", "libavoc",
+                                       "libdali-extension-tv", "libtizen-extension-client", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", NULL };
+  int i, ok = 0;
+  struct stat st;
+  if (!nome || !*nome || strchr(nome, '/') || strstr(nome, "..") || strncmp(nome, "lib", 3) || !strstr(nome, ".so")) return 0;
+  for (i = 0; FIXAS[i] && !ok; i++) if (!strncmp(nome, FIXAS[i], strlen(FIXAS[i]))) ok = 1;
+  pthread_mutex_lock(&exportTrava);
+  for (i = 0; i < nLibsExport && !ok; i++) if (!strcmp(nome, libsExport[i])) ok = 1;
+  pthread_mutex_unlock(&exportTrava);
+  if (!ok) return 0;
+  for (i = 0; DIRS[i]; i++) {
+    snprintf(c, n, "%s/%s", DIRS[i], nome);
+    if (!stat(c, &st) && S_ISREG(st.st_mode)) return 1;
+  }
+  return 0;
+}
+
+/* Lista de baixar para a pagina do log (texto). */
+typedef struct { char *dst; size_t n, o; } LibLista;
+static int listar(const char *dir, void (*cada)(const char *dir, const char *nome, void *u), void *u);
+static void lista_cada(const char *dir, const char *nome, void *u) {
+  LibLista *l = u;
+  char c[600];
+  struct stat st;
+  if (l->o + 200 >= l->n || !tpkscan_lib_caminho(nome, c, sizeof c) || strncmp(c, dir, strlen(dir))) return;
+  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
+  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-lib/%s  (%s, %ld KB)\n", nome, dir, (long)(st.st_size / 1024));
+}
+__attribute__((visibility("default")))
+size_t tpkscan_lib_lista(char *dst, size_t n) {
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", NULL };
+  LibLista l = { dst, n, 0 };
+  int i;
+  l.o = (size_t)snprintf(dst, n, "System libraries you can download for the display study (read-only copies).\n"
+                         "Libraries that call the plane / video output functions are added after 'Scan display APIs'.\n"
+                         "Open http://<TV IP>:8099/ass-lib/<name> to download one.\n\n");
+  for (i = 0; DIRS[i]; i++) listar(DIRS[i], lista_cada, &l);
+  return l.o;
+}
+
 /* Bibliotecas de imagem da Samsung achadas no scan de 23/10: TODAS as
  * exportacoes vao para o arquivo (sem filtro de nome nem limite de 80), para
  * ver se ha um ganho/brilho da camada grafica. So leitura, como o resto. */
@@ -388,7 +458,9 @@ static void scan_um(const char *dir, const char *nome, void *u) {
   ScanLib *sc = u;
   char c[600], primeiros[400];
   struct stat st;
-  int fd, achados = 0, inteira = lib_inteira(nome), todas = 0;
+  int fd, achados = 0, inteira = lib_inteira(nome), todas = 0, usos = 0;
+  char usoPrim[300] = "";
+  size_t uo = 0;
   size_t po = 0;
   unsigned char *m;
   if (!strstr(nome, ".so")) return;
@@ -420,6 +492,18 @@ static void scan_um(const char *dir, const char *nome, void *u) {
           const Elf32_Sym *sy = (const Elf32_Sym *)(m + ds->sh_offset + j * ds->sh_entsize);
           const char *sn;
           int tp = ELF32_ST_TYPE(sy->st_info), bd = ELF32_ST_BIND(sy->st_info);
+          if (sy->st_shndx == SHN_UNDEF && sy->st_name < ss->sh_size) {
+            const char *un = (const char *)(m + ss->sh_offset + sy->st_name);
+            int q;
+            for (q = 0; PREF_USO[q]; q++)
+              if (!strncmp(un, PREF_USO[q], strlen(PREF_USO[q]))) {
+                usos++;
+                sl(sc->t, 0, "uses %s: %s", nome, un);
+                if (uo < sizeof usoPrim - 80) uo += (size_t)snprintf(usoPrim + uo, sizeof usoPrim - uo, "%s%.60s", uo ? ", " : "", un);
+                break;
+              }
+            continue;
+          }
           if (sy->st_shndx == SHN_UNDEF || sy->st_name >= ss->sh_size || (tp != STT_FUNC && tp != STT_OBJECT) ||
               (bd != STB_GLOBAL && bd != STB_WEAK)) continue;
           sn = (const char *)(m + ss->sh_offset + sy->st_name);
@@ -439,6 +523,11 @@ static void scan_um(const char *dir, const char *nome, void *u) {
     }
   }
   munmap(m, (size_t)st.st_size);
+  if (usos) {
+    sl(sc->t, 1, "lib %s CALLS %d display/plane function(s): %s%s (download: /ass-lib/%s)", nome, usos, usoPrim,
+       uo >= sizeof usoPrim - 80 ? ", ..." : "", nome);
+    export_add(nome);
+  }
   if (inteira) sl(sc->t, 1, "lib %s: all %d exports written to the file (lines \"lib-all %s\")", nome, todas, nome);
   if (achados) {
     sc->comAchado++; sc->simbolos += achados;
@@ -549,6 +638,13 @@ static void *scan_fio(void *u) {
 }
 
 void tpkscan_tick(void) {
+  static int janelaAplicada;
+  int jn = assperf_get(AP_JANELA);
+  if (jn != janelaAplicada) {
+    janelaAplicada = jn;
+    if (hJanela) hJanela(jn);
+    else { printf("[assperf] window hint: not available on this host package\n"); fflush(stdout); }
+  }
   if (assperf_get(AP_SCAN)) {
     assperf_definir(AP_SCAN, 0);
     if (__atomic_exchange_n(&scanRodando, 1, __ATOMIC_ACQ_REL)) { printf("[assperf] scan: already running\n"); fflush(stdout); }

@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Mã của bạn sẽ hiện ngay khi TV kết nối được với dịch vụ."),
   T("Seu código tem seis caracteres", "Mã của bạn gồm sáu ký tự"),
   T("Seu código: %s", "Mã của bạn: %s"),
+  T("Seu estilo no ASS", "Kiểu của bạn trên ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Gu của bạn trải dài %d năm câu chuyện: từ %d đến %d."),
   T("Seu mapa de gêneros", "Bản đồ thể loại của bạn"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Tên của bạn với bạn bè. Để trống sẽ dùng tên hồ sơ."),

@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Váš kód se zobrazí, jakmile se televize spojí se službou."),
   T("Seu código tem seis caracteres", "Váš kód má šest znaků"),
   T("Seu código: %s", "Váš kód: %s"),
+  T("Seu estilo no ASS", "Váš styl na ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Váš vkus zahrnuje %d let příběhů: od %d do %d."),
   T("Seu mapa de gêneros", "Vaše mapa žánrů"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Vaše jméno pro přátele. Prázdné = název profilu."),

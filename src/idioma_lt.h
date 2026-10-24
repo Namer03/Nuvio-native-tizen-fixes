@@ -4963,6 +4963,7 @@
   T("Seu código aparece assim que a TV falar com o serviço.", "Jūsų kodas atsiranda, kai tik televizorius pasiekia paslaugą."),
   T("Seu código tem seis caracteres", "Jūsų kodą sudaro šeši simboliai"),
   T("Seu código: %s", "Jūsų kodas: %s"),
+  T("Seu estilo no ASS", "Jūsų stilius ASS"),
   T("Seu gosto atravessa %d anos de histórias: de %d a %d.", "Jūsų skonis apima %d metų istorijų: nuo %d iki %d."),
   T("Seu mapa de gêneros", "Jūsų žanrų žemėlapis"),
   T("Seu nome para os amigos. Vazio usa o nome do perfil.", "Jūsų vardas draugams. Tuščias = profilio vardas."),
