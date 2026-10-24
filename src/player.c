@@ -2302,6 +2302,11 @@ void player_voltar_a_esperar(void) {
 int  player_pediu_faixas(void) { int v = pedFaixas; pedFaixas = 0; return v; }
 
 int  player_com_video(void) { return comVideo && !retido && video_pronto(); }
+// Tela cheia COM video (nao o trailer, nao a sessao retida, nao recuado para os
+// creditos, nao saindo). Pausado pela pessoa ainda conta. tpkluz.c (.tpk).
+int  player_video_tela_cheia(void) {
+  return aberto && !saindo && comVideo && !retido && video_pronto() && encolheT <= 0.0f;
+}
 // Para o Discord (discord.c), que so le: pausado, duracao e se e canal ao vivo.
 int   player_pausado(void) { return !tocando; }
 // Pausa DA PESSOA (tecla/botao), nunca o `tocando` espelhado do backend: no

@@ -54,6 +54,8 @@ enum {
   AP_CARTAO,       // colour test card over the video: 0 off, 1 on
   AP_SCAN,         // scan display APIs: 0 off, 1 run (an action: read-only scan, see the log page)
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
+  AP_LUZ,          // TV luminance limit test (tpkluz.c): 0 off (TV value), 1 set 0 (limit off), 2 set 1 (limit on);
+                   // only during full-screen playback, the TV's own value goes back afterwards; never kept on
   AP_N
 };
 
