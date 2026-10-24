@@ -682,6 +682,30 @@ static void scan_cfg(ScanTxt *t) {
   }
 }
 
+// ---- 5. executaveis das bin dirs: achar o daemon avoc -----------------------------
+/* So nomes (download continua restrito a "avoc" em tpkscan_lib_caminho). */
+typedef struct { ScanTxt *t; int vistos, achados; } ScanBin;
+static void bin_cada(const char *dir, const char *nome, void *u) {
+  ScanBin *sc = u;
+  char c[700];
+  struct stat st;
+  if (strstr(nome, ".so")) return;
+  snprintf(c, sizeof c, "%s/%s", dir, nome);
+  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
+  sc->vistos++;
+  if (!strstr(nome, "avoc")) return;
+  sc->achados++;
+  sl(sc->t, 1, "bin %s/%s (%ld KB) -- download: /ass-lib/%s", dir, nome, (long)(st.st_size / 1024), nome);
+}
+static void scan_bins(ScanTxt *t) {
+  static const char *const DIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
+  ScanBin sc = { t, 0, 0 };
+  int i;
+  for (i = 0; DIRS[i]; i++) listar(DIRS[i], bin_cada, &sc);
+  sl(t, 1, "bins: %d executable(s) seen, %d matching \"avoc\" (full list at http://<TV IP>:8099/ass-bin)",
+     sc.vistos, sc.achados);
+}
+
 // ---- fio ------------------------------------------------------------------------
 static int scanRodando;
 
@@ -689,6 +713,7 @@ static void *scan_fio(void *u) {
   ScanTxt *t = u;
   scan_wayland(t);
   scan_libs(t);
+  scan_bins(t);
   scan_cfg(t);
   sl(t, 1, "done: full text at http://<TV IP>:8099/ass-snap-display-scan.txt%s",
      hScanNet ? " (the .NET part follows in the log as [assperf] scan .net)" : "");
