@@ -192,6 +192,9 @@ namespace NuvioTpk
         GLWindow gl;
 #if NV_API11
         GLView glView;
+        object GlViewOuNulo() { return glView; }
+#else
+        object GlViewOuNulo() { return null; }   // GLView so existe na API11 (Exibe.cs: premult)
 #endif
         volatile bool fim;
         NuiTimer vigia, prime;
@@ -354,7 +357,7 @@ namespace NuvioTpk
             try { Apps.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }); } catch (Exception e) { Etapa("note apps-init " + e.GetType().Name); }
             Etapa("ok apps-init");
             // Testes de exibicao da folha ASS performance (Exibe.cs, src/tpkscan.c).
-            try { Exibe.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }, () => new object[] { NuiWindow.Instance, gl, glView }); }
+            try { Exibe.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }, () => new object[] { NuiWindow.Instance, gl, GlViewOuNulo() }); }
             catch (Exception e) { Etapa("note display-test-init " + e.GetType().Name); }
             NvCarga.LimparAntigos(dados);
             // Prova no log (#184): >0 = os DllImport passaram pelo resolvedor e
