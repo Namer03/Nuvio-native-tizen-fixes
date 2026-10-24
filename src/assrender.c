@@ -118,6 +118,7 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include "gfx.h"
 #include "bidi.h"
 #include "assperf.h"
+#include "assfios.h"
 /* Blur na GPU (.tpk, libass 0005): o libass entrega o nitido + a receita e o
  * fio GL borra (assgpublur.c). */
 #if defined(NV_TPK) && defined(ASS_NV_API_DEFER)
@@ -890,7 +891,13 @@ static void ass_globais_aplicar(void) {
   int f = assperf_fios();
   pthread_mutex_lock(&m);
   if (f != fiosAplicados) {
-    int got = ass_nv_set_threads(f);
+    /* Os fios do blur nascem aqui (dentro do libass) e herdam o nome de quem
+     * chama: com "nv-assblur" o "[assperf] threads" os separa da UI. */
+    char nomeAnt[16];
+    int got;
+    assfios_nome_trocar("nv-assblur", nomeAnt);
+    got = ass_nv_set_threads(f);
+    assfios_nome_voltar(nomeAnt);
     printf("[assperf] blur threads: %d%s\n", got, got != f ? " (fewer threads could be started)" : "");
     fflush(stdout);
     fiosAplicados = f;
@@ -1002,6 +1009,7 @@ static double ass_ms_entre(const struct timespec *a, const struct timespec *b) {
 
 static void *ass_worker_loop(void *unused) {
   (void)unused;
+  assfios_nomear("nv-assrender");
   for (;;) {
     AssCpuFrame frame;
     unsigned generation, serial, epoch;
@@ -1022,7 +1030,7 @@ static void *ass_worker_loop(void *unused) {
     ox = layPedX; oy = layPedY; lw = layPedW; lh = layPedH; k = layPedK;
     /* assperf: resolucao do render. O quadro sai `resol` do tamanho do alvo e
      * o desenho amplia (esc = k x resol pixels por unidade). 1 = como antes. */
-    resol = assperf_escala();
+    resol = assperf_escala_quadro();   // Auto: 75 % while heavy (assperf.c)
     lw = (int)lround((double)lw * k * resol); lh = (int)lround((double)lh * k * resol);   /* libass renderiza em pixels do alvo, nao em unidades de layout */
     if (lw < 16) lw = 16;
     if (lh < 16) lh = 16;
@@ -1123,6 +1131,7 @@ static void *ass_worker_loop(void *unused) {
     /* assperf: o render PURO (depois de pegar a trava) e a espera pela trava,
      * separados. O "[ass] 10s" de sempre continua somando os dois. */
     assperf_med_render(ass_ms_entre(&c0, &b), ass_ms_entre(&a, &c0), !igual);
+    if (pronto) assperf_escala_custo(ass_ms_entre(&c0, &b));
 
     pthread_mutex_lock(&assFilaTrava);
     { unsigned long long us = (unsigned long long)((b.tv_sec - a.tv_sec) * 1000000ll +
@@ -1531,6 +1540,9 @@ static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsig
 }
 #endif
 
+/* O que o ultimo ass_main_desenhar gastou (fio GL): para o [quadro-cpu]. */
+static double assSubUpload, assSubGpu, assSubDesenho;
+
 /* Sobe (se o quadro e novo ou a cor mudou) e desenha assMain. Fio GL. */
 static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
                              int quadroNovo) {
@@ -1540,6 +1552,8 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
   int reenviar = quadroNovo || !assMainEnviado || alfa != assMainFmt || cache != assMainCache ||
                  (!alfa && corChave != assMainCorChave);
   float kk = assMain.k > 1 ? (float)assMain.k : 1.0f, esc = assMain.esc > 0.01f ? assMain.esc : kk;
+  struct timespec tdz0, tdz1;
+  assSubUpload = assSubGpu = assSubDesenho = 0;
   assGlQuadro++;
   if (alfa != assMainFmt || cache != assMainCache) {
     /* Formato ou modo mudou no meio: nada do que esta na GPU serve. */
@@ -1578,7 +1592,11 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #if ASS_GPU
       assMainGk[i] = 0;
       if (im->gpu) {
+        struct timespec g0, g1;
+        clock_gettime(CLOCK_MONOTONIC, &g0);
         assMainTex[i] = alfa ? ass_gpu_textura(&assMain, im, &assMainGk[i], recicla, &enviados, &assMainIdx[i]) : 0;
+        clock_gettime(CLOCK_MONOTONIC, &g1);
+        assSubGpu += ass_ms_entre(&g0, &g1);
         continue;
       }
 #endif
@@ -1614,6 +1632,9 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     clock_gettime(CLOCK_MONOTONIC, &t1);
     assMainEnviado = 1; assMainCorChave = corChave;
     assperf_med_upload(ass_ms_entre(&t0, &t1), enviados, assMain.count, reusadas, quadroNovo);
+    assSubUpload = ass_ms_entre(&t0, &t1) - assSubGpu;
+    if (assSubUpload < 0) assSubUpload = 0;
+    if (quadroNovo) assperf_escala_custo_gl(ass_ms_entre(&t0, &t1));   // Render resolution Auto
   } else if (cache) {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem
      * conta quadros GL sem desenho). */
@@ -1628,6 +1649,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
    * so processa o plano de video, nunca a nossa camada. Na mesma ordem da TV:
    * o ganho do contraste antes, a curva de gama depois. */
   const double gama = assperf_gama(), contraste = assperf_contraste();
+  clock_gettime(CLOCK_MONOTONIC, &tdz0);
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
@@ -1654,6 +1676,8 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     }
   }
   gfx_tex_aspect_atual = 0.0f;
+  clock_gettime(CLOCK_MONOTONIC, &tdz1);
+  assSubDesenho = ass_ms_entre(&tdz0, &tdz1);
   return assMain.count;
 }
 
@@ -2140,6 +2164,7 @@ int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) {
 void assrender_limpar(void) {
   ass_inc_esquecer();
   assperf_faixa_ativa(0);
+  assperf_escala_reset();   // Render resolution Auto: a new track starts at 100 %
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
@@ -2351,13 +2376,13 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
  * colheita e o render normal seguem; com o video pausado nada compete.
  * "C vs NEON" faz dois passes (um renderer novo cada) e compara as imagens
  * byte a byte. Nada vai para a rede: so os eventos que ja estao no libass. */
-#define ASS_BENCH_QUADROS 240
+#define ASS_BENCH_QUADROS 360   // 15 s a 24 fps: a cena do INBOX inteira, com os letreiros recortados (25/10)
 
 typedef struct {
   double totalMs, maxMs, stageMs[8];
   unsigned quadros, comLegenda, imagens, hit[3], miss[3];
   int motor;
-  unsigned comBlur, adiados, keptBe, keptClip;   // libass 0005 (passada com o blur adiado)
+  unsigned comBlur, adiados, keptBe, keptClip, keptSmall;   // libass 0005 (passada com o blur adiado)
 } AssBenchRes;
 
 typedef struct { int modo; long long fim; unsigned geracao; } AssBenchPed;
@@ -2402,7 +2427,7 @@ static int ass_bench_passe(int simd, int adiar, const AssBenchPed *pd, unsigned 
                            AssBenchRes *res, char *motivo, size_t nm) {
   ASS_Renderer *r;
   unsigned fontes;
-  long long ini = pd->fim - 10000;
+  long long ini = pd->fim - 15000;
   int i, ok = 1;
   memset(res, 0, sizeof *res);
   if (ini < 0) ini = 0;
@@ -2418,6 +2443,9 @@ static int ass_bench_passe(int simd, int adiar, const AssBenchPed *pd, unsigned 
   res->motor = ass_nv_set_engine(r, simd);
 #if ASS_GPU
   ass_nv_set_deferred_blur(r, adiar);
+  /* O mesmo "GPU blur from size" do play (25/10: o bench mandava tudo a GPU
+   * qualquer que fosse a opcao, e os quatro valores davam o mesmo numero). */
+  if (adiar) ass_nv_set_deferred_min_area(r, (int)assperf_gpu_min());
 #else
   (void)adiar;
 #endif
@@ -2462,7 +2490,7 @@ static int ass_bench_passe(int simd, int adiar, const AssBenchPed *pd, unsigned 
 #if ASS_GPU
   { ASS_NvDeferStats ds;
     ass_nv_defer_stats_take(r, &ds);
-    res->comBlur = ds.blurred; res->adiados = ds.deferred; res->keptBe = ds.kept_be; res->keptClip = ds.kept_clip; }
+    res->comBlur = ds.blurred; res->adiados = ds.deferred; res->keptBe = ds.kept_be; res->keptClip = ds.kept_clip; res->keptSmall = ds.kept_small; }
 #endif
   ass_renderer_done(r);
   pthread_mutex_unlock(&assTrava);
@@ -2491,7 +2519,7 @@ static void *ass_bench_fio(void *u) {
   unsigned long long *hc = NULL, *hn = NULL;
   char motivo[120] = "", resumo[160];
   int okC = 0, okN = 0, simd = assperf_get(AP_MOTOR) ? 1 : 0, w, h;
-  long long ini = pd.fim - 10000 < 0 ? 0 : pd.fim - 10000;
+  long long ini = pd.fim - 15000 < 0 ? 0 : pd.fim - 15000;
   free(u);
   ass_globais_aplicar();   // os fios do blur da folha valem para este bench, mesmo pausado
   pthread_mutex_lock(&assTrava);
@@ -2558,10 +2586,10 @@ static void *ass_bench_fio(void *u) {
         if (ass_bench_passe(simd, 1, &pd, NULL, &rg, motivo, sizeof motivo)) {
           ass_bench_logar("blur deferred to the GPU (libass part only)", &rg);
           printf("[assperf] bench blur on GPU: libass %.1f ms/frame avg, max %.1f (CPU blur: %.1f avg, max %.1f)"
-                 " | composites with blur %u: to GPU %u, kept on CPU for \\be %u, vector clip %u"
+                 " | composites with blur %u: to GPU %u, kept on CPU for \\be %u, vector clip %u, size %u (GPU blur from %ld px)"
                  " | GPU time: see [assperf] gpu blur while playing\n",
                  rg.totalMs / ASS_BENCH_QUADROS, rg.maxMs, rn.totalMs / ASS_BENCH_QUADROS, rn.maxMs,
-                 rg.comBlur, rg.adiados, rg.keptBe, rg.keptClip);
+                 rg.comBlur, rg.adiados, rg.keptBe, rg.keptClip, rg.keptSmall, assperf_gpu_min());
           snprintf(resumo, sizeof resumo, "Bench: CPU blur %.1f ms/frame (max %.0f) \xc2\xb7 blur on GPU: libass %.1f (max %.0f)",
                    rn.totalMs / ASS_BENCH_QUADROS, rn.maxMs, rg.totalMs / ASS_BENCH_QUADROS, rg.maxMs);
         }
@@ -2606,247 +2634,6 @@ static void ass_bench_talvez(long long agora, unsigned geracao) {
 }
 #endif
 
-#if defined(NV_TPK) && defined(ASS_NV_API)
-/* ===== assperf: ASS SNAPSHOT (TPK) ==========================================
- * Na folha, "ASS snapshot -> Take now" com o video pausado no quadro errado:
- *  1. texto no log ([assperf] snap ...): o cabecalho do script (PlayRes,
- *     YCbCr Matrix, ScaledBorderAndShadow), o que a folha Estilo do player
- *     pede, as linhas ativas naquele instante (texto inteiro) com o estilo e as
- *     cores de cada uma, e as imagens que o libass entregou (cor, alfa,
- *     tamanho, cobertura);
- *  2. no fio GL, logo depois das legendas: a media do que o app pintou e,
- *     com o blur na GPU, a diferenca dele para o blur exato do libass.
- * So vai para o log (aba Subtitles); nenhum arquivo, nada vai para a rede. */
-#define SNAP_W 960
-#define SNAP_H 540
-
-/* Texto do snapshot: um buffer que cresce, uma linha "[assperf] snap" cada. */
-typedef struct { char *b; size_t n, cap; } SnapTxt;
-static void snap_linha(SnapTxt *t, const char *fmt, ...) {
-  char l[1400];
-  va_list va;
-  int k;
-  va_start(va, fmt);
-  k = vsnprintf(l, sizeof l, fmt, va);
-  va_end(va);
-  if (k < 0) return;
-  if ((size_t)k >= sizeof l) k = (int)sizeof l - 1;
-  printf("[assperf] snap %s\n", l);
-  if (t->n + (size_t)k + 2 > t->cap) {
-    size_t nc = (t->cap ? t->cap * 2 : 16384) + (size_t)k;
-    char *nb = realloc(t->b, nc);
-    if (!nb) return;
-    t->b = nb; t->cap = nc;
-  }
-  memcpy(t->b + t->n, l, (size_t)k); t->n += (size_t)k; t->b[t->n++] = '\n';
-}
-
-static const char *snap_matriz(int m) {
-  static const char *nomes[] = { "missing", "unknown", "None", "TV.601", "PC.601", "TV.709", "PC.709",
-                                 "TV.240M", "PC.240M", "TV.FCC", "PC.FCC" };
-  return m >= 0 && m < (int)(sizeof nomes / sizeof nomes[0]) ? nomes[m] : "?";
-}
-
-typedef struct { long long t; unsigned geracao; } AssSnapPed;
-static int assSnapTela;   // fio GL: ler a tela no proximo quadro desenhado
-
-static void *ass_snap_fio(void *u) {
-  AssSnapPed pd = *(AssSnapPed *)u;
-  SnapTxt tx = { NULL, 0, 0 };
-  ASS_Renderer *r = NULL;
-  ASS_Image *img, *it;
-  int fw = 0, fh = 0, i, nimg = 0, ativos = 0;
-  free(u);
-  pthread_mutex_lock(&assTrava);
-  if (!assLib || !assRenderer || !assTrack || pd.geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE) ||
-      assTrackGeracao != pd.geracao || layAplW <= 0) {
-    pthread_mutex_unlock(&assTrava);
-    printf("[assperf] snap: no ASS track drawing\n"); fflush(stdout);
-    assperf_bench_estado(0, "Snapshot: no ASS track drawing");
-    return NULL;
-  }
-  snap_linha(&tx, "at %.3f s | frame %dx%d storage %dx%d font scale %.3f | PlayRes %dx%d | LayoutRes %dx%d | "
-             "YCbCr Matrix %s | ScaledBorderAndShadow %d | WrapStyle %d | Kerning %d | %d events, %d styles in libass",
-             pd.t / 1000.0, layAplW, layAplH, layAplVW, layAplVH, layAplEscala,
-             assTrack->PlayResX, assTrack->PlayResY, assTrack->LayoutResX, assTrack->LayoutResY,
-             snap_matriz((int)assTrack->YCbCrMatrix), assTrack->ScaledBorderAndShadow, assTrack->WrapStyle,
-             assTrack->Kerning, assTrack->n_events, assTrack->n_styles);
-  snap_linha(&tx, "player style: your-style option=%s | plain text track=%d | Style sheet overrides bits=0x%x "
-             "(1 colour 2 font 4 outline colour 8 border 16 box 32 position 64 bold) applied=%d colour=%06x outline=%06x "
-             "border=%d box=%d bold=%d font=%s",
-             assperf_get(AP_ESTILO) ? "Ignored" : "Applies", assTextoSimples, plainPedValido ? plainPed.overrides : 0,
-             plainAplValido ? plainApl.overrides : 0, plainPed.rgb, plainPed.outlineRgb, plainPed.border,
-             plainPed.background, plainPed.bold, plainPed.font);
-  { int usados[512] = { 0 }, nu = 0;
-    for (i = 0; i < assTrack->n_events; i++) {
-      const ASS_Event *e = &assTrack->events[i];
-      if (e->Start > pd.t || e->Start + e->Duration <= pd.t) continue;
-      ativos++;
-      if (ativos <= 150)
-        snap_linha(&tx, "event %d: layer %d %.3f-%.3f style=%s effect=%s | %.1100s", i, e->Layer,
-                   e->Start / 1000.0, (e->Start + e->Duration) / 1000.0,
-                   e->Style >= 0 && e->Style < assTrack->n_styles && assTrack->styles[e->Style].Name ? assTrack->styles[e->Style].Name : "?",
-                   e->Effect ? e->Effect : "", e->Text ? e->Text : "");
-      if (e->Style >= 0 && e->Style < assTrack->n_styles && nu < 512) {
-        int k, novo = 1;
-        for (k = 0; k < nu; k++) if (usados[k] == e->Style) novo = 0;
-        if (novo) usados[nu++] = e->Style;
-      }
-    }
-    for (i = 0; i < nu; i++) {
-      const ASS_Style *s = &assTrack->styles[usados[i]];
-      snap_linha(&tx, "style %s: font=%s size=%.1f primary=%08X secondary=%08X outline=%08X back=%08X "
-                 "bold=%d borderstyle=%d outline=%.2f shadow=%.2f scale=%.0f/%.0f align=%d margins=%d/%d/%d blur=%.2f",
-                 s->Name ? s->Name : "?", s->FontName ? s->FontName : "?", s->FontSize,
-                 s->PrimaryColour, s->SecondaryColour, s->OutlineColour, s->BackColour,
-                 s->Bold, s->BorderStyle, s->Outline, s->Shadow, s->ScaleX * 100, s->ScaleY * 100,
-                 s->Alignment, s->MarginL, s->MarginR, s->MarginV, s->Blur);
-    } }
-  snap_linha(&tx, "%d event(s) active (the first 150 listed)", ativos);
-
-  r = ass_renderer_igual_locked();
-  fw = layAplW; fh = layAplH;
-  img = r ? ass_render_frame(r, assTrack, pd.t, NULL) : NULL;
-  pthread_mutex_unlock(&assTrava);
-
-  /* As imagens sao do renderer do snapshot: validas ate o ass_renderer_done. */
-  {
-    for (it = img; it; it = it->next) {
-      unsigned cr = it->color >> 24, cg = (it->color >> 16) & 255, cb = (it->color >> 8) & 255;
-      unsigned op = 255u - (it->color & 255u);
-      long cheio = 0, cobre = 0;
-      int x, y, maxA = 0;
-      for (y = 0; y < it->h; y++) {
-        int py = it->dst_y + y;
-        const unsigned char *src = it->bitmap + (size_t)y * (size_t)it->stride;
-        if (py < 0 || py >= fh) continue;
-        for (x = 0; x < it->w; x++) {
-          if (src[x] > maxA) maxA = src[x];
-          if (src[x]) cobre++;
-          if (src[x] >= 250) cheio++;
-        }
-      }
-      nimg++;
-      if (nimg <= 80 || (long)it->w * it->h > 200000)
-        snap_linha(&tx, "image %d: %s colour=%02X%02X%02X alpha=%u (ASS &H%02X) at %d,%d %dx%d max=%d covered=%ld full(>=250)=%ld",
-                   nimg, it->type == IMAGE_TYPE_CHARACTER ? "fill" : it->type == IMAGE_TYPE_OUTLINE ? "outline" : "shadow",
-                   cr, cg, cb, op, it->color & 255u, it->dst_x, it->dst_y, it->w, it->h, maxA, cobre, cheio);
-    }
-  }
-  snap_linha(&tx, "%d image(s) from libass (%dx%d frame)", nimg, fw, fh);
-  if (r) { pthread_mutex_lock(&assTrava); ass_renderer_done(r); pthread_mutex_unlock(&assTrava); }
-  free(tx.b);
-  fflush(stdout);
-  __atomic_store_n(&assSnapTela, 1, __ATOMIC_RELEASE);
-  assperf_bench_estado(0, "Snapshot taken: see the Subtitles log");
-  return NULL;
-}
-
-/* Fio GL: a chave virou "Take now" -> volta a Off e o snapshot sai num fio. */
-static void ass_snap_talvez(long long agora, unsigned geracao) {
-  pthread_t fio;
-  AssSnapPed *pd;
-  if (!assperf_get(AP_SNAP)) return;
-  assperf_definir(AP_SNAP, 0);
-  pd = malloc(sizeof *pd);
-  if (!pd) return;
-  pd->t = agora < 0 ? 0 : agora; pd->geracao = geracao;
-  if (pthread_create(&fio, NULL, ass_snap_fio, pd) != 0) { free(pd); return; }
-  pthread_detach(fio);
-}
-
-#if ASS_GPU
-/* Snapshot, fio GL: cada imagem adiada do quadro em tela, a da GPU contra a
- * receita na CPU (o desenho exato do libass). Diferenca em niveis de alfa
- * (0..255) e a figura da maior: CPU | GPU | diferenca x8. */
-static void ass_snap_gpublur(void) {
-  int i, n = 0, maior = -1, maxD = 0;
-  double soma = 0, px = 0, acima2 = 0, acima8 = 0;
-  long area = 0;
-  for (i = 0; i < assMain.count; i++) {
-    const AssCpuImage *im = &assMain.images[i];
-    unsigned char *a, *b;
-    ASS_NvDefer d;
-    int k, dImg = 0;
-    if (!im->gpu || !assMainTex || !assMainTex[i] || !assMainGk || !assMainGk[i]) continue;
-    a = malloc((size_t)im->w * (size_t)im->h);
-    b = malloc((size_t)im->w * (size_t)im->h);
-    ass_gpu_receita(&assMain, im, &d);
-    if (!a || !b || !ass_nv_defer_apply(&d, im->w, im->h, a, im->w) ||
-        !assgpublur_ler(assMainTex[i], im->w, im->h, b)) { free(a); free(b); continue; }
-    for (k = 0; k < im->w * im->h; k++) {
-      int df = a[k] > b[k] ? a[k] - b[k] : b[k] - a[k];
-      soma += df; px++;
-      if (df > 2) acima2++;
-      if (df > 8) acima8++;
-      if (df > dImg) dImg = df;
-    }
-    if (dImg > maxD) maxD = dImg;
-    n++;
-    if ((long)im->w * im->h > area) { area = (long)im->w * im->h; maior = i; }
-    free(a); free(b);
-  }
-  if (n)
-    printf("[assperf] snap gpu blur vs libass CPU: %d image(s), %.0f pixels | max difference %d | mean %.2f"
-           " | pixels off by more than 2: %.2f%%, more than 8: %.3f%% (alpha levels 0-255, %s) | largest: image %d\n",
-           n, px, maxD, px > 0 ? soma / px : 0.0, px > 0 ? 100.0 * acima2 / px : 0.0, px > 0 ? 100.0 * acima8 / px : 0.0,
-           assgpublur_formato(), maior + 1);
-  else
-    printf("[assperf] snap gpu blur: no image on screen came from the GPU blur (Blur on GPU %s)\n",
-           assperf_get(AP_GPUBLUR) ? "on" : "off");
-  fflush(stdout);
-}
-#endif
-
-/* Fio GL, logo depois das legendas: le o que foi pintado (snapshot). */
-static void ass_snap_ler_tela(void) {
-  GLint vp[4];
-  int w, h, y0, x, y;
-  unsigned char *faixa;
-  double soma[4] = { 0 };
-  if (!__atomic_exchange_n(&assSnapTela, 0, __ATOMIC_ACQ_REL)) return;
-  glGetIntegerv(GL_VIEWPORT, vp);
-  w = vp[2]; h = vp[3];
-  if (w <= 0 || h <= 0) return;
-  faixa = malloc((size_t)w * 4 * 16);
-  if (!faixa) return;
-  for (y = 0; y < SNAP_H; y++) {
-    /* a linha y da figura (de cima) e a linha h-1-sy do GL (de baixo) */
-    int sy = y * h / SNAP_H;
-    y0 = h - 1 - sy;
-    glReadPixels(vp[0], vp[1] + y0, w, 1, GL_RGBA, GL_UNSIGNED_BYTE, faixa);
-    for (x = 0; x < SNAP_W; x++) {
-      const unsigned char *s = faixa + 4 * (size_t)(x * w / SNAP_W);
-      soma[0] += s[0]; soma[1] += s[1]; soma[2] += s[2]; soma[3] += s[3];
-    }
-  }
-#if ASS_GPU
-  ass_snap_gpublur();
-#endif
-  printf("[assperf] snap screen: %dx%d framebuffer read after the subtitles | average R %.0f G %.0f B %.0f alpha %.0f"
-         " | gl error 0x%x\n", w, h, soma[0] / (SNAP_W * SNAP_H), soma[1] / (SNAP_W * SNAP_H),
-         soma[2] / (SNAP_W * SNAP_H), soma[3] / (SNAP_W * SNAP_H), (unsigned)glGetError());
-  fflush(stdout);
-  free(faixa);
-}
-
-/* Cartao de teste de cor: branco 100/90/75/50 %, branco a 50 % de alfa,
- * cinza 25 % e preto, 120x120 cada, no alto da tela, pelo mesmo blending das
- * legendas. Num quadro preto o 5o tem de igualar o 4o; igual ao 6o (25 %) =
- * a borda suave multiplicada pelo alfa duas vezes (contorno das mascaras). */
-static void ass_cartao_desenhar(void) {
-  static const float cor[7][4] = {
-    { 1, 1, 1, 1 }, { .9f, .9f, .9f, 1 }, { .75f, .75f, .75f, 1 }, { .5f, .5f, .5f, 1 }, { 1, 1, 1, .5f },
-    { .25f, .25f, .25f, 1 }, { 0, 0, 0, 1 }
-  };
-  int i;
-  if (!assperf_get(AP_CARTAO)) return;
-  gfx_tex_aspect_atual = 0.0f;
-  for (i = 0; i < 7; i++)
-    gfx_rect((GfxRect){ 600.0f + i * 130.0f, 40.0f, 120.0f, 120.0f }, 0, GFX_COR, 0, 0, 0, 0.0f,
-             cor[i][0], cor[i][1], cor[i][2], cor[i][3]);
-}
-#endif
 
 /* assperf (render ahead): estado do fio GL. */
 static double assAdianteEma;          // ms; "Auto"
@@ -2862,6 +2649,8 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   long long agora, pedido;
   AssCpuFrame novo;
   struct timespec td0, td1;
+  int subNovo = 0;          // o caminho novo desenhou (os tempos assSub* sao deste quadro)
+  double subAdiante = 0;    // pre-blur deste quadro (ms)
   (void)w; (void)h;
   if (alpha <= 0.001f) return 0;
   clock_gettime(CLOCK_MONOTONIC, &td0);
@@ -2871,7 +2660,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
 #if defined(NV_TPK) && defined(ASS_NV_API)
   ass_globais_aplicar();   // fios do blur: na hora, mesmo pausado
   ass_bench_talvez(agora, generation);
-  ass_snap_talvez(agora, generation);
 #endif
   /* assperf: caminho de desenho novo (qualquer chave de upload ligada) e
    * render ahead. Tudo em "old": o mesmo de sempre, linha por linha. */
@@ -2978,7 +2766,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     if (!assAtualValido) {
       ass_medir_locked(agora, 0, -1);
       pthread_mutex_unlock(&assFilaTrava);
-      assperf_med_tick();
+      if (assperf_med_tick()) assfios_relatorio();
       return 0;
     }
     corChave = assCorAtiva ? (int)(((unsigned)assCorR << 16) | ((unsigned)assCorG << 8) | (unsigned)assCorB) : -1;
@@ -3035,6 +2823,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       struct timespec tu0, tu1;
       clock_gettime(CLOCK_MONOTONIC, &tu0);
       n = ass_main_desenhar(x, y, alpha, corAtiva, cr, cg, cb, quadroNovo);
+      subNovo = 1;
       clock_gettime(CLOCK_MONOTONIC, &tu1);
       if (quadroNovo) assUploadEma = assUploadEma * 0.9 + ass_ms_entre(&tu0, &tu1) * 0.1;
     }
@@ -3042,7 +2831,11 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     inicioMax = assMainValido ? assMain.inicioMax : -1;
     if (foraTrava) pthread_mutex_lock(&assFilaTrava);
 #if ASS_GPU
-    ass_gpu_adiantar_locked();
+    { struct timespec a0, a1;
+      clock_gettime(CLOCK_MONOTONIC, &a0);
+      ass_gpu_adiantar_locked();
+      clock_gettime(CLOCK_MONOTONIC, &a1);
+      subAdiante = ass_ms_entre(&a0, &a1); }
 #endif
     ass_medir_locked(agora, temTexto, inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
@@ -3057,18 +2850,32 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     pthread_mutex_lock(&assFilaTrava);
     for (k = 0; k < assFilaN && !fila; k++) fila = assFila[k].count > 0;
     pthread_mutex_unlock(&assFilaTrava);
-    if (n > 0 || fila || assperf_get(AP_CARTAO) || (prox != LLONG_MAX && prox >= agora && prox - agora <= 200)) {
+    if (n > 0 || fila || (prox != LLONG_MAX && prox >= agora && prox - agora <= 200)) {
       Uint32 tk = SDL_GetTicks();
       __atomic_store_n(&assBordaQuerTick, tk ? tk : 1u, __ATOMIC_RELEASE);
     } }
 #endif
-#if defined(NV_TPK) && defined(ASS_NV_API)
-  ass_cartao_desenhar();
-  ass_snap_ler_tela();
-#endif
   clock_gettime(CLOCK_MONOTONIC, &td1);
   assperf_med_quadro(ass_ms_entre(&td0, &td1));
-  assperf_med_tick();
+  { AssperfSub sb;
+    sb.total = ass_ms_entre(&td0, &td1); sb.n = 1;
+    sb.upload = subNovo ? assSubUpload : 0; sb.gpu = subNovo ? assSubGpu : 0;
+    sb.desenho = subNovo ? assSubDesenho : 0; sb.adiante = subAdiante;
+    assperf_sub_somar(&sb); }
+#if ASS_GPU
+  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) {
+    AgbPassos ps; AssperfGpuPassos gp;
+    assgpublur_passos(&ps);
+    if (ps.lotes || ps.qEmit || ps.qLidas || ps.qDisj) {
+      gp.lotes = ps.lotes; gp.lotesTrab = ps.lotesTrab; gp.envios = ps.envios; gp.passadas = ps.passadas; gp.finais = ps.finais;
+      gp.salvar = ps.salvar; gp.envio = ps.envio; gp.passadasMs = ps.passadasMs; gp.finalMs = ps.finalMs;
+      gp.restaurar = ps.restaurar; gp.loteMs = ps.loteMs; gp.loteMax = ps.loteMax;
+      gp.qEmit = ps.qEmit; gp.qLidas = ps.qLidas; gp.qDisj = ps.qDisj; gp.qPend = ps.qPend; gp.qModo = ps.qModo;
+      assperf_med_gpupassos(&gp);
+    }
+  }
+#endif
+  if (assperf_med_tick()) assfios_relatorio();
   return n;
 }
 

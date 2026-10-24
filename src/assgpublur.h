@@ -56,6 +56,15 @@ void assgpublur_usar(unsigned long long chave, unsigned quadro);
 // Le o alfa de uma textura final (snapshot). 1 = ok.
 int  assgpublur_ler(GLuint tex, int w, int h, unsigned char *alfa);
 void assgpublur_stats(AgbStats *out);   // copia e zera
+// Para onde vai o tempo de um lote no fio GL (relogio da CPU, nao da GPU) e o
+// estado das consultas de tempo da GPU. Copia e zera.
+typedef struct {
+  unsigned lotes, lotesTrab, envios, passadas, finais;
+  double salvar, envio, passadasMs, finalMs, restaurar, loteMs, loteMax;
+  unsigned qEmit, qLidas, qDisj, qPend;
+  int qModo;             // 0 sem medida, 1 consultas, 2 glFinish em 1 lote de 16 (as consultas nunca responderam)
+} AgbPassos;
+void assgpublur_passos(AgbPassos *out);
 // Custo esperado de um gaussiano novo deste tamanho na GPU (ms, medido).
 double assgpublur_custo(long area);
 void assgpublur_apagar(void);           // solta tudo da GPU (troca de faixa)

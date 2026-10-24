@@ -72,6 +72,10 @@
 #include "androidcache.h"
 #include "negcache.h"
 #include "p2pmotor.h"
+#ifdef NV_TPK
+#include "assperf.h"
+#include "assfios.h"
+#endif
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -1823,6 +1827,13 @@ int main(int argc, char **argv) {
   const char *fTela = "?", *pTela = "?", *fTrans = "-", *pTrans = "-";   // tela/transicao do quadro
   double fGfxMs=0, fTexMs=0, fOutMs=0; int fNRect=0, fNProg=0, fNBind=0, fNBusca=0, fNOut=0;
   double pGfxMs=0, pTexMs=0, pOutMs=0; int pNRect=0, pNProg=0, pNBind=0, pNBusca=0, pNOut=0;
+#ifdef NV_TPK
+  // [quadro-cpu] (dono 25/10): o fio da UI num nucleo / esperando um nucleo no
+  // quadro, e o que as legendas gastaram dentro do `des` (assperf_sub_*).
+  double fUiCpu = 0, fUiEsp = -1, pUiCpu = 0, pUiEsp = -1;
+  AssperfSub fSub, pSub;
+  memset(&fSub, 0, sizeof fSub); memset(&pSub, 0, sizeof pSub);
+#endif
 #define NV_T0() (SDL_GetPerformanceCounter())
 #define NV_DT(a) ((SDL_GetPerformanceCounter() - (a)) * 1000.0 / perFreq)
 
@@ -2098,7 +2109,16 @@ int main(int argc, char **argv) {
     float dt = (float)(dtAnim / 1000.0);
     // Ignore startup only, not the first 21 frames of every sample: at 5 fps
     // a three-second window has only 15 frames and otherwise reports 0 ms.
+#ifdef NV_TPK
+    // O quadro que acabou (o mesmo intervalo de dtms): CPU e espera do fio da
+    // UI e o que as legendas gastaram nele.
+    assfios_ui_quadro(&fUiCpu, &fUiEsp);
+    assperf_sub_tomar(&fSub);
+#endif
     if (nvPrimeiroQuadroFeito) {
+#ifdef NV_TPK
+      if (dtms > pior) { pUiCpu = fUiCpu; pUiEsp = fUiEsp; pSub = fSub; }
+#endif
       if (dtms > pior) { pior = dtms; piorTxtMs = txtMsQuadro; piorTxtN = txtNQuadro;
                          pEv=fEv; pBomb=fBomb; pUpd=fUpd; pDes=fDes; pSwap=fSwap; pAux=fAux; pClr=fClr; pPrep=fPrep; pGlClr=fGlClr;
                          pUplN=fUplN; pUplB=fUplB;
@@ -2541,6 +2561,21 @@ int main(int argc, char **argv) {
         // -DNV_PERF_FINO; as contagens e o `out` existem sempre)
         printf("[quadro-des] rects=%d(p%d,b%d) out=%.1fms/%d fill=%.2fx cheias=%d texto=%.1fms/%d tela=%s trans=%s\n",
                pNRect, pNProg, pNBind, pOutMs, pNOut, pFill, pNCheio, piorTxtMs, piorTxtN, pTela, pTrans);
+#ifdef NV_TPK
+        // Onde foi o tempo do pior quadro: o fio da UI num nucleo, esperando um
+        // nucleo (perdeu a CPU para outros fios) ou parado (vsync, driver,
+        // trava); e dentro do `des`, quanto foi das legendas (libass).
+        if (pUiEsp >= 0 || pSub.n) {
+          char esp[24];
+          if (pUiEsp >= 0) snprintf(esp, sizeof esp, "%.1f", pUiEsp); else snprintf(esp, sizeof esp, "n/a");
+          printf("[quadro-cpu] frame %.1f ms: UI thread on a core %.1f, waiting for a core %s, asleep or blocked %.1f"
+                 " (vsync included) | draw phase %.1f = subtitles %.1f (upload %.1f, GPU blur %.1f, draw calls %.1f,"
+                 " pre-blur %.1f, other %.1f) + rest of the UI %.1f\n",
+                 pior, pUiCpu, esp, pior - pUiCpu - (pUiEsp > 0 ? pUiEsp : 0), pDes, pSub.total, pSub.upload, pSub.gpu,
+                 pSub.desenho, pSub.adiante, pSub.total - pSub.upload - pSub.gpu - pSub.desenho - pSub.adiante,
+                 pDes - pSub.total);
+        }
+#endif
       }
       // Instrumento de campo (gfx.h, gfx_modos_desligados): a lista em
       // /tmp/nuvio-gfx-off desliga modos de desenho; e o preenchimento do
@@ -2649,6 +2684,9 @@ int main(int argc, char **argv) {
       pEv=pBomb=pUpd=pDes=pSwap=pAux=pClr=0;
       pUplN=0; pUplB=0;
       pGfxMs=pTexMs=pOutMs=0; pNRect=pNProg=pNBind=pNBusca=pNOut=0; pFill=0; pNCheio=0;
+#ifdef NV_TPK
+      pUiCpu = 0; pUiEsp = -1; memset(&pSub, 0, sizeof pSub);
+#endif
     }
   }
 

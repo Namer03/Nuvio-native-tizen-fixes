@@ -144,6 +144,22 @@ static atomic_uint consultaLentaEm;
 static int reconPausa = -1;
 // Seek enviado sem confirmacao do host: a recuperacao retoma nele.
 static atomic_int buscaAlvoMs = -1;
+// ---- RELOGIO DA LEGENDA (dono 25/10) ------------------------------------------
+// Leituras reais da posicao, carimbadas pelo host no MEIO da consulta
+// (nv_tpk_video_posicao). Antes: depois de um seek o host guardava o ALVO como
+// posicao (a TV pula para o quadro-chave, 6,3 s antes no log de 25/10) e na
+// pausa nao relia nada; a legenda corria segundos a frente (letreiros do
+// celular no bone da menina, a caixa do INBOX fora do celular).
+static pthread_mutex_t amTrava = PTHREAD_MUTEX_INITIALIZER;
+static struct { unsigned seq; int valido, ms; double carimbo, incerteza; } am;
+static atomic_int posIncerta;          // 1 = seek feito, ainda sem leitura real
+static atomic_uint incertaTick;        // SDL_GetTicks do seek (1,5 s no maximo)
+static atomic_int buscaPedidaMs = -1;  // o alvo do ultimo seek (para o log)
+static struct { unsigned n; double soma, max; int relogioRuim; } amMed;   // sob amTrava
+static double monoAgora(void) {
+  struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
 static int reconAlvoMs = -1;
 
 // CABECALHO DO MKV (#206). O player do host so da o idioma de cada faixa; o
@@ -249,6 +265,37 @@ void nv_tpk_video_registrar_faixas(FnEscolher escolher) { hEscolher = escolher; 
 
 __attribute__((visibility("default")))
 void nv_tpk_video_registrar_aspecto(FnAspecto janela) { hAspecto = janela; }
+
+/* Host (qualquer fio): uma leitura real da posicao. motivo 0 = a consulta de
+ * sempre (tocando), 1 = logo depois de um seek, 2 = logo depois da pausa,
+ * 3 = a pausa assentou (~300 ms depois). carimboNs = o meio da consulta no
+ * Stopwatch do .NET, que no Linux e o CLOCK_MONOTONIC em ns. */
+__attribute__((visibility("default")))
+void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboNs) {
+  double agora = monoAgora(), c = (double)carimboNs / 1e9, inc = consultaMs > 0 ? consultaMs / 2000.0 : 0.0;
+  int msAnt, ruim = 0;
+  if (!ativo || ms < 0) return;
+  if (c > agora + 0.05 || c < agora - 10.0) { c = agora - inc; ruim = 1; }   // relogio diferente: o fim menos meia consulta
+  pthread_mutex_lock(&amTrava);
+  msAnt = am.valido ? am.ms : -1;
+  am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
+  amMed.n++; amMed.soma += consultaMs; if (consultaMs > amMed.max) amMed.max = consultaMs;
+  if (ruim && !amMed.relogioRuim) { amMed.relogioRuim = 1; ruim = 2; }
+  pthread_mutex_unlock(&amTrava);
+  if (ruim == 2) printf("[relogio] host stamp is not on this clock (%.3f vs %.3f s): using arrival time\n", c, agora);
+  if (motivo == 1 || (motivo == 0 && atomic_load(&posIncerta))) {
+    int alvo = atomic_load(&buscaPedidaMs);
+    if (atomic_exchange(&posIncerta, 0) && alvo >= 0)
+      printf("[relogio] seek: asked %.2f s, the TV landed at %.2f s (%+.2f s), read in %d ms\n",
+             alvo / 1000.0, ms / 1000.0, (ms - alvo) / 1000.0, consultaMs);
+  } else if (motivo == 2 && msAnt >= 0) {
+    printf("[relogio] pause: subtitles were at the last reading %.3f s, the TV paused at %.3f s (%+.0f ms), read in %d ms\n",
+           msAnt / 1000.0, ms / 1000.0, (double)(ms - msAnt), consultaMs);
+  } else if (motivo == 3 && msAnt >= 0 && abs(ms - msAnt) >= 20) {
+    printf("[relogio] pause settled at %.3f s (%+d ms after the first reading)\n", ms / 1000.0, ms - msAnt);
+  }
+  if (motivo) fflush(stdout);
+}
 
 void video_escolher_audio(int i);
 
@@ -441,7 +488,11 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
       break;
     }
     case EV_BUSCOU:
-      atomic_compare_exchange_strong(&buscaAlvoMs, &a, -1);
+      { int alvo = a; atomic_compare_exchange_strong(&buscaAlvoMs, &alvo, -1); }
+      // O host so sabe o ALVO aqui; onde a TV caiu chega pela proxima leitura.
+      atomic_store(&buscaPedidaMs, a);
+      atomic_store(&incertaTick, SDL_GetTicks() | 1u);
+      atomic_store(&posIncerta, 1);
       break;
     case EV_CONSULTA_LENTA: atomic_store(&consultaLentaEm, SDL_GetTicks() | 1u); break;
     case EV_PRONTO:  durMs = a; pronto = 1; break;
@@ -778,6 +829,8 @@ static void abrirSessao(void) {
   mkvass_aceitar_imagem(1);   // PGS: o app decodifica e desenha (imgsub)
   atomic_store(&temErroDetalhe, 0);
   vigiaAtiva = 0; buscaAlvoMs = -1;
+  pthread_mutex_lock(&amTrava); am.valido = 0; pthread_mutex_unlock(&amTrava);   // seq continua: o player compara
+  atomic_store(&posIncerta, 0); atomic_store(&buscaPedidaMs, -1);
   atomic_store(&vigiaReiniciar, 1);
   ativo = 1; pronto = falhou = terminou = tocando = 0;
   largura = altura = durMs = 0; bufferando = 1; bufferDesde = SDL_GetTicks(); bufPct = 0;
@@ -2061,6 +2114,30 @@ int video_busca_em_voo(void) {
          (cv.ativo && cv.seekPend) || mf.pend;
 }
 unsigned video_busca_falhas(void) { return atomic_load(&buscaFalhas); }
+int video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned *seq) {
+  int ms; unsigned sq;
+  if (!pronto || cv.reabrindo || (cv.ativo && cv.prog && !cv.deslocOk)) return 0;
+  pthread_mutex_lock(&amTrava);
+  sq = am.valido ? am.seq : 0; ms = am.ms; *carimbo = am.carimbo; *incerteza = am.incerteza;
+  pthread_mutex_unlock(&amTrava);
+  if (!sq) return 0;
+  *pos = ms / 1000.0 + (cv.ativo && cv.prog ? cv.desloc : 0.0);
+  *seq = sq;
+  return 1;
+}
+int video_pos_incerta(void) {
+  if (!atomic_load(&posIncerta)) return 0;
+  // Sem leitura em 1,5 s (consulta presa): volta ao de antes em vez de esconder.
+  if (SDL_GetTicks() - atomic_load(&incertaTick) > 1500u) { atomic_store(&posIncerta, 0); return 0; }
+  return 1;
+}
+/* Para a linha [relogio] de 10 s: leituras, tempo medio e maximo da consulta. */
+void video_tpk_leituras(unsigned *n, double *media, double *max) {
+  pthread_mutex_lock(&amTrava);
+  *n = amMed.n; *media = amMed.n ? amMed.soma / amMed.n : 0.0; *max = amMed.max;
+  amMed.n = 0; amMed.soma = 0; amMed.max = 0;
+  pthread_mutex_unlock(&amTrava);
+}
 double video_pos(void) {
   if (terminou && video_duracao() > 0) return video_duracao();
   return cv.reabrindo ? cv.posMantida : posReal();

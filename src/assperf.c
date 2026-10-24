@@ -46,7 +46,7 @@ static const ApDef DEF[AP_N] = {
     1, 1, 2, { "Full reparse (old)", "New lines only" }, 1 },
   [AP_PODA] = { "poda", "Drop past events",
     "With new-lines loading, events that ended this long before the playhead leave libass memory.",
-    2, 2, 4, { "Off", "30 s", "2 min", "5 min" } },
+    2, 2, 4, { "Off", "30 s", "2 min", "5 min" }, 1 },
   [AP_ADIANTE] = { "adiante", "Render ahead",
     "Renders the moment the frame will actually be on screen. 100 ms (tested 24/10) also gives the GPU blur time to prepare queued frames.",
     3, 3, 6, { "Off (old)", "Auto", "50 ms", "100 ms", "150 ms", "250 ms" } },
@@ -60,8 +60,9 @@ static const ApDef DEF[AP_N] = {
     "How many glyph outlines libass keeps.",
     0, 0, 4, { "Default (old)", "1000", "4000", "10000" }, 1 },
   [AP_ESCALA] = { "escala", "Render resolution",
-    "Renders subtitles smaller and scales them up. Blur-heavy signs get much cheaper; text gets softer.",
-    0, 2, 5, { "100% (old)", "85%", "75%", "66%", "50%" } },
+    "Renders subtitles smaller and scales them up. Blur-heavy signs get much cheaper; text gets softer. "
+    "Auto stays at 100% and drops to 75% only while the subtitles are heavy (the log says when).",
+    5, 2, 6, { "100% (old)", "85%", "75%", "66%", "50%", "Auto (75% when heavy)" } },
   [AP_HINTING] = { "hinting", "Font hinting",
     "None is the fastest; Light is what the app always used.",
     0, 1, 4, { "Light (old)", "None", "Normal", "Native" } },
@@ -70,13 +71,13 @@ static const ApDef DEF[AP_N] = {
     0, 0, 2, { "Complex (old)", "Simple" }, 1 },
   [AP_FONTES] = { "fontes", "Attached fonts limit",
     "Largest MKV Attachments block that is read. Fansub CJK fonts often pass 16 MB.",
-    3, 3, 5, { "16 MB (old)", "32 MB", "48 MB", "64 MB", "96 MB" } },
+    3, 3, 5, { "16 MB (old)", "32 MB", "48 MB", "64 MB", "96 MB" }, 1 },
   [AP_CUES] = { "cues", "App cue copy",
     "The app's own cue list (fallback overlay, sync reference) is rebuilt from the whole document on each batch.",
     1, 1, 2, { "Every batch (old)", "Every 10 s" }, 1 },
   [AP_RELAY] = { "relay", "Read subs from local relay",
     "Takes subtitle blocks from the bytes the TV player already downloads: earlier lines, fewer CDN requests.",
-    1, 1, 2, { "Off (old)", "On" } },
+    1, 1, 2, { "Off (old)", "On" }, 1 },
   [AP_PRIORIDADE] = { "prioridade", "Render thread priority",
     "Higher asks the system for a better slot (may be refused; the log says).",
     0, 0, 3, { "Normal (old)", "Higher", "Lower" }, 1 },
@@ -87,7 +88,7 @@ static const ApDef DEF[AP_N] = {
     "Adds an [assperf] stages: line to the 10 s log: libass time per frame split into shaping, raster, blur, compose, clip.",
     1, 1, 2, { "Off", "On" } },
   [AP_BENCH] = { "bench", "ASS bench",
-    "Pause first. \xe2\x86\x92 runs this engine, \xe2\x86\x90 runs C vs NEON: the 10 s before the playhead, re-rendered off-screen, cold caches.",
+    "Pause first. \xe2\x86\x92 runs this engine, \xe2\x86\x90 runs C vs NEON: the 15 s before the playhead, re-rendered off-screen, cold caches.",
     0, 0, 3, { "Off", "Run (this engine)", "Run C vs NEON" } },
   [AP_ESTILO] = { "estilo", "Your style on styled ASS",
     "Ignored draws styled ASS as authored, like the phone. Applies puts your Style colour, border, box, font and opacity on every sign (masks turn grey, rings appear).",
@@ -101,13 +102,6 @@ static const ApDef DEF[AP_N] = {
   [AP_GPUMIN] = { "gpumin", "GPU blur from size",
     "Only signs at least this big go to the GPU; smaller blurs stay on the CPU, where they are cheaper. The log times both by size (Stage timers On).",
     2, 2, 4, { "All", "16k px", "64k px", "256k px" } },
-  [AP_SNAP] = { "snap", "ASS snapshot",
-    "Pause on a wrong frame and press OK: logs every active line, its style and colours, and the images libass made.",
-    0, 0, 2, { "Off", "Take now" } },
-  [AP_CARTAO] = { "cartao", "Colour test card",
-    "White 100/90/75/50 %, white at 50 % opacity, grey 25 %, black, drawn like subtitles. On a black frame the 5th must "
-    "match the 4th (soft edges right). Compare the 1st with video white to set Subtitle contrast.",
-    0, 0, 2, { "Off", "On" } },
   [AP_LOG] = { "log", "Subtitle log",
     "Summary writes one [assperf] line every 10 s. Detailed also logs each slow frame.",
     1, 1, 3, { "Off", "Summary (10 s)", "Detailed" } },
@@ -176,8 +170,6 @@ void assperf_iniciar(void) {
       free(t);
     }
     val[AP_BENCH] = 0;   // acoes: nunca voltam ligadas do arquivo
-    val[AP_SNAP] = 0;
-    val[AP_CARTAO] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -228,7 +220,7 @@ int assperf_get(int id) {
 }
 
 int assperf_e_medida(int id) {
-  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO ||
+  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH ||
          id == AP_GAMA || id == AP_CONTRASTE;   // calibracao: fora dos presets e da guarda, mas fica gravada
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
@@ -308,10 +300,113 @@ size_t assperf_fontes_teto(void) {
   int v = assperf_get(AP_FONTES);
   return mb[v < 0 || v > 4 ? 0 : v] * 1024u * 1024u;
 }
-double assperf_escala(void) {
+/* ---- Render resolution Auto ---------------------------------------------------
+ * 100 % normally; 75 % while the subtitles are heavy (dono 25/10: "only as a
+ * fallback when subtitles get heavy"). The cost is what one NEW subtitle frame
+ * takes: libass on the worker plus upload/GPU blur on the GL thread, each an
+ * average over the last frames that changed. Measured on the S95C (24/10, the
+ * inbox scene): heavy = 40-90 ms per frame at 100 %, ordinary dialogue 1-10 ms.
+ *   - down to 75 % when the average passes AUTO_DESCE_MS;
+ *   - back to 100 % after AUTO_LEVE_S seconds below AUTO_SOBE_MS (at 75 %), and
+ *     never before AUTO_MIN75_S seconds at 75 %;
+ *   - after a switch the first AUTO_IGNORA frames do not count (cold caches at
+ *     the new size would read as "heavy" and bounce straight back);
+ *   - no new frame for 1 s (no sign on screen) counts as light. */
+#define AUTO_DESCE_MS  28.0
+#define AUTO_FORTE_MS  45.0   // this heavy goes down even right after coming back up
+#define AUTO_SOBE_MS   12.0
+#define AUTO_LEVE_S     3.0
+#define AUTO_MIN75_S    5.0
+#define AUTO_MIN100_S   2.0
+#define AUTO_IGNORA       3
+static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+  int em75;                  // 1 = rendering at 75 % now
+  double emaLib, emaGl;      // ms per new frame
+  int nLib, nGl, ignora;
+  double ultAmostra, ultLib, ultGl, desde, leveDesde;   // agoraS()
+  unsigned trocas;           // for the 10 s line
+  double seg75, marca;       // seconds at 75 % in this window
+} A;
+
+static double agoraS(void);
+
+static double auto_custo_locked(double t) {
+  /* Each side ages on its own: a side with no new frame for 1 s counts 0. */
+  return (t - A.ultLib > 1.0 ? 0.0 : A.emaLib) + (t - A.ultGl > 1.0 ? 0.0 : A.emaGl);
+}
+
+static void auto_trocar_locked(int em75, double t) {
+  if (A.em75) A.seg75 += t - A.marca;
+  if (em75)
+    printf("[assperf] render resolution Auto: 75 %% (subtitles heavy: libass %.1f + GL %.1f ms per new frame)\n",
+           A.emaLib, A.emaGl);
+  else
+    printf("[assperf] render resolution Auto: back to 100 %% (light for %.0f s at 75 %%: libass %.1f + GL %.1f ms per new frame)\n",
+           t - A.leveDesde, t - A.ultLib > 1.0 ? 0.0 : A.emaLib, t - A.ultGl > 1.0 ? 0.0 : A.emaGl);
+  fflush(stdout);
+  A.em75 = em75; A.desde = t; A.marca = t; A.leveDesde = 0;
+  A.ignora = AUTO_IGNORA; A.trocas++;
+  A.emaLib = A.emaGl = 0; A.nLib = A.nGl = 0;
+}
+
+double assperf_escala_quadro(void) {
   static const double e[5] = { 1.0, 0.85, 0.75, 0.66, 0.5 };
   int v = assperf_get(AP_ESCALA);
-  return e[v < 0 || v > 4 ? 0 : v];
+  double t, custo, r;
+  if (v != 5) {
+    pthread_mutex_lock(&autoTrava);
+    if (A.em75) { A.seg75 += agoraS() - A.marca; A.em75 = 0; }
+    pthread_mutex_unlock(&autoTrava);
+    return e[v < 0 || v > 4 ? 0 : v];
+  }
+  t = agoraS();
+  pthread_mutex_lock(&autoTrava);
+  custo = auto_custo_locked(t);
+  if (!A.em75) {
+    int pronto = A.ignora <= 0 && (A.nLib > 0 || A.nGl > 0);
+    if (pronto && (custo > AUTO_FORTE_MS || (custo > AUTO_DESCE_MS && t - A.desde >= AUTO_MIN100_S)))
+      auto_trocar_locked(1, t);
+  } else {
+    int vazio = t - A.ultAmostra > 1.0 || custo == 0.0;   // nothing new for 1 s: light, even with frames still to ignore
+    if (vazio || (custo < AUTO_SOBE_MS && A.ignora <= 0)) {
+      if (!A.leveDesde) A.leveDesde = t;
+      if (t - A.leveDesde >= AUTO_LEVE_S && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t);
+    } else A.leveDesde = 0;
+  }
+  r = A.em75 ? 0.75 : 1.0;
+  pthread_mutex_unlock(&autoTrava);
+  return r;
+}
+
+void assperf_escala_custo(double libassMs) {
+  pthread_mutex_lock(&autoTrava);
+  A.ultAmostra = A.ultLib = agoraS();
+  if (A.ignora > 0) A.ignora--;
+  else { A.emaLib = A.nLib ? A.emaLib * 0.7 + libassMs * 0.3 : libassMs; A.nLib++; }
+  pthread_mutex_unlock(&autoTrava);
+}
+
+void assperf_escala_custo_gl(double glMs) {
+  pthread_mutex_lock(&autoTrava);
+  A.ultAmostra = A.ultGl = agoraS();
+  if (A.ignora <= 0) { A.emaGl = A.nGl ? A.emaGl * 0.7 + glMs * 0.3 : glMs; A.nGl++; }
+  pthread_mutex_unlock(&autoTrava);
+}
+
+void assperf_escala_reset(void) {
+  pthread_mutex_lock(&autoTrava);
+  if (A.em75) { A.seg75 += agoraS() - A.marca; A.em75 = 0; }
+  A.emaLib = A.emaGl = 0; A.nLib = A.nGl = 0; A.ignora = 0; A.leveDesde = 0; A.desde = agoraS();
+  pthread_mutex_unlock(&autoTrava);
+}
+
+double assperf_escala(void) {
+  static const double e[5] = { 1.0, 0.85, 0.75, 0.66, 0.5 };
+  int v = assperf_get(AP_ESCALA), em75;
+  if (v != 5) return e[v < 0 || v > 4 ? 0 : v];
+  pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
+  return em75 ? 0.75 : 1.0;
 }
 int assperf_adiante_fixo_ms(void) {
   static const int ms[6] = { 0, -1, 50, 100, 150, 250 };
@@ -386,6 +481,7 @@ static struct {
   double gbMsGpu; unsigned gbNGpu;
   unsigned adComBlur, adAdiados, adBe, adClip, adPeq;
   unsigned cpuN[4]; double cpuMs[4];
+  AssperfGpuPassos gp;   // passos dos lotes do blur na GPU (soma da janela)
 } M;
 
 const char *const assperf_estagio_nome[8] = {
@@ -504,6 +600,26 @@ void assperf_med_adiado(const AssperfAdiado *a) {
   for (i = 0; i < 4; i++) { M.cpuN[i] += a->cpuN[i]; M.cpuMs[i] += a->cpuMs[i]; }
   pthread_mutex_unlock(&medTrava);
 }
+void assperf_med_gpupassos(const AssperfGpuPassos *p) {
+  pthread_mutex_lock(&medTrava);
+  M.gp.lotes += p->lotes; M.gp.lotesTrab += p->lotesTrab; M.gp.envios += p->envios;
+  M.gp.passadas += p->passadas; M.gp.finais += p->finais;
+  M.gp.salvar += p->salvar; M.gp.envio += p->envio; M.gp.passadasMs += p->passadasMs;
+  M.gp.finalMs += p->finalMs; M.gp.restaurar += p->restaurar; M.gp.loteMs += p->loteMs;
+  if (p->loteMax > M.gp.loteMax) M.gp.loteMax = p->loteMax;
+  M.gp.qEmit += p->qEmit; M.gp.qLidas += p->qLidas; M.gp.qDisj += p->qDisj;
+  M.gp.qPend = p->qPend; if (p->qModo) M.gp.qModo = p->qModo;
+  pthread_mutex_unlock(&medTrava);
+}
+
+/* So o fio GL (assrender_desenhar e o laco principal): sem trava. */
+static AssperfSub subQuadro;
+void assperf_sub_somar(const AssperfSub *x) {
+  subQuadro.total += x->total; subQuadro.upload += x->upload; subQuadro.gpu += x->gpu;
+  subQuadro.desenho += x->desenho; subQuadro.adiante += x->adiante; subQuadro.n += x->n;
+}
+void assperf_sub_tomar(AssperfSub *out) { *out = subQuadro; memset(&subQuadro, 0, sizeof subQuadro); }
+
 long assperf_gpu_min(void) {
   static const long px[4] = { 0, 16384, 65536, 262144 };
   int v = assperf_get(AP_GPUMIN);
@@ -529,11 +645,12 @@ static int medForcar;
 void assperf_med_forcar(void) { medForcar = 1; assperf_med_tick(); }
 #endif
 
-void assperf_med_tick(void) {
+int assperf_med_tick(void) {
   double t = agoraS();
+  int imprimiu = 0;
   pthread_mutex_lock(&medTrava);
-  if (M.ini <= 0) { M.ini = t; pthread_mutex_unlock(&medTrava); return; }
-  if (t - M.ini < 10.0 && !medForcar) { pthread_mutex_unlock(&medTrava); return; }
+  if (M.ini <= 0) { M.ini = t; pthread_mutex_unlock(&medTrava); return 0; }
+  if (t - M.ini < 10.0 && !medForcar) { pthread_mutex_unlock(&medTrava); return 0; }
   medForcar = 0;
   if (M.quadros || M.lotes || M.renders) {
     double rAvg = M.renders ? M.renderSoma / M.renders : 0, uAvg = M.uploads ? M.upSoma / M.uploads : 0;
@@ -552,6 +669,18 @@ void assperf_med_tick(void) {
              aAvg, M.atrasoMin, M.atrasoMax, M.atrasos, adAvg,
              M.lotes, M.cheios, M.linhasNovas, M.total, M.lotes ? M.loteSoma / M.lotes : 0, M.loteMax,
              M.relayBlocos, M.relayUsados, M.podados);
+      imprimiu = 1;
+      { int v = assperf_get(AP_ESCALA);
+        double s75;
+        unsigned trocas;
+        int em75;
+        pthread_mutex_lock(&autoTrava);
+        s75 = A.seg75 + (A.em75 ? t - A.marca : 0.0); trocas = A.trocas; em75 = A.em75;
+        A.seg75 = 0; A.trocas = 0; A.marca = t;
+        pthread_mutex_unlock(&autoTrava);
+        if (v == 5)
+          printf("[assperf] render resolution Auto: now %s | at 75%% for %.1f s of the last %.0f s, %u switch(es)\n",
+                 em75 ? "75%" : "100%", s75, t - M.ini, trocas); }
       if (M.adComBlur || M.gbLotes || M.gbReusos || M.gbCpu || assperf_get(AP_GPUBLUR))
         printf("[assperf] gpu blur: %s (%s) | new: %u blurs, %u pictures in %u batches, avg %.1f max %.1f ms%s"
                " | reused pictures %u | CPU fallback %u (GPU refused %u)"
@@ -566,6 +695,18 @@ void assperf_med_tick(void) {
                " | textures created %u, reused from the reserve %u | GPU time %.0f ms in %u measured jobs (%.2f ms each)\n",
                M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap, M.gbMsGpu, M.gbNGpu,
                M.gbNGpu ? M.gbMsGpu / M.gbNGpu : 0.0);
+      if (M.gp.lotesTrab || M.gp.qEmit) {
+        double resto = M.gp.loteMs - M.gp.salvar - M.gp.envio - M.gp.passadasMs - M.gp.finalMs - M.gp.restaurar;
+        printf("[assperf] gpu blur steps (GL thread time, all batches): %u batches with work (of %u), %.1f ms in all, longest %.1f ms"
+               " | state save %.1f ms | source uploads %u, %.1f ms | blur passes %u, %.1f ms | final passes %u, %.1f ms"
+               " | state restore %.1f ms | rest %.1f ms\n",
+               M.gp.lotesTrab, M.gp.lotes, M.gp.loteMs, M.gp.loteMax, M.gp.salvar, M.gp.envios, M.gp.envio,
+               M.gp.passadas, M.gp.passadasMs, M.gp.finais, M.gp.finalMs, M.gp.restaurar, resto < 0 ? 0.0 : resto);
+        printf("[assperf] gpu timer: %s | queries issued %u, read %u, dropped as disjoint %u, still pending %u\n",
+               M.gp.qModo == 2 ? "sampling with glFinish (1 batch in 16; the queries never gave a result)"
+               : M.gp.qModo == 1 ? "GL_EXT_disjoint_timer_query" : "off (Stage timers Off, or no timer extension)",
+               M.gp.qEmit, M.gp.qLidas, M.gp.qDisj, M.gp.qPend);
+      }
       { int i, alg = 0;
         for (i = 0; i < 4; i++) alg |= M.cpuN[i] || M.gbN[i];
         if (alg) {
@@ -616,6 +757,7 @@ void assperf_med_tick(void) {
     M.total = total; }
   M.ini = t;
   pthread_mutex_unlock(&medTrava);
+  return imprimiu;
 }
 
 void assperf_med_texto(char *dst, size_t n) {

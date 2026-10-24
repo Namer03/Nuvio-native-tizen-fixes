@@ -15,7 +15,9 @@
 
 typedef struct {
   double off[RELOGIO_AMOSTRAS];
+  double inc[RELOGIO_AMOSTRAS];  // carimbadas: +- incerteza de cada amostra (s)
   int    n, prox;
+  int    carimbo;            // 1 = alimentado por relogio_amostra_carimbo
   double ultPos, ultAgora;   // ultima amostra
   double saida;              // ultimo valor devolvido (para nao andar para tras)
   int    tocando, temAmostra;
@@ -33,5 +35,15 @@ double relogio_ler(Relogio *r, double agora);
  * a punha ate o teto adiantada. Com a taxa, off = pos - agora*taxa. Mudar a
  * taxa zera o historico (as amostras velhas foram tiradas a outra taxa). */
 void   relogio_taxa(Relogio *r, double taxa);
+/* LEITURA CARIMBADA (.tpk, dono 25/10). No Samsung a posicao vem de uma
+ * consulta ao player que leva 50-600 ms (1,3 s no pior do log); carimbada na
+ * CHEGADA, a legenda atrasava o tanto da consulta mais rapida da janela, mais
+ * nas cenas pesadas. O host carimba o MEIO da consulta (`agora`, mesmo relogio
+ * monotonico) e diz a meia duracao (`incerteza`): a posicao foi lida em algum
+ * ponto de [agora - incerteza, agora + incerteza]. O deslocamento sai da
+ * intersecao desses intervalos nas ultimas amostras (o video anda a taxa
+ * conhecida), o meio dela; sem intersecao, a amostra mais precisa.
+ * Posicao parada com o carimbo andando (buffering, fim) segura a legenda. */
+void   relogio_amostra_carimbo(Relogio *r, double posSeg, double agora, double incerteza, int tocando);
 
 #endif

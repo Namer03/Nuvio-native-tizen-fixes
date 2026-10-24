@@ -1,5 +1,6 @@
 #include "relogio.h"
 
+#include <math.h>
 #include <string.h>
 
 // Mais do que isto de diferenca entre a amostra e a previsao e salto (seek,
@@ -29,8 +30,60 @@ static double maxOff(const Relogio *r) {
   return m;
 }
 
+/* Carimbadas: o meio da intersecao dos intervalos [off - inc, off + inc]; sem
+ * intersecao (amostras incoerentes), o off da amostra de menor incerteza. */
+static double offCarimbo(const Relogio *r) {
+  int i, melhor = 0;
+  double lo = r->off[0] - r->inc[0], hi = r->off[0] + r->inc[0];
+  for (i = 1; i < r->n; i++) {
+    if (r->off[i] - r->inc[i] > lo) lo = r->off[i] - r->inc[i];
+    if (r->off[i] + r->inc[i] < hi) hi = r->off[i] + r->inc[i];
+    if (r->inc[i] < r->inc[melhor]) melhor = i;
+  }
+  return lo <= hi ? (lo + hi) * 0.5 : r->off[melhor];
+}
+
+static double offAtual(const Relogio *r) { return r->carimbo ? offCarimbo(r) : maxOff(r); }
+
+/* Parada sem pausa: a posicao nao andou e o carimbo andou isto. */
+#define REL_PARADO 0.25
+/* Carimbadas: a previsao para depois disto alem da ultima leitura. */
+#define REL_TETO_CARIMBO 1.0
+
+void relogio_amostra_carimbo(Relogio *r, double posSeg, double agora, double incerteza, int tocando) {
+  if (incerteza < 0.0) incerteza = 0.0;
+  r->carimbo = 1;
+  if (!tocando) {
+    r->tocando = 0; r->n = r->prox = 0;
+    r->ultPos = posSeg; r->ultAgora = agora; r->temAmostra = 1;
+    r->saida = posSeg;
+    return;
+  }
+  if (!r->tocando) { r->tocando = 1; r->n = r->prox = 0; }
+  if (r->temAmostra && posSeg == r->ultPos) {
+    // Mesma posicao: so conta se o carimbo andou o bastante para ser parada.
+    if (agora - r->ultAgora > REL_PARADO) { r->n = r->prox = 0; r->saida = posSeg; r->ultAgora = agora; }
+    return;
+  }
+  { double off = posSeg - agora * taxaDe(r);
+    if (r->n) {
+      double atual = offCarimbo(r);
+      if (fabs(off - atual) > REL_SALTO || (r->temAmostra && posSeg < r->ultPos - REL_RECUO)) {
+        r->n = r->prox = 0;
+        r->saida = posSeg;
+      }
+    }
+    r->off[r->prox] = off;
+    r->inc[r->prox] = incerteza * taxaDe(r);
+    r->prox = (r->prox + 1) % RELOGIO_AMOSTRAS;
+    if (r->n < RELOGIO_AMOSTRAS) r->n++; }
+  r->ultPos = posSeg; r->ultAgora = agora; r->temAmostra = 1;
+}
+
 void relogio_amostra(Relogio *r, double posSeg, double agora, int tocando) {
   int nova = !r->temAmostra || posSeg != r->ultPos;
+  if (r->carimbo && tocando) return;   // tocando, quem alimenta e relogio_amostra_carimbo
+
   if (!tocando) {
     // Pausado: a posicao e a do pipeline, sem previsao, e o historico cai —
     // ao voltar, o deslocamento e outro.
@@ -59,9 +112,15 @@ double relogio_ler(Relogio *r, double agora) {
   double v;
   if (!r->temAmostra) return 0.0;
   if (!r->tocando || !r->n) { r->saida = r->ultPos; return r->ultPos; }
-  v = agora * taxaDe(r) + maxOff(r);
+  v = agora * taxaDe(r) + offAtual(r);
   // O teto e em tempo de RELOGIO: a 2x, 350 ms de relogio sao 700 ms de video.
-  if (v > r->ultPos + REL_TETO * taxaDe(r)) v = r->ultPos + REL_TETO * taxaDe(r);
+  // Carimbadas: a leitura e de quando foi tirada (pode ter 600 ms ao chegar);
+  // o teto conta do carimbo dela.
+  if (r->carimbo) {
+    double teto = r->ultPos + ((agora - r->ultAgora) < REL_TETO_CARIMBO ? (agora - r->ultAgora) : REL_TETO_CARIMBO) * taxaDe(r)
+                  + REL_TETO * taxaDe(r) * 0.25;
+    if (v > teto) v = teto;
+  } else if (v > r->ultPos + REL_TETO * taxaDe(r)) v = r->ultPos + REL_TETO * taxaDe(r);
   if (v < r->ultPos - REL_RECUO) v = r->ultPos;
   // Monotonico entre saltos: um recuo pequeno (amostra que chegou adiantada
   // saiu da janela) segura o valor em vez de voltar.

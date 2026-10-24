@@ -34,7 +34,7 @@ enum {
   AP_SEGURAR,      // early frames: 0 show at once, 1 hold until due
   AP_CACHE,        // libass bitmap cache: 0 32 MB (old), 1 64, 2 128, 3 16
   AP_GLIFOS,       // libass glyph cache: 0 default (old), 1 1000, 2 4000, 3 10000
-  AP_ESCALA,       // render resolution: 0 100% (old), 1 85%, 2 75%, 3 66%, 4 50%
+  AP_ESCALA,       // render resolution: 0 100% (old), 1 85%, 2 75%, 3 66%, 4 50%, 5 Auto (100%, 75% while heavy)
   AP_HINTING,      // 0 light (old), 1 none, 2 normal, 3 native
   AP_SHAPER,       // 0 complex (old), 1 simple
   AP_FONTES,       // attached fonts limit: 0 16 MB (old), 1 32, 2 48, 3 64, 4 96
@@ -49,8 +49,6 @@ enum {
   AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
   AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
   AP_GPUMIN,       // smallest blur sent to the GPU: 0 all, 1 16k px, 2 64k px, 3 256k px
-  AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events, styles, colours and libass images)
-  AP_CARTAO,       // colour test card over the video: 0 off, 1 on
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
@@ -80,7 +78,14 @@ unsigned    assperf_versao(void);
 
 // Valores derivados.
 size_t assperf_fontes_teto(void);            // bytes
-double assperf_escala(void);                 // 1.0 .. 0.5
+double assperf_escala(void);                 // 1.0 .. 0.5 (Auto: the scale it is at now)
+// Render resolution Auto (AP_ESCALA = 5, dono 25/10: 75 % only as a fallback
+// when subtitles get heavy). Worker: the scale for the next render; Auto
+// decides here from the cost the worker and the GL thread report.
+double assperf_escala_quadro(void);
+void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
+void   assperf_escala_custo_gl(double glMs);    // GL thread: upload + GPU blur of a new frame
+void   assperf_escala_reset(void);              // track change: back to 100 %
 int    assperf_adiante_fixo_ms(void);        // -1 = auto, 0 = off
 long   assperf_poda_ms(void);                // 0 = off
 // Ajuste de cor da legenda para casar com o video (AP_GAMA, AP_CONTRASTE). O
@@ -111,6 +116,14 @@ typedef struct {
   unsigned nTam[4]; double msTam[4];   // GPU, so com os cronometros
   double msGpu; unsigned nGpu;          // tempo de GPU medido, todos os pedidos
 } AssperfGpu;
+// Passos de um lote do blur na GPU, em tempo de CPU do fio GL (assgpublur), e
+// as consultas de tempo da GPU (emitidas, lidas, descartadas pelo "disjoint").
+typedef struct {
+  unsigned lotes, lotesTrab, envios, passadas, finais;
+  double salvar, envio, passadasMs, finalMs, restaurar, loteMs, loteMax;
+  unsigned qEmit, qLidas, qDisj, qPend; int qModo;   // qModo: 0 sem, 1 consultas, 2 glFinish 1 em N
+} AssperfGpuPassos;
+void assperf_med_gpupassos(const AssperfGpuPassos *p);
 void assperf_med_gpublur(const AssperfGpu *g);
 typedef struct {
   unsigned comBlur, adiados, be, clip, pequenos;
@@ -120,7 +133,12 @@ void assperf_med_adiado(const AssperfAdiado *a);
 long assperf_gpu_min(void);                  // pixels (libass ass_nv_set_deferred_min_area)
 int  assperf_gpu_adiante(void);              // ms de GPU por quadro de UI para a fila (pre-blur)
 void assperf_gpublur_formato(const char *s);   // "R16F" etc. (fio GL, uma vez)
-void assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s
+int  assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s (1 = imprimiu)
+// O quadro de UI: o que as legendas custaram no fio GL (assrender soma, o laco
+// principal toma no fim do quadro para a linha [quadro-cpu]). So o fio GL.
+typedef struct { double total, upload, gpu, desenho, adiante; int n; } AssperfSub;
+void assperf_sub_somar(const AssperfSub *s);
+void assperf_sub_tomar(AssperfSub *out);     // copia e zera
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // provas no computador
 void assperf_med_forcar(void);               // imprime a janela agora

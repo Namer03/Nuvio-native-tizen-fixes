@@ -172,7 +172,10 @@ static const char *const F_TOCAR[] = {
 static const char *const F_LEG[] = {
   "[ass]", "[assperf]", "[libass]", "[mkvass]", "[mkvfix]", "[mkv]", "[relogio]", "[legendas]",
   "fps=", "[quadro]", "[swap]", "[tpk] quadros", "[player] pronto", "[player] tocando",
-  "[player] vod parado", "first frame", "[seek", "reconex", "[legsync", "[logrede]", NULL
+  "[player] vod parado", "first frame", "[seek", "reconex", "[legsync", "[logrede]",
+  // 25/10: where the slow frame's time went, and the TV position readings
+  // (seek/pause marks, query times) for the subtitle clock.
+  "[quadro-", "tpk evento", "consulta posicao", "position read", "ponto gravado (seek", "ponto gravado (pausa", NULL
 };
 #define LR_NFILTROS 5
 static const char *const *const FILTROS[LR_NFILTROS] = { NULL, F_FONTE, F_ABRIR, F_TOCAR, F_LEG };

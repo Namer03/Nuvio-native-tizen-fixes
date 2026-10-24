@@ -4767,6 +4767,15 @@ void player_atualizar(float dt, Uint32 agora) {
       } }
     // A legenda interpola na velocidade MEDIDA (relogio.h).
     relogio_taxa(&relLeg, velMed.efetiva / 100.0);
+#ifdef NV_TPK
+    /* Leitura carimbada pelo host (video.h, video_pos_amostra): a hora em que
+     * a TV leu a posicao, nao a hora em que a resposta chegou aqui. */
+    { double ap, ac, ai; unsigned sq; static unsigned sqAnt;
+      if (video_pos_amostra(&ap, &ac, &ai, &sq) && sq != sqAnt) {
+        sqAnt = sq;
+        relogio_amostra_carimbo(&relLeg, ap, ac, ai, tocando && !scrubbing);
+      } }
+#endif
     relogio_amostra(&relLeg, video_pos(), monoSeg(), tocando && !scrubbing);
     // A cada 10 s: o numero cru do pipeline e o do relogio da legenda, no
     // mesmo instante. A diferenca e o que a interpolacao acrescenta (0..~250).
@@ -4774,9 +4783,16 @@ void player_atualizar(float dt, Uint32 agora) {
       double m = monoSeg();
       if (tocando && m - ultRel >= 10.0) {
         ultRel = m;
-        printf("[relogio] pipeline=%.3f legenda=%.3f (%+.0f ms; amostra de %.0f ms atras)\n",
+        printf("[relogio] pipeline=%.3f legenda=%.3f (%+.0f ms; amostra de %.0f ms atras)",
                video_pos(), relogio_ler(&relLeg, m), (relogio_ler(&relLeg, m) - video_pos()) * 1000.0,
                (m - relLeg.ultAgora) * 1000.0);
+#ifdef NV_TPK
+        { unsigned nl; double med, mx;
+          video_tpk_leituras(&nl, &med, &mx);
+          printf(" | TV position readings %u in 10 s, query avg %.0f max %.0f ms%s", nl, med, mx,
+                 relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)"); }
+#endif
+        printf("\n");
       } }
   } else if (!comVideo && tocando && !esperandoFonte && !erroFonte) {
     posSeg += dt;
@@ -5445,6 +5461,9 @@ static void desenharLegendaExternaCorpo(void) {
    * offset. R4: "No topo" draws it first, in the top band; "Junto da
    * principal" draws it AFTER the primary, stacked right above it, so it needs
    * where the primary's bottom stack starts (topo). Geometry is explicit. */
+#ifdef NV_TPK
+  if (video_pos_incerta()) return;   // the same wait as the primary (seek not landed yet)
+#endif
   PlrRect av = areaVideoLegenda();
   int junto = ajustes_leg2_junto();
   LegendasGeo g2 = { av.x, av.y, av.w, av.h, anim * entrada, entrada, posLegenda(), junto, 0.0f };
@@ -5485,6 +5504,11 @@ static void desenharLegendaPrincipal(float *topoPilha) {
 static void desenharLegendaPrincipalCorpo(float *topoPilha){
 #else
 static void desenharLegendaPrincipal(float *topoPilha){
+#endif
+#ifdef NV_TPK
+  /* Seek feito e a TV ainda nao disse onde caiu (quadro-chave, ate segundos
+   * antes do alvo): desenhar agora mostraria o letreiro de outra cena. */
+  if (video_pos_incerta()) return;
 #endif
   // Gate collector output, preserving native callback rendering below.
   int overlay = faixas_legenda_overlay();

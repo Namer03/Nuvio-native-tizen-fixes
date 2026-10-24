@@ -295,9 +295,15 @@ static struct {
   void *aPtr;
   GLboolean blend, tesoura, dither, mascara[4];
   int aberto, medir;
-  struct timespec t0, tUlt;
+  struct timespec t0, tUlt, tIni;
   int trabalho;
 } E;
+
+/* Passos do lote (relogio da CPU) e consultas: assgpublur_passos. */
+static AgbPassos P;
+static unsigned qEmitTotal, qLidasTotal, loteAmostra;
+/* timerQuebrado (acima): 1 = as consultas nunca devolveram nada; glFinish em 1 lote de 16 */
+static int emFinal;         // desenhar_em conta na passada final, nao nas de blur
 
 static double ms_desde(const struct timespec *a) {
   struct timespec b;
@@ -322,6 +328,8 @@ typedef void (*FnGetQuiv)(GLuint, GLenum, GLuint *);
 typedef void (*FnGetQui64v)(GLuint, GLenum, unsigned long long *);
 static struct { FnGenQ gen, del; FnBeginQ begin; FnEndQ end; FnGetQuiv getuiv; FnGetQui64v get64; } Q;
 static int temTimer;
+static int timerQuebrado;
+#define usaTimer() (temTimer && !timerQuebrado)
 #define AGB_CONSULTAS 64
 typedef struct { GLuint q; int balde, novo; } AgbConsulta;
 static AgbConsulta consultas[AGB_CONSULTAS];
@@ -362,13 +370,15 @@ static int balde(long area) { return area < 16384 ? 0 : area < 65536 ? 1 : area 
 static void consultas_colher(void) {
   GLint disj = 0;
   int i = 0;
-  if (!temTimer || !nConsultas) return;
+  if (!usaTimer() || !nConsultas) return;
   glGetIntegerv(GL_GPU_DISJOINT_EXT, &disj);   // relogio da GPU pulou: descarta o lote
   while (i < nConsultas) {
     GLuint pronto = 0;
     Q.getuiv(consultas[i].q, GL_QUERY_RESULT_AVAILABLE_EXT, &pronto);
     if (!pronto) break;   // na ordem: as seguintes tambem nao estao
-    if (!disj) {
+    if (disj) P.qDisj++;
+    else {
+      P.qLidas++; qLidasTotal++;
       unsigned long long ns = 0;
       double ms;
       Q.get64(consultas[i].q, GL_QUERY_RESULT_EXT, &ns);
@@ -384,14 +394,26 @@ static void consultas_colher(void) {
     i++;
   }
   if (i) { memmove(consultas, consultas + i, (size_t)(nConsultas - i) * sizeof consultas[0]); nConsultas -= i; }
+  /* 24/10 na S95C: "GPU time 0 ms in 0 measured jobs" a noite toda. Se 64
+   * consultas sairam e nenhuma voltou com numero, elas nao servem nesta TV. */
+  if (qEmitTotal >= AGB_CONSULTAS && !qLidasTotal && !timerQuebrado) {
+    timerQuebrado = 1;
+    printf("[assperf] gpu timer: %u queries issued, none returned a time (%u dropped as disjoint, %d pending):"
+           " switching to glFinish on 1 batch in 16\n", qEmitTotal, P.qDisj, nConsultas);
+    fflush(stdout);
+  }
 }
 
 double assgpublur_custo(long area) { return custoEma[balde(area)]; }
 
 void assgpublur_lote_ini(int medir) {
+  struct timespec ts;
   if (E.aberto) return;
   memset(&E, 0, sizeof E);
-  E.aberto = 1; E.medir = medir;
+  clock_gettime(CLOCK_MONOTONIC, &E.tIni);
+  E.aberto = 1;
+  E.medir = medir && (!timerQuebrado || (++loteAmostra % 16u) == 0);
+  P.lotes++;
   consultas_colher();
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &E.fbo);
   glGetIntegerv(GL_VIEWPORT, E.vp);
@@ -413,13 +435,16 @@ void assgpublur_lote_ini(int medir) {
   E.tesoura = glIsEnabled(GL_SCISSOR_TEST);
   E.dither = glIsEnabled(GL_DITHER);
   glGetBooleanv(GL_COLOR_WRITEMASK, E.mascara);
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  P.salvar += (double)(ts.tv_sec - E.tIni.tv_sec) * 1000.0 + (double)(ts.tv_nsec - E.tIni.tv_nsec) / 1e6;
 }
 
 // Antes do primeiro trabalho do lote: o estado das nossas passadas.
 static void lote_trabalhar(void) {
   if (E.trabalho) return;
   E.trabalho = 1;
-  if (E.medir && !temTimer) glFinish();
+  P.lotesTrab++;
+  if (E.medir && !usaTimer()) glFinish();
   clock_gettime(CLOCK_MONOTONIC, &E.t0);
   E.tUlt = E.t0;
   glDisable(GL_BLEND);
@@ -433,7 +458,9 @@ static void lote_trabalhar(void) {
 }
 
 void assgpublur_lote_fim(void) {
+  struct timespec r0;
   if (!E.aberto) return;
+  clock_gettime(CLOCK_MONOTONIC, &r0);
   if (E.trabalho) {
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)E.fbo);
     glViewport(E.vp[0], E.vp[1], E.vp[2], E.vp[3]);
@@ -455,11 +482,21 @@ void assgpublur_lote_fim(void) {
 #ifndef NV_AGB_TESTE
     gfx_estado_externo();   // o cache de programa/textura do gfx nao vale mais
 #endif
-    if (E.medir && !temTimer) glFinish();
+    P.restaurar += ms_desde(&r0);
+    if (E.medir && !usaTimer()) glFinish();
     S.ms += ms_desde(&E.t0);
-    S.medido = E.medir ? (temTimer ? 2 : 1) : 0;
+    S.medido = E.medir ? (usaTimer() ? 2 : 1) : 0;
   }
+  { double l = ms_desde(&E.tIni);
+    P.loteMs += l; if (l > P.loteMax) P.loteMax = l; }
   E.aberto = 0;
+}
+
+void assgpublur_passos(AgbPassos *out) {
+  *out = P;
+  out->qPend = (unsigned)nConsultas;
+  out->qModo = timerQuebrado ? 2 : temTimer ? 1 : 0;
+  memset(&P, 0, sizeof P);
 }
 
 // ---- iniciar ---------------------------------------------------------------------
@@ -474,6 +511,14 @@ int assgpublur_iniciar(void) {
   ver = (const char *)glGetString(GL_VERSION);
   if (!ext) ext = "";
   timer_carregar(ext);
+  { GLint bits = -1;
+    typedef void (*FnGetQiv)(GLenum, GLenum, GLint *);
+    FnGetQiv qiv = temTimer ? (FnGetQiv)proc_gl("glGetQueryivEXT") : NULL;
+    if (qiv) qiv(GL_TIME_ELAPSED_EXT, 0x8864 /* GL_QUERY_COUNTER_BITS_EXT */, &bits);
+    while (glGetError() != GL_NO_ERROR) {}
+    printf("[assperf] gpu timer: GL_EXT_disjoint_timer_query %s, counter bits %d\n",
+           temTimer ? "present" : "absent", (int)bits);
+    if (temTimer && bits == 0) { timerQuebrado = 1; printf("[assperf] gpu timer: 0 bits, using glFinish on 1 batch in 16\n"); } }
   es3 = ver && strstr(ver, "OpenGL ES ") && ver[10] >= '3';
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &vboAnt);
@@ -588,11 +633,15 @@ static void res_soltar(GLuint t, int tipo, int w, int h) {
 /* Sobe um bitmap compacto (GL_LUMINANCE) numa textura da reserva. */
 static GLuint subir_lum(const unsigned char *px, int w, int h, GLint filtro) {
   int nova = 0;
-  GLuint t = res_pegar(TX_LUM, w, h, &nova);
+  struct timespec t0;
+  GLuint t;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  t = res_pegar(TX_LUM, w, h, &nova);
   if (nova) glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
   else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtro);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
+  P.envios++; P.envio += ms_desde(&t0);
   return t;
 }
 
@@ -700,10 +749,13 @@ static int pesos(double v2, float *w0, float *w, float *o) {
 }
 
 static void desenhar_em(GLuint tex, int w, int h) {
+  struct timespec t0;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
   glViewport(0, 0, w, h);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  if (!emFinal) { P.passadas++; P.passadasMs += ms_desde(&t0); }
 }
 
 static int passo_blur(GLuint de, int w, int h, int eixo, int n, const float *w0, const float *ws, const float *os,
@@ -830,7 +882,7 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   if (p->soCache) return 0;
   for (i = 0; i < nb; i++) if (cb[i].chave == kb) { b = &cb[i]; b->uso = quadro; break; }
   /* tempo deste pedido na GPU (consulta, sem esperar) */
-  if (E.medir && temTimer && !consultaAberta && nConsultas < AGB_CONSULTAS) {
+  if (E.medir && usaTimer() && !consultaAberta && nConsultas < AGB_CONSULTAS) {
     GLuint q = 0;
     if (nLivresQ) q = livresQ[--nLivresQ]; else Q.gen(1, &q);
     if (q) {
@@ -842,11 +894,14 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
     }
   }
   if (!b) { b = borrar(p, kb, quadro); novoBlur = 1; }
-  if (!b) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; } S.falhas++; return 0; }
+  if (!b) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; } S.falhas++; return 0; }
   prog = prog_final(b->ny);
-  if (!prog) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; } S.falhas++; return 0; }
+  if (!prog) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; } S.falhas++; return 0; }
   l = &fn[b->ny];
   lote_trabalhar();
+  struct timespec tf0;
+  clock_gettime(CLOCK_MONOTONIC, &tf0);
+  emFinal = 1;
   final_caber((size_t)p->w * (size_t)p->h * 4u, quadro);
   glActiveTexture(GL_TEXTURE0);
   out = res_pegar(TX_RGBA, p->w, p->h, &nova);
@@ -876,7 +931,9 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   glBindTexture(GL_TEXTURE_2D, b->tex);
   desenhar_em(out, p->w, p->h);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-  if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; }
+  emFinal = 0;
+  P.finais++; P.finalMs += ms_desde(&tf0);
+  if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; }
   if (fillTex) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -895,7 +952,7 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   bytesF += (size_t)p->w * (size_t)p->h * 4u;
   S.finais++;
   if (p->adiantado) S.adiantados++;
-  if (E.medir && !temTimer) {
+  if (E.medir && !usaTimer()) {
     /* custo real deste pedido na GPU, por tamanho (sem a extensao de tempo) */
     struct timespec t;
     double ms;

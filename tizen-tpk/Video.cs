@@ -42,6 +42,7 @@ namespace NuvioTpk
         [DllImport("libnuvio.so")] static extern void nv_tpk_video_faixas_fim(int selAudio, int selLeg);
         [DllImport("libnuvio.so")] static extern void nv_tpk_video_legenda(string texto, int durMs);
         [DllImport("libnuvio.so")] static extern void nv_tpk_log(string linha);
+        [DllImport("libnuvio.so")] static extern void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long carimboNs);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void RegistrarDel(IntPtr abrir, IntPtr parar, IntPtr pausar, IntPtr buscar, IntPtr volume, IntPtr janela, IntPtr pos);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void EventoDel(int tipo, int a, int b);
@@ -50,6 +51,7 @@ namespace NuvioTpk
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void FaixasFimDel(int selAudio, int selLeg);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void LegendaDel(string texto, int durMs);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void LogDel(string linha);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void PosicaoDel(int ms, int motivo, int consultaMs, long carimboNs);
 
         // Padrao: as thunks de P/Invoke acima (soname). O NuvioTpk40 repontа na
         // rota ELF.
@@ -60,6 +62,9 @@ namespace NuvioTpk
         public static FaixasFimDel FaixasFim = nv_tpk_video_faixas_fim;
         public static LegendaDel Legenda = nv_tpk_video_legenda;
         public static LogDel LogNativo = nv_tpk_log;
+        // Subtitle clock (owner 25/10): every real position reading, stamped at
+        // the middle of the query. An older libnuvio without it: no-op.
+        public static PosicaoDel Posicao = nv_tpk_video_posicao;
 
         // Repontа tudo por ponteiro de funcao (rota do carregador ELF do
         // NuvioTpk40). resolve(nome) devolve o endereco do simbolo no dynsym.
@@ -75,6 +80,8 @@ namespace NuvioTpk
             if ((p = resolve("nv_tpk_video_faixas_fim")) != IntPtr.Zero) FaixasFim = Marshal.GetDelegateForFunctionPointer<FaixasFimDel>(p);
             if ((p = resolve("nv_tpk_video_legenda")) != IntPtr.Zero) Legenda = Marshal.GetDelegateForFunctionPointer<LegendaDel>(p);
             if ((p = resolve("nv_tpk_log")) != IntPtr.Zero) LogNativo = Marshal.GetDelegateForFunctionPointer<LogDel>(p);
+            p = resolve("nv_tpk_video_posicao");
+            Posicao = p != IntPtr.Zero ? Marshal.GetDelegateForFunctionPointer<PosicaoDel>(p) : new PosicaoDel((a, b, c, d) => { });
         }
     }
 
@@ -320,7 +327,10 @@ namespace NuvioTpk
                 try {
                     if (p != null && playerSessao == minha && minha == Volatile.Read(ref sessao) && p.State == PlayerState.Playing) {
                         int ms = p.GetPlayPosition();
-                        lock (trocaTrava) { if (minha == sessao && player == p && ger == posGer) posMs = ms; }
+                        long fim = Stopwatch.GetTimestamp();
+                        lock (trocaTrava) {
+                            if (minha == sessao && player == p && ger == posGer) { posMs = ms; Informar(ms, 0, inicio, fim); }
+                        }
                     }
                 } catch (InvalidOperationException e) {
                     Log("posicao: " + e.Message);
@@ -332,6 +342,51 @@ namespace NuvioTpk
                     if (ms >= 5000 && minha == Volatile.Read(ref sessao)) NvVid.Evento(EV_CONSULTA_LENTA, 0, 0);
                     Volatile.Write(ref f.consulta, 0);
                 }
+            });
+        }
+
+        // ---- subtitle clock (owner 25/10) ------------------------------------
+        // .NET's Stopwatch on Linux is CLOCK_MONOTONIC; the C side checks it.
+        static long Ns(long ticks) =>
+            Stopwatch.Frequency == 1000000000L ? ticks : (long)(ticks * (1e9 / Stopwatch.Frequency));
+
+        bool posicaoAusente;   // older libnuvio: nv_tpk_video_posicao missing
+        void Informar(int ms, int motivo, long inicio, long fim)
+        {
+            if (posicaoAusente) return;
+            int dur = (int)((fim - inicio) * 1000 / Stopwatch.Frequency);
+            try { NvVid.Posicao(ms, motivo, dur, Ns(inicio + (fim - inicio) / 2)); }
+            catch (EntryPointNotFoundException) { posicaoAusente = true; }
+            catch (Exception) { }
+        }
+
+        // A real reading of where the TV is, OFF the command queue (firmware reads
+        // can take seconds). After a seek the TV lands on a keyframe (6.3 s before
+        // the target in the log of 25/10) and after a pause the last poll can be
+        // ~0.5 s old; Tique only reads while Playing. motivo: 1 seek, 2 pause,
+        // 3 pause settled. Shares Tique's "one query in flight" flag.
+        void LerPosicao(Player p, int minha, int ger, int motivo, int atrasoMs)
+        {
+            var f = Volatile.Read(ref fio);
+            if (f == null || p == null) return;
+            _ = Task.Run(async () => {
+                if (atrasoMs > 0) await Task.Delay(atrasoMs);
+                for (int espera = 0; Interlocked.Exchange(ref f.consulta, 1) != 0; espera += 20) {
+                    if (espera >= 1500) return;
+                    await Task.Delay(20);
+                }
+                long inicio = Stopwatch.GetTimestamp();
+                try {
+                    if (playerSessao != minha || minha != Volatile.Read(ref sessao) || player != p || ger != Volatile.Read(ref posGer)) return;
+                    var st = p.State;
+                    if (st != PlayerState.Playing && st != PlayerState.Paused) return;
+                    int ms = p.GetPlayPosition();
+                    long fim = Stopwatch.GetTimestamp();
+                    lock (trocaTrava) {
+                        if (minha == sessao && player == p && ger == posGer) { posMs = ms; Informar(ms, motivo, inicio, fim); }
+                    }
+                } catch (Exception e) { Log("[video] position read (" + motivo + "): " + e.GetType().Name); }
+                finally { Volatile.Write(ref f.consulta, 0); }
             });
         }
 
@@ -617,7 +672,13 @@ namespace NuvioTpk
             if (buscando) { pausaPend = pausa ? 1 : 0; return; }
             try
             {
-                if (pausa && p.State == PlayerState.Playing) { p.Pause(); NvVid.Evento(EV_PAUSADO, 0, 0); }
+                if (pausa && p.State == PlayerState.Playing) {
+                    p.Pause(); NvVid.Evento(EV_PAUSADO, 0, 0);
+                    // Where it really stopped, then once more when the pipeline has settled.
+                    int ger = Volatile.Read(ref posGer);
+                    LerPosicao(p, minha, ger, 2, 0);
+                    LerPosicao(p, minha, ger, 3, 300);
+                }
                 else if (!pausa && (p.State == PlayerState.Paused || p.State == PlayerState.Ready)) { acabou = false; p.Start(); windowMetrics.Invalidate(); NvVid.Evento(EV_TOCANDO, 0, 0); }
             }
             catch (InvalidOperationException e)
@@ -656,6 +717,8 @@ namespace NuvioTpk
                         NvVid.Evento(EV_BUSCOU, ms, 0);
                     }
                 }
+                // The target is not where the TV is: it seeks to a keyframe. Read it.
+                LerPosicao(p, minha, Volatile.Read(ref posGer), 1, 0);
                 if (minha != Volatile.Read(ref sessao)) return;
                 // PlaybackInterrupted pode ter emitido evento 3 durante o seek.
                 if (p.State == PlayerState.Playing) NvVid.Evento(EV_TOCANDO, 0, 0);
