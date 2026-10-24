@@ -17,7 +17,6 @@
 #ifdef NV_TPK
 #include "tpkdesp.h"
 #include "tpkteclas.h"
-#include "tpkluz.h"
 #include "layout.h"
 #include <SDL2/SDL.h>
 #include "tpk_egl.h"
@@ -169,7 +168,6 @@ static void *fioApp(void *arg) {
   nv_tpk40_etapa("note app-main started");
   r = main(2, argv);
   nv_tpk40_etapa("note app-main returned");
-  tpkluz_sistema(0);   // saida pelo app: devolve o valor da TV
   printf("[tpk] main devolveu %d\n", r);
   fflush(stdout);
   pthread_mutex_lock(&trava);
@@ -209,7 +207,6 @@ int nv_tpk_iniciar(const char *arte, const char *dados, int w, int h) {
     snprintf(ant, sizeof ant, "%s/nuvio-anterior.log", dados);
     setenv("NUVIO_LOG_ANTERIOR", ant, 1); }
   setenv("NUVIO_DADOS", dados, 1);
-  tpkluz_iniciar(dados);   // devolve o valor da TV se a sessao anterior caiu segurando
   tpkdesp_iniciar(dados);   // saida pela TV != queda (tpkdesp.h)
   // LINK DO CDN (cdnlink.h): o player da TV recebe o endereco final no CDN; a
   // verificacao das fontes guarda o que ja resolveu.
@@ -456,9 +453,6 @@ int tpk_gl_atributo(SDL_GLattr a, int *v) {
 
 __attribute__((visibility("default")))
 void nv_tpk_ciclo(int memoria) {
-  // Pausa / janela escondida: o valor da TV volta ANTES do host seguir
-  // (tpkluz.c; espera ate ~3 s, so quando o teste segura o valor).
-  if (!memoria) tpkluz_sistema(0);
   // Rendering may already be suspended: wake the app thread without needing GL.
   pthread_mutex_lock(&trava);
   cicloPendente = memoria ? 2 : 1;

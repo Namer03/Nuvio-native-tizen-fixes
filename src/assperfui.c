@@ -19,7 +19,7 @@
  * As chaves fixas (assperf_fixa: decididas nos testes na TV) nao aparecem. */
 static const int AU_ORDEM[] = {
   AP_GPUBLUR, AP_GPUMIN, AP_FIOS, AP_ESCALA, AP_ADIANTE, AP_CACHE, AP_HINTING, AP_FONTES,
-  AP_PODA, AP_RELAY, AP_SNAP, AP_CARTAO, AP_GAMA, AP_BRANCO, AP_LUZ, AP_CINZA, AP_JANELA, AP_SCAN, AP_BENCH, AP_ESTAGIOS, AP_LOG,
+  AP_PODA, AP_RELAY, AP_SNAP, AP_CARTAO, AP_CONTRASTE, AP_GAMA, AP_SCAN, AP_BENCH, AP_ESTAGIOS, AP_LOG,
 };
 #define AU_NCHAVES ((int)(sizeof AU_ORDEM / sizeof AU_ORDEM[0]))
 #define AU_LINHAS (AU_NCHAVES + 1)          // 0 = preset, 1.. = as chaves

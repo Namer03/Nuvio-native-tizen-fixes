@@ -49,21 +49,15 @@ enum {
   AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
   AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
   AP_GPUMIN,       // smallest blur sent to the GPU: 0 all, 1 16k px, 2 64k px, 3 256k px
-  AP_JANELA,       // window hint test (colour, Exibe.cs): 0 off, 1.. one aux hint at a time
   AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events/styles/colours + images on the log page)
   AP_CARTAO,       // colour test card over the video: 0 off, 1 on
   AP_SCAN,         // scan display APIs: 0 off, 1 run (an action: read-only scan, see the log page)
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
-  AP_LUZ,          // TV luminance limit test (tpkluz.c): 0 off (TV value), 1 set 0 (limit off), 2 set 1 (limit on);
-                   // only during full-screen playback, the TV's own value goes back afterwards; never kept on
-  AP_CINZA,        // TV video gray test (tpkluz.c, avoc_set_video_gray_onoff): 0 off (TV value), 1 set 0, 2 set 1;
-                   // same rules as AP_LUZ
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
-                   // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV), 11 = Auto (read TV)
-  AP_BRANCO,       // subtitle white level to match a lower video contrast: 0 = 100% (off) .. 8 = 90%
+                   // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
+  AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
   AP_N
 };
-#define AP_GAMA_AUTO 11
 
 // Valor atual (barato: le um int). Fora do .tpk: sempre o Legacy.
 int  assperf_get(int id);
@@ -90,10 +84,10 @@ size_t assperf_fontes_teto(void);            // bytes
 double assperf_escala(void);                 // 1.0 .. 0.5
 int    assperf_adiante_fixo_ms(void);        // -1 = auto, 0 = off
 long   assperf_poda_ms(void);                // 0 = off
-// Ajuste de cor da legenda para casar com o video (AP_GAMA, AP_BRANCO). O
+// Ajuste de cor da legenda para casar com o video (AP_GAMA, AP_CONTRASTE). O
 // processamento de imagem da TV (contraste, gama) so vale no plano de video.
 double assperf_gama(void);                   // expoente: 1.0 = off
-double assperf_branco(void);                 // 1.0 = off .. 0.90
+double assperf_contraste(void);              // ganho: 1.0 (30) .. 0.70 (0)
 
 // Marca da guarda de queda (assrender: faixa ASS ligada/desligada).
 void assperf_faixa_ativa(int ativa);

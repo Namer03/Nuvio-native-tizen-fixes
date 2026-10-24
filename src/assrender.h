@@ -92,4 +92,10 @@ int  assrender_ler_pasta_fontes(const char *dir,
 /* Pasta de fontes do app que o libass le: <base>fonts, ou deploy/app/fonts. */
 void assrender_pasta_fontes_app(const char *base, int wasm, char *out, size_t n);
 
+#ifdef NV_TPK
+// Borda das legendas (tpkborda.c): 1 = o libass desenhou ou vai desenhar
+// (fala em ate 200 ms) no ultimo segundo, com a faixa ativa.
+int assrender_borda_quer(void);
+#endif
+
 #endif

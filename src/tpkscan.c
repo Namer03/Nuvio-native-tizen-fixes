@@ -53,12 +53,11 @@
 typedef void (*TsFnSem)(void);
 typedef void (*TsFnInt)(int);
 static TsFnSem hScanNet;
-static TsFnInt hJanela;   // "Window hint (test)": indice da dica (0 = tirar)
 
 __attribute__((visibility("default")))
 void nv_tpk_exibe_registrar(TsFnSem scanNet, TsFnInt janela) {
+  (void)janela;   // era o "Window hint (test)" (saiu em 24/10); fica pela assinatura
   hScanNet = scanNet;
-  hJanela = janela;
 }
 
 // ---- texto do scan ------------------------------------------------------------
@@ -782,13 +781,6 @@ static void *scan_fio(void *u) {
 }
 
 void tpkscan_tick(void) {
-  static int janelaAplicada;
-  int jn = assperf_get(AP_JANELA);
-  if (jn != janelaAplicada) {
-    janelaAplicada = jn;
-    if (hJanela) hJanela(jn);
-    else { printf("[assperf] window hint: not available on this host package\n"); fflush(stdout); }
-  }
   if (assperf_get(AP_SCAN)) {
     assperf_definir(AP_SCAN, 0);
     if (__atomic_exchange_n(&scanRodando, 1, __ATOMIC_ACQ_REL)) { printf("[assperf] scan: already running\n"); fflush(stdout); }

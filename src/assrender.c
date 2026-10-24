@@ -185,6 +185,10 @@ typedef struct {
 
 static pthread_mutex_t assTrava = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t assFilaTrava = PTHREAD_MUTEX_INITIALIZER;
+#ifdef NV_TPK
+static long long assProxInicio = LLONG_MAX;   // worker: proxima fala depois do ultimo render (ms)
+static Uint32 assBordaQuerTick;                // fio GL: ultimo quadro em que o libass desenhou / ia desenhar
+#endif
 static pthread_cond_t assFilaCond = PTHREAD_COND_INITIALIZER;
 static pthread_t assWorker;
 static int assWorkerCriado, assTrackAtivo, assWorkerParar, assPedidoPendente;
@@ -1075,6 +1079,15 @@ static void *ass_worker_loop(void *unused) {
         ass_estagios_colher_locked(assRenderer, &e);
         if (assperf_get(AP_ESTAGIOS)) assperf_med_estagios(&e); }
 #endif
+#ifdef NV_TPK
+      /* Borda das legendas (tpkborda.c): o proximo inicio de fala depois de t,
+       * para o premult ligar ~200 ms antes de a linha aparecer. */
+      { long long prox = LLONG_MAX;
+        int i;
+        for (i = 0; i < assTrack->n_events; i++)
+          if (assTrack->events[i].Start > t && assTrack->events[i].Start < prox) prox = assTrack->events[i].Start;
+        __atomic_store_n(&assProxInicio, prox, __ATOMIC_RELAXED); }
+#endif
       /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
       if (assperf_get(AP_MUDANCA)) {
         int i, anima = 0;
@@ -1611,9 +1624,10 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #endif
     }
   }
-  /* Calibracao para casar com o video (AP_GAMA, AP_BRANCO): a imagem da TV
-   * (gama, contraste) so processa o plano de video, nunca a nossa camada. */
-  const double gama = assperf_gama(), branco = assperf_branco();
+  /* Calibracao para casar com o video (AP_CONTRASTE, AP_GAMA): a imagem da TV
+   * so processa o plano de video, nunca a nossa camada. Na mesma ordem da TV:
+   * o ganho do contraste antes, a curva de gama depois. */
+  const double gama = assperf_gama(), contraste = assperf_contraste();
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
@@ -1629,8 +1643,8 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       float r = (float)((c >> 24) & 255u) / 255.0f, g = (float)((c >> 16) & 255u) / 255.0f,
             b = (float)((c >> 8) & 255u) / 255.0f, op = (float)(255u - (c & 255u)) / 255.0f;
       if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { r = cr / 255.0f; g = cg / 255.0f; b = cb / 255.0f; }
-      if (gama != 1.0 || branco != 1.0) {
-        r = (float)(pow(r, gama) * branco); g = (float)(pow(g, gama) * branco); b = (float)(pow(b, gama) * branco);
+      if (gama != 1.0 || contraste != 1.0) {
+        r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
       }
       gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
                0, 0, 0, 0, r, g, b, alpha * op);
@@ -3121,6 +3135,20 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     pthread_mutex_unlock(&assFilaTrava);
   }
   ass_frame_liberar(&novo);
+#ifdef NV_TPK
+  /* Borda das legendas: o libass quer o premult se desenhou agora, se ha um
+   * quadro com imagem na fila (render ahead) ou se uma fala comeca em ate
+   * 200 ms. tpkborda_quadro decide (com 1 s de folga para desligar). */
+  { int fila = 0, k;
+    long long prox = __atomic_load_n(&assProxInicio, __ATOMIC_RELAXED);
+    pthread_mutex_lock(&assFilaTrava);
+    for (k = 0; k < assFilaN && !fila; k++) fila = assFila[k].count > 0;
+    pthread_mutex_unlock(&assFilaTrava);
+    if (n > 0 || fila || assperf_get(AP_CARTAO) || (prox != LLONG_MAX && prox >= agora && prox - agora <= 200)) {
+      Uint32 tk = SDL_GetTicks();
+      __atomic_store_n(&assBordaQuerTick, tk ? tk : 1u, __ATOMIC_RELEASE);
+    } }
+#endif
 #if defined(NV_TPK) && defined(ASS_NV_API)
   ass_cartao_desenhar();
   ass_snap_ler_tela();
@@ -3145,6 +3173,15 @@ int assrender_quadro_cpu(double posSeg) {
   return n;
 }
 
+#ifdef NV_TPK
+/* tpkborda.c: 1 = o libass desenhou (ou ia desenhar) no ultimo segundo e a
+ * faixa continua ativa. */
+int assrender_borda_quer(void) {
+  Uint32 tk = __atomic_load_n(&assBordaQuerTick, __ATOMIC_ACQUIRE);
+  if (!tk || !assrender_ativo()) return 0;
+  return (Uint32)(SDL_GetTicks() - tk) < 1000u;
+}
+#endif
 int assrender_ativo(void) {
   unsigned geracao = __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE);
   int ativo = __atomic_load_n(&assTrackAtivo, __ATOMIC_ACQUIRE) &&
@@ -3239,6 +3276,9 @@ void assrender_definir_layout(float x, float y, float w, float h,
 }
 void assrender_pixels_por_unidade(float f) { (void)f; }
 int assrender_ativo(void) { return 0; }
+#ifdef NV_TPK
+int assrender_borda_quer(void) { return 0; }
+#endif
 int assrender_quadro_cpu(double posSeg) { (void)posSeg; return -1; }
 const char *assrender_diagnostico(void) { return assDiag; }
 void assrender_geracao(unsigned geracao) { assGeracao = geracao; }

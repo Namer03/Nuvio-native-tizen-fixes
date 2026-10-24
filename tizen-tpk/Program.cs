@@ -49,7 +49,6 @@ namespace NuvioTpk
         [DllImport("libnuvio.so")] static extern void nv_tpk_tecla(string nome, int apertou);
         [DllImport("libnuvio.so")] static extern void nv_tpk_log(string linha);
         [DllImport("libnuvio.so")] static extern void nv_tpk_ciclo(int memoria);
-        [DllImport("libnuvio.so")] static extern void nv_tpk_luz(int ativo);
         [DllImport("libdl.so.2")] static extern IntPtr dlopen(string path, int flags);
         [DllImport("libdl.so.2")] static extern IntPtr dlerror();
         [DllImport("libcapi-appfw-application.so.0")] static extern IntPtr app_get_data_path();
@@ -1032,16 +1031,12 @@ namespace NuvioTpk
         {
             pausado = false;
             Etapa("note resume" + Contagem() + " mainVisible=" + principalVisivel + (JanelaUnica ? " (glview)" : " glVisible=" + glVisivel));
-            // "TV luminance limit (test)": a pausa devolveu o valor da TV; pode voltar a valer.
-            if (soCarregada) { try { nv_tpk_luz(1); } catch (EntryPointNotFoundException) { } }
             base.OnResume();
         }
 
         protected override void OnTerminate()
         {
             Etapa("note terminate" + Contagem());
-            // Devolve o valor da TV antes de soltar o resto (espera ate ~3 s).
-            if (soCarregada) { try { nv_tpk_luz(0); } catch (EntryPointNotFoundException) { } }
             if (JANELA_SAIDA_LIMPA) { SoltaTudo("terminate"); ArmaSaidaForcada("terminate"); }
             else video?.Parar();
             base.OnTerminate();

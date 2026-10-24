@@ -10,7 +10,6 @@
 #ifdef NV_TPK
 #include "dados.h"
 #include "avisos.h"
-#include "tpkluz.h"
 #endif
 
 #define AP_ARQ   "assperf.txt"
@@ -22,7 +21,7 @@ typedef struct {
   const char *ajuda;     // uma linha na folha
   int recomendado, leve; // presets (o Legacy e sempre 0)
   int n;
-  const char *valores[12];
+  const char *valores[31];
   int fixa;              // 1 = decidida na TV (23/10): fora da folha, sempre `recomendado` no .tpk
 } ApDef;
 
@@ -102,17 +101,12 @@ static const ApDef DEF[AP_N] = {
   [AP_GPUMIN] = { "gpumin", "GPU blur from size",
     "Only signs at least this big go to the GPU; smaller blurs stay on the CPU, where they are cheaper. The log times both by size (Stage timers On).",
     2, 2, 4, { "All", "16k px", "64k px", "256k px" } },
-  [AP_JANELA] = { "janela", "Window hint (test)",
-    "Colour test: sets ONE window-system hint on our window (Off removes it). glview premult tells the TV our edges are "
-    "premultiplied: if the white-at-50% patch then matches the 50% patch and mask outlines go, that is the fix.",
-    0, 0, 11, { "Off", "luminescence=1", "luminescence=0", "luminescence=2", "avoc.control=1", "pq.hint=1",
-               "hwc.window=1", "hwc.dyn_opaque=1", "effect.video=1", "glview premult=1", "glview premult=0" } },
   [AP_SNAP] = { "snap", "ASS snapshot",
     "Pause on a wrong frame and press OK: logs every active line, its style and colours, and saves pictures (see the log page).",
     0, 0, 2, { "Off", "Take now" } },
   [AP_CARTAO] = { "cartao", "Colour test card",
-    "White 100/90/75/50 %, white at 50 % opacity, grey 25 %, black. On a black frame the 5th must match the 4th; "
-    "if it matches the 6th (25 %), soft edges are darkened twice (mask outlines).",
+    "White 100/90/75/50 %, white at 50 % opacity, grey 25 %, black, drawn like subtitles. On a black frame the 5th must "
+    "match the 4th (soft edges right). Compare the 1st with video white to set Subtitle contrast.",
     0, 0, 2, { "Off", "On" } },
   [AP_SCAN] = { "scan", "Scan display APIs",
     "Read-only: logs the TV's EGL/GL colour options, the window protocol requests and aux hints, display/picture functions in the TV libraries and the .NET display API. Full list: /ass-snap-display-scan.txt.",
@@ -120,22 +114,14 @@ static const ApDef DEF[AP_N] = {
   [AP_LOG] = { "log", "Subtitle log",
     "Summary writes one [assperf] line every 10 s. Detailed also logs each slow frame.",
     1, 1, 3, { "Off", "Summary (10 s)", "Detailed" } },
-  [AP_LUZ] = { "luz", "TV luminance limit (test)",
-    "Changes the whole TV's luminance limit only during full-screen playback; the TV's own value goes back when this is Off, "
-    "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
-    0, 0, 3, { "Off", "Set 0 (limit off)", "Set 1 (limit on)" } },
-  [AP_CINZA] = { "cinza", "TV video gray (test)",
-    "Changes the whole TV's video gray mode only during full-screen playback; the TV's own value goes back when this is Off, "
-    "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
-    0, 0, 3, { "Off", "Set 0 (gray off)", "Set 1 (gray on)" } },
   [AP_GAMA] = { "gama", "Subtitle gamma (match TV)",
     "Set the same number as the TV's Gamma/BT.1886 (it only changes the video): subtitles get Samsung's own curve "
-    "(1 - 0.0426 per step). Auto reads the TV's value and follows it.",
-    0, 0, 12, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1", "Auto (read TV)" } },
-  [AP_BRANCO] = { "branco", "Subtitle white (match TV)",
-    "Lowers subtitle white to match video white when the TV's Contrast is set lower. Raise the TV's Contrast "
-    "no higher than where video white matches the Colour test card's white patch.",
-    0, 0, 9, { "100% (off)", "99%", "98%", "97%", "96%", "95%", "94%", "92%", "90%" } },
+    "(1 - 0.0426 per step).",
+    0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
+  [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
+    "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
+    "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",
+    0, 0, 31, { "30 (TV default)", "29", "28", "27", "26", "25", "24", "23", "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1", "0" } },
 };
 
 static int val[AP_N] __attribute__((unused));
@@ -196,9 +182,6 @@ void assperf_iniciar(void) {
     val[AP_SNAP] = 0;
     val[AP_CARTAO] = 0;
     val[AP_SCAN] = 0;
-    val[AP_JANELA] = 0;
-    val[AP_LUZ] = 0;     // ajustes da TV inteira: nunca voltam ligados (tpkluz.c)
-    val[AP_CINZA] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -250,8 +233,7 @@ int assperf_get(int id) {
 
 int assperf_e_medida(int id) {
   return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN ||
-         id == AP_JANELA || id == AP_LUZ || id == AP_CINZA ||
-         id == AP_GAMA || id == AP_BRANCO;   // calibracao: fora dos presets e da guarda, mas fica gravada
+         id == AP_GAMA || id == AP_CONTRASTE;   // calibracao: fora dos presets e da guarda, mas fica gravada
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
 int assperf_fios(void) { int v = assperf_get(AP_FIOS); return v < 0 ? 1 : v > 3 ? 4 : v + 1; }
@@ -346,21 +328,18 @@ int assperf_adiante_fixo_ms(void) {
  * mais escuros). So o video passa por ela; a legenda recebe a mesma conta.
  * Preto e branco nao mudam. */
 double assperf_gama(void) {
-  int v = assperf_get(AP_GAMA), n;
-  if (v == AP_GAMA_AUTO) {
-#ifdef NV_TPK
-    n = tpkluz_gama_tv();
-    if (n < -5 || n > 5) n = 0;
-#else
-    n = 0;
-#endif
-  } else n = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
+  int v = assperf_get(AP_GAMA);
+  int n = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
   return 1.0 - 0.0426 * n;
 }
-double assperf_branco(void) {
-  static const double b[9] = { 1.0, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.92, 0.90 };
-  int v = assperf_get(AP_BRANCO);
-  return b[v < 0 || v > 8 ? 0 : v];
+/* O Contraste da TV e um GANHO por canal RGB antes da curva de gama
+ * (PontusMVideoEnhancer::m_CalculateContrast no libave.so: 944 x (c + 70) /
+ * 120; avoc_contrast_application.md, 24/10). Relativo ao 30 (onde o branco
+ * da legenda bate com o do video na S95C): (c + 70) / 100. */
+double assperf_contraste(void) {
+  int v = assperf_get(AP_CONTRASTE);
+  int c = 30 - (v < 0 || v > 30 ? 0 : v);
+  return (c + 70) / 100.0;
 }
 long assperf_poda_ms(void) {
   static const long ms[4] = { 0, 30000, 120000, 300000 };

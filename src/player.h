@@ -123,7 +123,6 @@ void player_definir_tentativa(int n, int max);
 // ao vivo que nao abre troca sozinho para o proximo da lista.
 int  player_fonte_falhou(void);
 int  player_tem_video(void);   // esta sessao abriu um video (nao o trailer)
-int  player_video_tela_cheia(void);   // tela cheia com video, nao recuado nem saindo (tpkluz.c)
 
 // 1 quando ha video de verdade por tras desta sessao. O desenho usa isto para
 // nao pintar a arte-chave por cima do plano de video.

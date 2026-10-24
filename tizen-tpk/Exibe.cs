@@ -6,13 +6,11 @@
 // Tambem lista as "aux hints" que o gerenciador de janelas aceita nas nossas
 // janelas (Window.GetSupportedAuxiliaryHint*): so a lista, nenhuma e ligada.
 // (O teste de Window.SetBrightness saiu: devolveu False e nada mudou, 24/10.)
-// "Window hint (test)": poe UMA dica do gerenciador de janelas na janela
-// principal (AddAuxiliaryHint), das que o scan de 24/10 listou com cara de
-// brilho/plano; Off tira. O dono olha se o branco do cartao de teste sobe.
-// Os dois ultimos valores nao sao dicas: ligam/desligam o alfa
-// pre-multiplicado do GLView (PremultPor; a borda escura de 24/10).
-// So no host Tizen 6+ (Program.cs). O C pede pela funcao registrada em
-// nv_tpk_exibe_registrar; tudo vai para o log com "[assperf]" (aba Subtitles).
+// BORDA DAS LEGENDAS (Premult): o C (src/tpkborda.c) pede pela funcao de
+// nv_tpk_premult_registrar que o GLView diga ao DALi que o nosso RGB ja vem
+// multiplicado pelo alfa, so enquanto o libass desenha. Ver Premult.
+// So no host Tizen 6+ (Program.cs); o GLView so existe no pacote do 8/9.
+// Tudo vai para o log com "[assperf]" (aba Subtitles).
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -25,118 +23,71 @@ namespace NuvioTpk
     static class Exibe
     {
         [DllImport("libnuvio.so")] static extern void nv_tpk_exibe_registrar(IntPtr scan, IntPtr janela);
+        [DllImport("libnuvio.so")] static extern void nv_tpk_premult_registrar(IntPtr premult);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnSemArg();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnInt(int v);
 
         // Referencias vivas: o C guarda os ponteiros, o GC nao pode recolher.
         static FnSemArg fScan;
-        static FnInt fJanela;
+        static FnInt fPremult;
         static Func<object[]> janelas;
 
         public static void Registrar(Action<Action> post, Func<object[]> windows)
         {
             janelas = windows;
             fScan = () => { post(() => AuxHints()); Task.Run(() => Scan()); };
-            fJanela = v => post(() => Dica(v));
-            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan),
-                                   Marshal.GetFunctionPointerForDelegate(fJanela));
+            // O segundo ponteiro era o "Window hint (test)" (saiu): o C o ignora.
+            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan), IntPtr.Zero);
+            fPremult = v => post(() => Premult(v != 0));
+            // Lib encenada mais velha que o host: sem o export, sem o conserto (nada quebra).
+            try { nv_tpk_premult_registrar(Marshal.GetFunctionPointerForDelegate(fPremult)); }
+            catch (EntryPointNotFoundException) { LogP("this libnuvio.so has no nv_tpk_premult_registrar: edges stay as before"); }
         }
 
-        // Mesma ordem da folha (assperf.c, AP_JANELA): 1.. = uma dica.
-        static readonly string[,] Dicas = {
-            { "wm.luminescence.mode", "1" }, { "wm.luminescence.mode", "0" }, { "wm.luminescence.mode", "2" },
-            { "wm.tvs.win.avoc.control", "1" }, { "wm.video.set.pq.hint", "1" }, { "wm.hwc.window", "1" },
-            { "wm.hwc.dynamic_opaque_window", "1" }, { "wm.comp.win.effect.video", "1" }
-        };
-        static uint dicaId;
-        static bool dicaPosta;
-
-        // Thread principal (post).
-        static void Dica(int v)
-        {
-            object[] ws;
-            try { ws = janelas != null ? janelas() : new object[0]; }
-            catch (Exception e) { LogD(e.GetType().Name + ": " + e.Message); return; }
-            object w = ws.Length > 0 ? ws[0] : null;
-            if (w == null) { LogD("no window"); return; }
-            var t = w.GetType();
-            try
-            {
-                if (dicaPosta)
-                {
-                    var rem = t.GetMethod("RemoveAuxiliaryHint", new[] { typeof(uint) });
-                    object r = rem != null ? rem.Invoke(w, new object[] { dicaId }) : "n/a";
-                    LogD("removed hint id " + dicaId + " -> " + Convert.ToString(r));
-                    dicaPosta = false;
-                }
-                if (premPosto) PremultVoltar(ws);
-                // Depois das dicas: o GLView diz ao DALi que o nosso RGB ja vem
-                // multiplicado pelo alfa (=1) ou nao (=0). Ver PremultPor.
-                if (v == Dicas.GetLength(0) + 1 || v == Dicas.GetLength(0) + 2) { PremultPor(ws, v == Dicas.GetLength(0) + 1); return; }
-                if (v < 1 || v > Dicas.GetLength(0)) { LogD("off"); return; }
-                string nome = Dicas[v - 1, 0], valor = Dicas[v - 1, 1];
-                var add = t.GetMethod("AddAuxiliaryHint", new[] { typeof(string), typeof(string) });
-                if (add == null) { LogD(t.Name + " has no AddAuxiliaryHint in this TizenFX"); return; }
-                object id = add.Invoke(w, new object[] { nome, valor });
-                dicaId = Convert.ToUInt32(id);
-                dicaPosta = true;
-                var get = t.GetMethod("GetAuxiliaryHintValue", new[] { typeof(uint) });
-                string lido = get != null ? Convert.ToString(get.Invoke(w, new object[] { dicaId })) : "n/a";
-                LogD("set " + nome + "=" + valor + " -> id " + dicaId + ", window system reads back \"" + lido + "\"");
-            }
-            catch (TargetInvocationException e)
-            {
-                var x = e.InnerException ?? e;
-                LogD(x.GetType().Name + ": " + x.Message);
-            }
-            catch (Exception e) { LogD(e.GetType().Name + ": " + e.Message); }
-        }
-        static void LogD(string s) { try { NvVid.LogNativo("[assperf] window hint: " + s); } catch { } }
-
-        // BORDA ESCURA (24/10): o nosso GL escreve RGB ja multiplicado pelo alfa
-        // (blend SRC_ALPHA sobre o furo transparente). Se o DALi compoe o GLView
-        // como alfa "reto", multiplica de novo e toda borda suave escurece (o
-        // contorno preto das mascaras; o branco a 50 % do cartao fica como o
-        // cinza 25 %). Pelo Renderer do GLView (reflexao: so liga se existir),
-        // poe BlendPreMultipliedAlpha e loga o valor de antes; Off devolve.
-        static bool premPosto;
+        // Thread principal (post). BORDA ESCURA (24/10): o nosso GL escreve sobre o
+        // furo transparente com blend SRC_ALPHA, entao o RGB ja sai multiplicado
+        // pelo alfa; o DALi compoe o GLView como alfa "reto" e multiplica de novo:
+        // toda borda suave da legenda escurecia (contorno preto das mascaras).
+        // BlendPreMultipliedAlpha no Renderer do GLView conserta (provado na S95C),
+        // mas muda a interface inteira, entao vale so enquanto o libass desenha.
+        // Off devolve o valor que o renderer tinha. Reflexao: TizenFX sem a
+        // propriedade = loga uma vez e nao faz nada.
         static object premRend, premOrig;
         static PropertyInfo premProp;
-        static object GlView(object[] ws)
+        static bool premProcurado, premLigado;
+        static void Premult(bool on)
         {
-            foreach (var w in ws) if (w != null && w.GetType().Name == "GLView") return w;
-            return null;
-        }
-        static void PremultPor(object[] ws, bool on)
-        {
-            object view = GlView(ws);
-            if (view == null) { LogD("premult: no GLView (only the Tizen 8/9 package draws in one)"); return; }
-            var t = view.GetType();
-            var cnt = t.GetProperty("RendererCount");
-            var get = t.GetMethod("GetRendererAt", new[] { typeof(uint) });
-            if (cnt == null || get == null) { LogD("premult: GLView has no RendererCount/GetRendererAt in this TizenFX"); return; }
-            uint n = Convert.ToUInt32(cnt.GetValue(view));
-            if (n == 0) { LogD("premult: GLView exposes 0 renderers (its drawing is internal): cannot set"); return; }
-            object r = get.Invoke(view, new object[] { 0u });
-            var prop = r != null ? r.GetType().GetProperty("BlendPreMultipliedAlpha") : null;
-            if (prop == null || !prop.CanWrite) { LogD("premult: renderer has no writable BlendPreMultipliedAlpha"); return; }
-            premOrig = prop.GetValue(r);
-            prop.SetValue(r, on);
-            premRend = r; premProp = prop; premPosto = true;
-            LogD("premult: GLView renderers=" + n + ", BlendPreMultipliedAlpha before=" + Convert.ToString(premOrig) +
-                 " set=" + on + " reads back=" + Convert.ToString(prop.GetValue(r)));
-        }
-        static void PremultVoltar(object[] ws)
-        {
-            premPosto = false;
             try
             {
-                premProp.SetValue(premRend, premOrig);
-                LogD("premult: restored BlendPreMultipliedAlpha=" + Convert.ToString(premOrig));
+                if (!premProcurado)
+                {
+                    premProcurado = true;
+                    object view = null;
+                    foreach (var w in janelas != null ? janelas() : new object[0])
+                        if (w != null && w.GetType().Name == "GLView") view = w;
+                    if (view == null) { LogP("no GLView (only the Tizen 8/9 package draws in one): edges stay as before"); return; }
+                    var t = view.GetType();
+                    var cnt = t.GetProperty("RendererCount");
+                    var get = t.GetMethod("GetRendererAt", new[] { typeof(uint) });
+                    if (cnt == null || get == null || Convert.ToUInt32(cnt.GetValue(view)) == 0)
+                    { LogP("the GLView exposes no renderer in this TizenFX: edges stay as before"); return; }
+                    object r = get.Invoke(view, new object[] { 0u });
+                    var prop = r != null ? r.GetType().GetProperty("BlendPreMultipliedAlpha") : null;
+                    if (prop == null || !prop.CanWrite) { LogP("the renderer has no writable BlendPreMultipliedAlpha: edges stay as before"); return; }
+                    premRend = r; premProp = prop; premOrig = prop.GetValue(r);
+                    LogP("GLView renderer found, BlendPreMultipliedAlpha is " + Convert.ToString(premOrig));
+                }
+                if (premProp == null || on == premLigado) return;
+                premProp.SetValue(premRend, on ? (object)true : premOrig);
+                premLigado = on;
+                LogP((on ? "on" : "off (back to " + Convert.ToString(premOrig) + ")") +
+                     ", reads back " + Convert.ToString(premProp.GetValue(premRend)));
             }
-            catch (Exception e) { LogD("premult: restore failed " + e.GetType().Name + ": " + e.Message); }
+            catch (TargetInvocationException e) { var x = e.InnerException ?? e; LogP("failed " + x.GetType().Name + ": " + x.Message); premProp = null; }
+            catch (Exception e) { LogP("failed " + e.GetType().Name + ": " + e.Message); premProp = null; }
         }
+        static void LogP(string s) { try { NvVid.LogNativo("[assperf] subtitle edges: premult " + s); } catch { } }
 
         // Thread principal (post): as aux hints de cada janela nossa.
         static void AuxHints()
