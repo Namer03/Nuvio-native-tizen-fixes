@@ -404,9 +404,15 @@ static void export_add(const char *nome) {
 __attribute__((visibility("default")))
 int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
   static const char *const FIXAS[] = { "libgfx-video-output", "libgraphics-control", "libvideoenhance", "libavoc",
+                                       /* picture/OSD providers (define the EP/avoc/plane symbols) */
+                                       "libep-system-api", "libep-common-ui-api", "libunipicture", "libmixer",
+                                       "libIFAnetavoc", "libdisplay-panel", "libkeystone-ppi", "liblib-hdr-tv",
+                                       "libaifw_api_vision_picture_enhancer",
+                                       /* video display path */
+                                       "libvideo-dp-control", "libvideo-render-ctrl", "libvideo-sink",
                                        "libdali-extension-tv", "libtizen-extension-client", NULL };
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/share/dotnet.tizen/framework",
-                                      "/usr/share/dotnet.tizen/lib", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
+                                      "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
   int i, ok = 0;
   size_t ln;
   struct stat st;
@@ -440,8 +446,8 @@ static void lista_cada(const char *dir, const char *nome, void *u) {
 }
 __attribute__((visibility("default")))
 size_t tpkscan_lib_lista(char *dst, size_t n) {
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/share/dotnet.tizen/framework",
-                                      "/usr/share/dotnet.tizen/lib", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
+                                      "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
   LibLista l = { dst, n, 0 };
   int i;
   l.o = (size_t)snprintf(dst, n, "System libraries you can download for the display study (read-only copies).\n"
