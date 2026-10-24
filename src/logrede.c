@@ -253,19 +253,6 @@ static void responderTexto(int c, int codigo, const char *tipo, const char *extr
 }
 
 #ifdef NV_TPK
-#include "tpkscan.h"
-#include <fcntl.h>
-#include <sys/stat.h>
-#include "assperf.h"
-typedef struct { int c; const char *tipo; } LrSnapEnvio;
-static int lrSnapEnviar(void *u, const unsigned char *b, size_t n) {
-  const LrSnapEnvio *e = u;
-  responderTexto(e->c, 200, e->tipo, NULL, (const char *)b, n);
-  return 0;
-}
-#endif
-
-#ifdef NV_TPK
 #define LR_BOTAO_LEG "<button id=b4>Subtitles</button>"
 #define LR_JS_ARQ "var ARQ=['/log.txt','/fonte.txt','/abrir.txt','/tocar.txt','/legenda.txt'],BT=[b0,b1,b2,b3,b4];"
 #define LR_JS_B4 "b4.onclick=function(){modo(4)};"
@@ -439,24 +426,6 @@ static void atender(int c) {
     free(txt);
     return;
   }
-#ifdef NV_TPK
-  /* ASS snapshot (assperf, folha do player): figuras e texto do ultimo. */
-  if (!strncmp(caminho, "/ass-snap", 9)) {
-    char nome[64];
-    const char *q = strchr(caminho, '?');
-    size_t l = q ? (size_t)(q - caminho) : strlen(caminho);
-    int bmp;
-    if (l < 2 || l >= sizeof nome) { responderTexto(c, 404, "text/plain", NULL, "", 0); return; }
-    memcpy(nome, caminho + 1, l - 1); nome[l - 1] = 0;
-    bmp = strstr(nome, ".bmp") != NULL;
-    { LrSnapEnvio e = { c, bmp ? "image/bmp" : "text/plain; charset=utf-8" };
-      if (!assperf_snap_enviar(nome, lrSnapEnviar, &e)) {
-        static const char nada[] = "no ASS snapshot yet: player > Subtitles > Style > ASS performance > ASS snapshot\n";
-        responderTexto(c, 404, "text/plain; charset=utf-8", NULL, nada, sizeof nada - 1);
-      } }
-    return;
-  }
-#endif
   responderTexto(c, 404, "text/plain", NULL, "", 0);
 }
 

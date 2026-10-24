@@ -49,9 +49,8 @@ enum {
   AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
   AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
   AP_GPUMIN,       // smallest blur sent to the GPU: 0 all, 1 16k px, 2 64k px, 3 256k px
-  AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events/styles/colours + images on the log page)
+  AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events, styles, colours and libass images)
   AP_CARTAO,       // colour test card over the video: 0 off, 1 on
-  AP_SCAN,         // scan display APIs: 0 off, 1 run (an action: read-only scan, see the log page)
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
@@ -146,10 +145,6 @@ int  assperf_e_medida(int id);
 // Chave decidida pelos testes na TV: fora da folha, sempre o valor bom no .tpk.
 int  assperf_fixa(int id);
 int  assperf_fios(void);                     // 1..4
-// Arquivos do ultimo "ASS snapshot" para a pagina do log (/ass-snap*.bmp).
-// `nome` sem a barra. 1 = achou (buf continua do assperf; copie antes de soltar a trava).
-void assperf_snap_guardar(const char *nome, unsigned char *buf, size_t n);   // toma posse de buf
-int  assperf_snap_enviar(const char *nome, int (*enviar)(void *u, const unsigned char *b, size_t n), void *u);
 // Bench: estado para a folha ("Running...") e o resumo do ultimo.
 void assperf_bench_estado(int rodando, const char *resumo);
 int  assperf_bench_rodando(void);

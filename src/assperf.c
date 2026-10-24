@@ -102,15 +102,12 @@ static const ApDef DEF[AP_N] = {
     "Only signs at least this big go to the GPU; smaller blurs stay on the CPU, where they are cheaper. The log times both by size (Stage timers On).",
     2, 2, 4, { "All", "16k px", "64k px", "256k px" } },
   [AP_SNAP] = { "snap", "ASS snapshot",
-    "Pause on a wrong frame and press OK: logs every active line, its style and colours, and saves pictures (see the log page).",
+    "Pause on a wrong frame and press OK: logs every active line, its style and colours, and the images libass made.",
     0, 0, 2, { "Off", "Take now" } },
   [AP_CARTAO] = { "cartao", "Colour test card",
     "White 100/90/75/50 %, white at 50 % opacity, grey 25 %, black, drawn like subtitles. On a black frame the 5th must "
     "match the 4th (soft edges right). Compare the 1st with video white to set Subtitle contrast.",
     0, 0, 2, { "Off", "On" } },
-  [AP_SCAN] = { "scan", "Scan display APIs",
-    "Read-only: logs the TV's EGL/GL colour options, the window protocol requests and aux hints, display/picture functions in the TV libraries and the .NET display API. Full list: /ass-snap-display-scan.txt.",
-    0, 0, 2, { "Off", "Run" } },
   [AP_LOG] = { "log", "Subtitle log",
     "Summary writes one [assperf] line every 10 s. Detailed also logs each slow frame.",
     1, 1, 3, { "Off", "Summary (10 s)", "Detailed" } },
@@ -181,7 +178,6 @@ void assperf_iniciar(void) {
     val[AP_BENCH] = 0;   // acoes: nunca voltam ligadas do arquivo
     val[AP_SNAP] = 0;
     val[AP_CARTAO] = 0;
-    val[AP_SCAN] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -232,7 +228,7 @@ int assperf_get(int id) {
 }
 
 int assperf_e_medida(int id) {
-  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN ||
+  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO ||
          id == AP_GAMA || id == AP_CONTRASTE;   // calibracao: fora dos presets e da guarda, mas fica gravada
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
@@ -635,31 +631,3 @@ void assperf_med_texto(char *dst, size_t n) {
   pthread_mutex_unlock(&medTrava);
 }
 
-// --- ASS snapshot: os arquivos da pagina do log -----------------------------
-#define AP_SNAP_MAX 8
-static struct { char nome[48]; unsigned char *buf; size_t n; } snapArq[AP_SNAP_MAX];
-static pthread_mutex_t snapTrava = PTHREAD_MUTEX_INITIALIZER;
-
-void assperf_snap_guardar(const char *nome, unsigned char *buf, size_t n) {
-  int i, livre = -1;
-  pthread_mutex_lock(&snapTrava);
-  for (i = 0; i < AP_SNAP_MAX; i++) {
-    if (snapArq[i].buf && !strcmp(snapArq[i].nome, nome)) { free(snapArq[i].buf); snapArq[i].buf = NULL; livre = i; break; }
-    if (!snapArq[i].buf && livre < 0) livre = i;
-  }
-  if (livre >= 0 && buf) {
-    snprintf(snapArq[livre].nome, sizeof snapArq[livre].nome, "%s", nome);
-    snapArq[livre].buf = buf; snapArq[livre].n = n; buf = NULL;
-  }
-  pthread_mutex_unlock(&snapTrava);
-  free(buf);
-}
-
-int assperf_snap_enviar(const char *nome, int (*enviar)(void *u, const unsigned char *b, size_t n), void *u) {
-  int i, ok = 0;
-  pthread_mutex_lock(&snapTrava);
-  for (i = 0; i < AP_SNAP_MAX; i++)
-    if (snapArq[i].buf && !strcmp(snapArq[i].nome, nome)) { ok = 1; enviar(u, snapArq[i].buf, snapArq[i].n); break; }
-  pthread_mutex_unlock(&snapTrava);
-  return ok;
-}

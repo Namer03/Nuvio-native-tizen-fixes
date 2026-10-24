@@ -355,7 +355,7 @@ namespace NuvioTpk
             Etapa("begin apps-init");
             try { Apps.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }); } catch (Exception e) { Etapa("note apps-init " + e.GetType().Name); }
             Etapa("ok apps-init");
-            // Testes de exibicao da folha ASS performance (Exibe.cs, src/tpkscan.c).
+            // Borda das legendas: premult do GLView so enquanto o libass desenha (Exibe.cs, src/tpkborda.c).
             try { Exibe.Registrar(a => { if (principal != null) principal.Post(_ => a(), null); else a(); }, () => new object[] { NuiWindow.Instance, gl, GlViewOuNulo() }); }
             catch (Exception e) { Etapa("note display-test-init " + e.GetType().Name); }
             NvCarga.LimparAntigos(dados);

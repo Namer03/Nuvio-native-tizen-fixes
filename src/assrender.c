@@ -2614,42 +2614,11 @@ static void ass_bench_talvez(long long agora, unsigned geracao) {
  *     pede, as linhas ativas naquele instante (texto inteiro) com o estilo e as
  *     cores de cada uma, e as imagens que o libass entregou (cor, alfa,
  *     tamanho, cobertura);
- *  2. figuras na pagina do log (metade da resolucao, BMP):
- *     /ass-snap-libass.bmp       o quadro do libass sobre cinza 50%
- *     /ass-snap-libass-alpha.bmp a cobertura dele (branco = opaco)
- *     /ass-snap-screen.bmp       o que o app de fato pintou (glReadPixels,
- *                                logo depois das legendas, antes do resto)
- *     /ass-snap-screen-alpha.bmp o alfa da tela (0 = video aparece)
- * As duas primeiras dizem se o libass pinta certo; as duas ultimas, se o
- * desenho no fio GL muda alguma coisa. Nada vai para a rede. */
+ *  2. no fio GL, logo depois das legendas: a media do que o app pintou e,
+ *     com o blur na GPU, a diferenca dele para o blur exato do libass.
+ * So vai para o log (aba Subtitles); nenhum arquivo, nada vai para a rede. */
 #define SNAP_W 960
 #define SNAP_H 540
-
-static unsigned char *ass_bmp24(const unsigned char *rgb, int w, int h, size_t *n) {
-  size_t linha = ((size_t)w * 3 + 3) & ~(size_t)3, tam = 54 + linha * (size_t)h;
-  unsigned char *b = calloc(1, tam);
-  int y, x;
-  if (!b) return NULL;
-  b[0] = 'B'; b[1] = 'M';
-#define LE32(o, v) do { b[o] = (unsigned char)(v); b[o + 1] = (unsigned char)((v) >> 8); \
-                        b[o + 2] = (unsigned char)((v) >> 16); b[o + 3] = (unsigned char)((v) >> 24); } while (0)
-  LE32(2, (unsigned)tam); LE32(10, 54u); LE32(14, 40u); LE32(18, (unsigned)w); LE32(22, (unsigned)h);
-  b[26] = 1; b[28] = 24; LE32(34, (unsigned)(linha * (size_t)h));
-#undef LE32
-  for (y = 0; y < h; y++) {
-    unsigned char *d = b + 54 + (size_t)(h - 1 - y) * linha;
-    const unsigned char *s = rgb + (size_t)y * (size_t)w * 3;
-    for (x = 0; x < w; x++) { d[3 * x] = s[3 * x + 2]; d[3 * x + 1] = s[3 * x + 1]; d[3 * x + 2] = s[3 * x]; }
-  }
-  *n = tam;
-  return b;
-}
-
-static void ass_snap_guardar_rgb(const char *nome, const unsigned char *rgb, int w, int h) {
-  size_t n = 0;
-  unsigned char *b = ass_bmp24(rgb, w, h, &n);
-  if (b) assperf_snap_guardar(nome, b, n);
-}
 
 /* Texto do snapshot: um buffer que cresce, uma linha "[assperf] snap" cada. */
 typedef struct { char *b; size_t n, cap; } SnapTxt;
@@ -2686,7 +2655,6 @@ static void *ass_snap_fio(void *u) {
   SnapTxt tx = { NULL, 0, 0 };
   ASS_Renderer *r = NULL;
   ASS_Image *img, *it;
-  unsigned char *tela = NULL, *rgb = NULL, *alf = NULL;
   int fw = 0, fh = 0, i, nimg = 0, ativos = 0;
   free(u);
   pthread_mutex_lock(&assTrava);
@@ -2742,9 +2710,7 @@ static void *ass_snap_fio(void *u) {
   pthread_mutex_unlock(&assTrava);
 
   /* As imagens sao do renderer do snapshot: validas ate o ass_renderer_done. */
-  tela = calloc((size_t)fw * (size_t)fh, 4);
-  if (tela) {
-    for (i = 0; i < fw * fh; i++) { tela[4 * i] = tela[4 * i + 1] = tela[4 * i + 2] = 128; tela[4 * i + 3] = 0; }
+  {
     for (it = img; it; it = it->next) {
       unsigned cr = it->color >> 24, cg = (it->color >> 16) & 255, cb = (it->color >> 8) & 255;
       unsigned op = 255u - (it->color & 255u);
@@ -2755,17 +2721,9 @@ static void *ass_snap_fio(void *u) {
         const unsigned char *src = it->bitmap + (size_t)y * (size_t)it->stride;
         if (py < 0 || py >= fh) continue;
         for (x = 0; x < it->w; x++) {
-          int px = it->dst_x + x;
-          unsigned a = (unsigned)src[x] * op / 255u;
           if (src[x] > maxA) maxA = src[x];
           if (src[x]) cobre++;
           if (src[x] >= 250) cheio++;
-          if (px < 0 || px >= fw || !a) continue;
-          { unsigned char *d = tela + 4 * ((size_t)py * (size_t)fw + (size_t)px);
-            d[0] = (unsigned char)((cr * a + d[0] * (255u - a) + 127u) / 255u);
-            d[1] = (unsigned char)((cg * a + d[1] * (255u - a) + 127u) / 255u);
-            d[2] = (unsigned char)((cb * a + d[2] * (255u - a) + 127u) / 255u);
-            d[3] = (unsigned char)(a + d[3] * (255u - a) / 255u); }
         }
       }
       nimg++;
@@ -2774,29 +2732,13 @@ static void *ass_snap_fio(void *u) {
                    nimg, it->type == IMAGE_TYPE_CHARACTER ? "fill" : it->type == IMAGE_TYPE_OUTLINE ? "outline" : "shadow",
                    cr, cg, cb, op, it->color & 255u, it->dst_x, it->dst_y, it->w, it->h, maxA, cobre, cheio);
     }
-    rgb = malloc((size_t)SNAP_W * SNAP_H * 3);
-    alf = malloc((size_t)SNAP_W * SNAP_H * 3);
-    if (rgb && alf) {
-      int x, y;
-      for (y = 0; y < SNAP_H; y++)
-        for (x = 0; x < SNAP_W; x++) {
-          const unsigned char *s = tela + 4 * ((size_t)(y * fh / SNAP_H) * (size_t)fw + (size_t)(x * fw / SNAP_W));
-          unsigned char *d = rgb + 3 * ((size_t)y * SNAP_W + x), *da = alf + 3 * ((size_t)y * SNAP_W + x);
-          d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
-          da[0] = da[1] = da[2] = s[3];
-        }
-      ass_snap_guardar_rgb("ass-snap-libass.bmp", rgb, SNAP_W, SNAP_H);
-      ass_snap_guardar_rgb("ass-snap-libass-alpha.bmp", alf, SNAP_W, SNAP_H);
-    }
   }
-  snap_linha(&tx, "%d image(s) from libass (%dx%d frame). Pictures: http://<TV IP>:8099/ass-snap-libass.bmp, "
-             "/ass-snap-libass-alpha.bmp, /ass-snap-screen.bmp, /ass-snap-screen-alpha.bmp", nimg, fw, fh);
-  free(rgb); free(alf); free(tela);
+  snap_linha(&tx, "%d image(s) from libass (%dx%d frame)", nimg, fw, fh);
   if (r) { pthread_mutex_lock(&assTrava); ass_renderer_done(r); pthread_mutex_unlock(&assTrava); }
-  if (tx.b) assperf_snap_guardar("ass-snap.txt", (unsigned char *)tx.b, tx.n);
+  free(tx.b);
   fflush(stdout);
   __atomic_store_n(&assSnapTela, 1, __ATOMIC_RELEASE);
-  assperf_bench_estado(0, "Snapshot taken: see the Subtitles log and /ass-snap-*.bmp");
+  assperf_bench_estado(0, "Snapshot taken: see the Subtitles log");
   return NULL;
 }
 
@@ -2841,35 +2783,12 @@ static void ass_snap_gpublur(void) {
     }
     if (dImg > maxD) maxD = dImg;
     n++;
-    if ((long)im->w * im->h > area) {
-      /* a figura da maior imagem: tres paineis lado a lado, cinza */
-      int esc = (im->w * 3 + 1919) / 1920, W, H, x, y;
-      unsigned char *rgb;
-      if (esc < 1) esc = 1;
-      W = im->w * 3 / esc; H = im->h / esc;
-      rgb = W > 0 && H > 0 ? malloc((size_t)W * (size_t)H * 3) : NULL;
-      if (rgb) {
-        for (y = 0; y < H; y++)
-          for (x = 0; x < W; x++) {
-            int painel = x / (im->w / esc > 0 ? im->w / esc : 1), sx = (x % (im->w / esc > 0 ? im->w / esc : 1)) * esc;
-            size_t o = (size_t)(y * esc) * (size_t)im->w + (size_t)sx;
-            int v = painel == 0 ? a[o] : painel == 1 ? b[o] : (a[o] > b[o] ? a[o] - b[o] : b[o] - a[o]) * 8;
-            unsigned char *q = rgb + 3 * ((size_t)y * (size_t)W + (size_t)x);
-            if (v > 255) v = 255;
-            q[0] = q[1] = q[2] = (unsigned char)v;
-            if (painel == 2 && v) { q[0] = (unsigned char)v; q[1] = q[2] = 0; }
-          }
-        ass_snap_guardar_rgb("ass-snap-gpublur.bmp", rgb, W, H);
-        free(rgb);
-        area = (long)im->w * im->h; maior = i;
-      }
-    }
+    if ((long)im->w * im->h > area) { area = (long)im->w * im->h; maior = i; }
     free(a); free(b);
   }
   if (n)
     printf("[assperf] snap gpu blur vs libass CPU: %d image(s), %.0f pixels | max difference %d | mean %.2f"
-           " | pixels off by more than 2: %.2f%%, more than 8: %.3f%% (alpha levels 0-255, %s) | picture of image %d:"
-           " http://<TV IP>:8099/ass-snap-gpublur.bmp (CPU | GPU | difference x8)\n",
+           " | pixels off by more than 2: %.2f%%, more than 8: %.3f%% (alpha levels 0-255, %s) | largest: image %d\n",
            n, px, maxD, px > 0 ? soma / px : 0.0, px > 0 ? 100.0 * acima2 / px : 0.0, px > 0 ? 100.0 * acima8 / px : 0.0,
            assgpublur_formato(), maior + 1);
   else
@@ -2883,16 +2802,14 @@ static void ass_snap_gpublur(void) {
 static void ass_snap_ler_tela(void) {
   GLint vp[4];
   int w, h, y0, x, y;
-  unsigned char *faixa, *rgb, *alf;
+  unsigned char *faixa;
   double soma[4] = { 0 };
   if (!__atomic_exchange_n(&assSnapTela, 0, __ATOMIC_ACQ_REL)) return;
   glGetIntegerv(GL_VIEWPORT, vp);
   w = vp[2]; h = vp[3];
   if (w <= 0 || h <= 0) return;
   faixa = malloc((size_t)w * 4 * 16);
-  rgb = malloc((size_t)SNAP_W * SNAP_H * 3);
-  alf = malloc((size_t)SNAP_W * SNAP_H * 3);
-  if (!faixa || !rgb || !alf) { free(faixa); free(rgb); free(alf); return; }
+  if (!faixa) return;
   for (y = 0; y < SNAP_H; y++) {
     /* a linha y da figura (de cima) e a linha h-1-sy do GL (de baixo) */
     int sy = y * h / SNAP_H;
@@ -2900,13 +2817,9 @@ static void ass_snap_ler_tela(void) {
     glReadPixels(vp[0], vp[1] + y0, w, 1, GL_RGBA, GL_UNSIGNED_BYTE, faixa);
     for (x = 0; x < SNAP_W; x++) {
       const unsigned char *s = faixa + 4 * (size_t)(x * w / SNAP_W);
-      unsigned char *d = rgb + 3 * ((size_t)y * SNAP_W + x), *da = alf + 3 * ((size_t)y * SNAP_W + x);
-      d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; da[0] = da[1] = da[2] = s[3];
       soma[0] += s[0]; soma[1] += s[1]; soma[2] += s[2]; soma[3] += s[3];
     }
   }
-  ass_snap_guardar_rgb("ass-snap-screen.bmp", rgb, SNAP_W, SNAP_H);
-  ass_snap_guardar_rgb("ass-snap-screen-alpha.bmp", alf, SNAP_W, SNAP_H);
 #if ASS_GPU
   ass_snap_gpublur();
 #endif
@@ -2914,7 +2827,7 @@ static void ass_snap_ler_tela(void) {
          " | gl error 0x%x\n", w, h, soma[0] / (SNAP_W * SNAP_H), soma[1] / (SNAP_W * SNAP_H),
          soma[2] / (SNAP_W * SNAP_H), soma[3] / (SNAP_W * SNAP_H), (unsigned)glGetError());
   fflush(stdout);
-  free(faixa); free(rgb); free(alf);
+  free(faixa);
 }
 
 /* Cartao de teste de cor: branco 100/90/75/50 %, branco a 50 % de alfa,
