@@ -26,3 +26,24 @@ int avoc_set_luminance_limit(int limit, int type) {
   fclose(f);
   return 0;
 }
+
+// "video gray": $FAKE_AVOC_GRAY_DB, sem slot (resposta (valor, 0) no D-Bus).
+static int lerCinza(void) {
+  FILE *f = fopen(getenv("FAKE_AVOC_GRAY_DB"), "r");
+  int v = -1;
+  if (f) { if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); }
+  return v;
+}
+int avoc_get_video_gray_onoff(int *out_value) {
+  *out_value = lerCinza();
+  return 0;
+}
+int avoc_set_video_gray_onoff(int onoff) {
+  FILE *f;
+  if (onoff < 0 || onoff > 1) return -22;
+  f = fopen(getenv("FAKE_AVOC_GRAY_DB"), "w");
+  if (!f) return -5;
+  fprintf(f, "%d\n", onoff);
+  fclose(f);
+  return 0;
+}

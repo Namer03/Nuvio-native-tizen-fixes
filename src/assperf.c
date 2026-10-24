@@ -121,6 +121,10 @@ static const ApDef DEF[AP_N] = {
     "Changes the whole TV's luminance limit only during full-screen playback; the TV's own value goes back when this is Off, "
     "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
     0, 0, 3, { "Off", "Set 0 (limit off)", "Set 1 (limit on)" } },
+  [AP_CINZA] = { "cinza", "TV video gray (test)",
+    "Changes the whole TV's video gray mode only during full-screen playback; the TV's own value goes back when this is Off, "
+    "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
+    0, 0, 3, { "Off", "Set 0 (gray off)", "Set 1 (gray on)" } },
 };
 
 static int val[AP_N] __attribute__((unused));
@@ -182,7 +186,8 @@ void assperf_iniciar(void) {
     val[AP_CARTAO] = 0;
     val[AP_SCAN] = 0;
     val[AP_JANELA] = 0;
-    val[AP_LUZ] = 0;     // ajuste da TV inteira: nunca volta ligado (tpkluz.c)
+    val[AP_LUZ] = 0;     // ajustes da TV inteira: nunca voltam ligados (tpkluz.c)
+    val[AP_CINZA] = 0;
     for (int i = 0; i < AP_N; i++) if (DEF[i].fixa) val[i] = DEF[i].recomendado;
     marca = dados_ler(AP_MARCA);
     if (marca) {
@@ -234,7 +239,7 @@ int assperf_get(int id) {
 
 int assperf_e_medida(int id) {
   return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN ||
-         id == AP_JANELA || id == AP_LUZ;
+         id == AP_JANELA || id == AP_LUZ || id == AP_CINZA;
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
 int assperf_fios(void) { int v = assperf_get(AP_FIOS); return v < 0 ? 1 : v > 3 ? 4 : v + 1; }

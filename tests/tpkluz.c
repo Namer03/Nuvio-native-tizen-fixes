@@ -6,6 +6,8 @@
 //   arranque: o arranque seguinte devolve o original e apaga a nota
 //   semlib  : TV sem libavoc: nada muda, nenhuma nota
 //   erroget : o get falha: nada muda, nenhuma nota
+//   cinza   : o "video gray" (sem slot) com as mesmas regras, junto do limite
+//   caicinza / arranquecinza: queda e recuperacao do video gray
 #include "../src/tpkluz.h"
 #include "../src/assperf.h"
 #include <stdio.h>
@@ -14,8 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 
-static int chaveTeste;
-int assperf_get(int id) { return id == AP_LUZ ? chaveTeste : 0; }
+static int chaveTeste, chaveCinza;
+int assperf_get(int id) { return id == AP_LUZ ? chaveTeste : id == AP_CINZA ? chaveCinza : 0; }
 
 static const char *dados;
 static int falhas;
@@ -27,6 +29,22 @@ static int db(void) {
   return v;
 }
 static void dbPor(int v) { FILE *f = fopen(getenv("FAKE_AVOC_DB"), "w"); fprintf(f, "%d\n", v); fclose(f); }
+static int cinza(void) {
+  FILE *f = fopen(getenv("FAKE_AVOC_GRAY_DB"), "r");
+  int v = -1;
+  if (f) { if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); }
+  return v;
+}
+static void cinzaPor(int v) { FILE *f = fopen(getenv("FAKE_AVOC_GRAY_DB"), "w"); fprintf(f, "%d\n", v); fclose(f); }
+static int temNotaCinza(void) {
+  char c[600];
+  snprintf(c, sizeof c, "%s/cinza-original.txt", dados);
+  return access(c, F_OK) == 0;
+}
+static int esperaCinza(int v) {
+  for (int i = 0; i < 200; i++) { if (cinza() == v) return 1; usleep(10000); }
+  return 0;
+}
 static int temNota(void) {
   char c[600];
   snprintf(c, sizeof c, "%s/luz-original.txt", dados);
@@ -41,11 +59,45 @@ static int espera(int v) {
 #define CONFERE(c, msg) do { if (!(c)) { printf("FALHOU: %s (db=%d nota=%d)\n", msg, db(), temNota()); falhas++; } } while (0)
 
 static void quadro(int chave, int tela) { chaveTeste = chave; tpkluz_quadro(tela); }
+static void quadro2(int luz, int cz, int tela) { chaveTeste = luz; chaveCinza = cz; tpkluz_quadro(tela); }
 
 int main(int argc, char **argv) {
   const char *modo = argc > 1 ? argv[1] : "normal";
   dados = getenv("TPKLUZ_DADOS");
-  if (!strcmp(modo, "arranque")) {
+  if (!strcmp(modo, "arranquecinza")) {
+    tpkluz_iniciar(dados);
+    CONFERE(esperaCinza(0), "arranque: o video gray original (0) volta");
+    usleep(50000);
+    CONFERE(!temNotaCinza(), "arranque: a nota do video gray sai");
+  } else if (!strcmp(modo, "caicinza")) {
+    cinzaPor(0);
+    tpkluz_iniciar(dados);
+    usleep(50000);
+    quadro2(0, 2, 1);
+    CONFERE(esperaCinza(1) && temNotaCinza(), "caicinza: mudou e anotou");
+    fflush(stdout);
+    _exit(falhas ? 1 : 0);
+  } else if (!strcmp(modo, "cinza")) {
+    dbPor(1); cinzaPor(0);
+    tpkluz_iniciar(dados);
+    usleep(50000);
+    quadro2(0, 2, 1);
+    CONFERE(esperaCinza(1) && temNotaCinza(), "video gray Set 1: a TV vai a 1 e a nota existe");
+    CONFERE(db() == 1 && !temNota(), "o limite fica como esta");
+    quadro2(1, 2, 1);
+    CONFERE(espera(0) && cinza() == 1, "os dois juntos");
+    tpkluz_sistema(0);
+    CONFERE(db() == 1 && cinza() == 0 && !temNota() && !temNotaCinza(), "pausa: os dois voltam antes de retornar");
+    tpkluz_sistema(1);
+    CONFERE(espera(0) && esperaCinza(1), "retomada: os dois voltam a valer");
+    quadro2(1, 0, 1);
+    CONFERE(esperaCinza(0) && db() == 0, "video gray Off: so ele volta");
+    quadro2(1, 0, 0);
+    CONFERE(espera(1) && cinza() == 0, "saiu da tela cheia: o limite volta");
+    quadro2(0, 1, 1); usleep(100000);
+    CONFERE(cinza() == 0 && !temNotaCinza(), "video gray Set 0 com a TV em 0: nada muda");
+    tpkluz_sistema(0);
+  } else if (!strcmp(modo, "arranque")) {
     tpkluz_iniciar(dados);
     CONFERE(espera(1), "arranque: o original (1) volta");
     dorme(50);

@@ -1,4 +1,5 @@
-// "TV luminance limit (test)" da folha ASS performance (.tpk). Ver tpkluz.c.
+// "TV luminance limit (test)" e "TV video gray (test)" da folha ASS performance
+// (.tpk). Ver tpkluz.c.
 #ifndef NV_TPKLUZ_H
 #define NV_TPKLUZ_H
 
