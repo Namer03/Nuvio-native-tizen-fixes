@@ -406,12 +406,13 @@ int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
   static const char *const FIXAS[] = { "libgfx-video-output", "libgraphics-control", "libvideoenhance", "libavoc",
                                        /* picture/OSD providers (define the EP/avoc/plane symbols) */
                                        "libep-system-api", "libep-common-ui-api", "libunipicture", "libmixer",
-                                       "libIFAnetavoc", "libdisplay-panel", "libkeystone-ppi", "liblib-hdr-tv",
+                                       "libave", "libIFAnetavoc", "libdisplay-panel", "libkeystone-ppi", "liblib-hdr-tv",
                                        "libppi-factory-api", "libaifw_api_vision_picture_enhancer",
                                        /* video display path */
                                        "libvideo-dp-control", "libvideo-render-ctrl", "libvideo-sink",
                                        "libdali-extension-tv", "libtizen-extension-client", NULL };
   static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
+                                      "/prd/usr/lib", "/prd/lib", "/prd/usr/lib/driver",
                                       "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
   int i, ok = 0;
   size_t ln;
@@ -471,6 +472,7 @@ static void bin_lista_cada(const char *dir, const char *nome, void *u) {
 __attribute__((visibility("default")))
 size_t tpkscan_lib_lista(char *dst, size_t n) {
   static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
+                                      "/prd/usr/lib", "/prd/lib", "/prd/usr/lib/driver",
                                       "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
   static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
   LibLista l = { dst, n, 0 };
@@ -653,7 +655,8 @@ static void scan_um(const char *dir, const char *nome, void *u) {
 
 static void scan_libs(ScanTxt *t) {
   ScanLib sc = { t, 0, 0, 0 };
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
+                                      "/prd/usr/lib", "/prd/lib", NULL };
   int i;
   for (i = 0; DIRS[i]; i++) {
     int n = listar(DIRS[i], scan_um, &sc);
