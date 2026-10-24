@@ -10,6 +10,7 @@
 #ifdef NV_TPK
 #include "dados.h"
 #include "avisos.h"
+#include "tpkluz.h"
 #endif
 
 #define AP_ARQ   "assperf.txt"
@@ -21,7 +22,7 @@ typedef struct {
   const char *ajuda;     // uma linha na folha
   int recomendado, leve; // presets (o Legacy e sempre 0)
   int n;
-  const char *valores[11];
+  const char *valores[12];
   int fixa;              // 1 = decidida na TV (23/10): fora da folha, sempre `recomendado` no .tpk
 } ApDef;
 
@@ -128,9 +129,9 @@ static const ApDef DEF[AP_N] = {
     "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
     0, 0, 3, { "Off", "Set 0 (gray off)", "Set 1 (gray on)" } },
   [AP_GAMA] = { "gama", "Subtitle gamma (match TV)",
-    "The TV's picture settings (gamma/BT.1886, contrast) only change the video, never the app. Minus brightens subtitle "
-    "mid-tones, plus darkens them: adjust until typeset masks blend into the video.",
-    0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
+    "Set the same number as the TV's Gamma/BT.1886 (it only changes the video): subtitles get Samsung's own curve "
+    "(1 - 0.0426 per step). Auto reads the TV's value and follows it.",
+    0, 0, 12, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1", "Auto (read TV)" } },
   [AP_BRANCO] = { "branco", "Subtitle white (match TV)",
     "Lowers subtitle white to match video white when the TV's Contrast is set lower. Raise the TV's Contrast "
     "no higher than where video white matches the Colour test card's white patch.",
@@ -339,12 +340,22 @@ int assperf_adiante_fixo_ms(void) {
   int v = assperf_get(AP_ADIANTE);
   return ms[v < 0 || v > 5 ? 0 : v];
 }
-/* Cada degrau de gama muda o expoente em 0,06 (1,00 = off). Linear no
- * valor do pixel, como o gama da TV: o preto e o branco nao mudam. */
+/* O slider de gama da TV (-5..+5) escolhe uma curva relativa na LUT
+ * GAMMATBLOSD_384 do libave.so: out = in^(1 - 0,0426 x slider), medido nas
+ * 11 curvas (avoc_gamma_contrast_picture.md, 24/10). "-" = gama maior (meios
+ * mais escuros). So o video passa por ela; a legenda recebe a mesma conta.
+ * Preto e branco nao mudam. */
 double assperf_gama(void) {
-  int v = assperf_get(AP_GAMA);
-  int passo = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
-  return 1.0 + 0.06 * passo;
+  int v = assperf_get(AP_GAMA), n;
+  if (v == AP_GAMA_AUTO) {
+#ifdef NV_TPK
+    n = tpkluz_gama_tv();
+    if (n < -5 || n > 5) n = 0;
+#else
+    n = 0;
+#endif
+  } else n = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
+  return 1.0 - 0.0426 * n;
 }
 double assperf_branco(void) {
   static const double b[9] = { 1.0, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.92, 0.90 };

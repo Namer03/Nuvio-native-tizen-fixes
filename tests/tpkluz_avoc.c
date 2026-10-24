@@ -47,3 +47,11 @@ int avoc_set_video_gray_onoff(int onoff) {
   fclose(f);
   return 0;
 }
+
+// gama da TV: $FAKE_AVOC_GAMMA (-5..+5), so leitura.
+int avoc_get_gamma(int *out_value, int type) {
+  const char *g = getenv("FAKE_AVOC_GAMMA");
+  if (type != 1) return -22;
+  *out_value = g ? atoi(g) : 0;
+  return 0;
+}

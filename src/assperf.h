@@ -58,11 +58,12 @@ enum {
                    // only during full-screen playback, the TV's own value goes back afterwards; never kept on
   AP_CINZA,        // TV video gray test (tpkluz.c, avoc_set_video_gray_onoff): 0 off (TV value), 1 set 0, 2 set 1;
                    // same rules as AP_LUZ
-  AP_GAMA,         // subtitle gamma to match the TV's video picture settings (gamma / BT.1886), which never
-                   // reach the app's layer: 0 off, 1..5 = -1..-5 (brighter mid-tones), 6..10 = +5..+1 (darker)
+  AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
+                   // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV), 11 = Auto (read TV)
   AP_BRANCO,       // subtitle white level to match a lower video contrast: 0 = 100% (off) .. 8 = 90%
   AP_N
 };
+#define AP_GAMA_AUTO 11
 
 // Valor atual (barato: le um int). Fora do .tpk: sempre o Legacy.
 int  assperf_get(int id);

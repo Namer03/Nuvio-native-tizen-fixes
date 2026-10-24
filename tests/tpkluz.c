@@ -8,6 +8,7 @@
 //   erroget : o get falha: nada muda, nenhuma nota
 //   cinza   : o "video gray" (sem slot) com as mesmas regras, junto do limite
 //   caicinza / arranquecinza: queda e recuperacao do video gray
+//   gama    : Auto le o gama da TV so em tela cheia; nota de guarda some
 #include "../src/tpkluz.h"
 #include "../src/assperf.h"
 #include <stdio.h>
@@ -16,8 +17,8 @@
 #include <time.h>
 #include <unistd.h>
 
-static int chaveTeste, chaveCinza;
-int assperf_get(int id) { return id == AP_LUZ ? chaveTeste : id == AP_CINZA ? chaveCinza : 0; }
+static int chaveTeste, chaveCinza, chaveGama;
+int assperf_get(int id) { return id == AP_LUZ ? chaveTeste : id == AP_CINZA ? chaveCinza : id == AP_GAMA ? chaveGama : 0; }
 
 static const char *dados;
 static int falhas;
@@ -64,7 +65,19 @@ static void quadro2(int luz, int cz, int tela) { chaveTeste = luz; chaveCinza = 
 int main(int argc, char **argv) {
   const char *modo = argc > 1 ? argv[1] : "normal";
   dados = getenv("TPKLUZ_DADOS");
-  if (!strcmp(modo, "arranquecinza")) {
+  if (!strcmp(modo, "gama")) {
+    char c[600];
+    tpkluz_iniciar(dados);
+    usleep(50000);
+    chaveGama = AP_GAMA_AUTO; tpkluz_quadro(0); usleep(100000);
+    CONFERE(tpkluz_gama_tv() == TPKLUZ_GAMA_DESCONHECIDO, "gama: fora da tela cheia nao le");
+    tpkluz_quadro(1);
+    for (int i = 0; i < 200 && tpkluz_gama_tv() != -1; i++) usleep(10000);
+    CONFERE(tpkluz_gama_tv() == -1, "gama: Auto le -1 da TV");
+    snprintf(c, sizeof c, "%s/gama-auto-testando.txt", dados);
+    CONFERE(access(c, F_OK) != 0, "gama: a nota de guarda sai depois da primeira leitura");
+    tpkluz_sistema(0);
+  } else if (!strcmp(modo, "arranquecinza")) {
     tpkluz_iniciar(dados);
     CONFERE(esperaCinza(0), "arranque: o video gray original (0) volta");
     usleep(50000);

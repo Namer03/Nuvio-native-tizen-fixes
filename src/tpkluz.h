@@ -13,4 +13,9 @@ void tpkluz_quadro(int telaCheia);
 // original voltar a TV antes de retornar.
 void tpkluz_sistema(int ativo);
 
+// "Subtitle gamma" = Auto: o slider de gama da TV (-5..+5) lido por
+// avoc_get_gamma no fio daqui, ou TPKLUZ_GAMA_DESCONHECIDO.
+#define TPKLUZ_GAMA_DESCONHECIDO 0x7fff
+int tpkluz_gama_tv(void);
+
 #endif

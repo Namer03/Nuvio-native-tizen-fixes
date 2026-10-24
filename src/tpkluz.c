@@ -126,22 +126,30 @@ static int marcaLer(Ajuste *a, int *o, int *p) {
 }
 
 // ---- libavoc ----------------------------------------------------------------
-static int carregar(Ajuste *a) {
+// libavoc.so, aberta uma vez (so o fio). NULL = esta TV nao tem; `erro` diz por que.
+static const char *nomeLib = "";
+static char erroLib[300];
+static void *libavoc(void) {
   static void *h;
   static int tentou;
-  static const char *nomeLib = "";
-  static char erro[300];
   static const char *const NOMES[] = { "libavoc.so", "libavoc.so.0", NULL };
-  if (a->lib) return a->lib > 0;
   if (!tentou) {
     int i;
     tentou = 1;
     for (i = 0; NOMES[i] && !h; i++) {
       h = dlopen(NOMES[i], RTLD_LAZY | RTLD_LOCAL);
       if (h) nomeLib = NOMES[i];
-      else if (!erro[0]) { const char *e = dlerror(); snprintf(erro, sizeof erro, "%s", e ? e : "?"); }
+      else if (!erroLib[0]) { const char *e = dlerror(); snprintf(erroLib, sizeof erroLib, "%s", e ? e : "?"); }
     }
   }
+  return h;
+}
+
+static int carregar(Ajuste *a) {
+  void *h;
+  const char *erro = erroLib;
+  if (a->lib) return a->lib > 0;
+  h = libavoc();
   a->lib = -1;
   if (!h) { ajLog(a, "not supported on this TV (libavoc: %s): nothing changed", erro); return 0; }
   a->ler = dlsym(h, a->fnLer);
@@ -228,6 +236,65 @@ static void recuperar(Ajuste *a) {
   restaurar(a, "previous session");
 }
 
+// ---- gama da TV, SO LEITURA ("Subtitle gamma" = Auto) ------------------------
+// avoc_gamma_contrast_picture.md (24/10): avoc_get_gamma, D-Bus (i) -> (ii),
+// slider -5..+5 (avocd, id 0x16a). A assinatura C segue a do
+// avoc_get_luminance_limit, que tem o mesmo (i) -> (ii) e funcionou na S95C:
+// int avoc_get_gamma(gint *out, gint type), type = AVOC_SAVE (1).
+// Guarda: antes da PRIMEIRA chamada grava gama-auto-testando.txt e apaga
+// quando ela volta. Se o app morrer dentro dela (assinatura errada), a nota
+// fica e o Auto nao tenta mais nesta TV (o log diz).
+#define GAMA_DESCONHECIDO 0x7fff
+static int gamaTv = GAMA_DESCONHECIDO;
+static char marcaGama[600];
+static int autoGama;       // sob tr: a folha pede Auto e o player esta em tela cheia
+int tpkluz_gama_tv(void) { return __atomic_load_n(&gamaTv, __ATOMIC_ACQUIRE); }
+
+static void gamaLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void gamaLog(const char *fmt, ...) {
+  va_list va;
+  printf("[assperf] TV gamma: ");
+  va_start(va, fmt);
+  vprintf(fmt, va);
+  va_end(va);
+  printf("\n");
+  fflush(stdout);
+}
+
+static void gamaLer(void) {
+  static int (*f)(int *, int);
+  static int estado, ultV = GAMA_DESCONHECIDO - 1, ultR = -12345;
+  int v = GAMA_DESCONHECIDO, r;
+  if (estado < 0) return;
+  if (!estado) {
+    void *h;
+    FILE *m;
+    if (marcaGama[0] && access(marcaGama, F_OK) == 0) {
+      gamaLog("a previous avoc_get_gamma call never returned (note %s): Auto stays off on this TV", marcaGama);
+      estado = -1; return;
+    }
+    h = libavoc();
+    if (!h) { gamaLog("not supported on this TV (libavoc: %s): Auto = Off", erroLib); estado = -1; return; }
+    f = (int (*)(int *, int))dlsym(h, "avoc_get_gamma");
+    if (!f) { gamaLog("not supported on this TV (%s has no avoc_get_gamma): Auto = Off", nomeLib); estado = -1; return; }
+    m = marcaGama[0] ? fopen(marcaGama, "w") : NULL;
+    if (!m) { gamaLog("could not write the guard note %s: Auto = Off", marcaGama); estado = -1; return; }
+    fputs("1\n", m); fflush(m); fsync(fileno(m)); fclose(m);
+  }
+  r = f(&v, LUZ_AVOC_SAVE);
+  if (!estado) { unlink(marcaGama); estado = 1; }
+  if (r != 0 || v < -5 || v > 5) {
+    if (r != ultR || v != ultV) gamaLog("avoc_get_gamma(&v, AVOC_SAVE) returned %d, value %d: not a -5..+5 slider, Auto = Off", r, v);
+    __atomic_store_n(&gamaTv, GAMA_DESCONHECIDO, __ATOMIC_RELEASE);
+  } else {
+    if (r != ultR || v != ultV)
+      gamaLog("avoc_get_gamma(&v, AVOC_SAVE) returned %d, slider %+d: subtitle exponent %.4f (Samsung LUT: 1 - 0.0426 x slider)",
+              r, v, 1.0 - 0.0426 * v);
+    __atomic_store_n(&gamaTv, v, __ATOMIC_RELEASE);
+  }
+  ultR = r; ultV = v;
+}
+
 // Algum ajuste com pedido novo? (sob tr)
 static int pendente(void) {
   for (int i = 0; i < NAJ; i++) if (alvoDe(AJ[i].chave, tela, suspenso) != AJ[i].feito) return 1;
@@ -246,7 +313,22 @@ static void *fio(void *u) {
   pthread_cond_broadcast(&cv);
   for (;;) {
     int i;
-    if (!pendente()) { pthread_cond_wait(&cv, &tr); continue; }
+    if (!pendente()) {
+      if (autoGama && tela && !suspenso) {
+        // Auto: le o gama da TV ao entrar e a cada 3 s (a pessoa pode mudar no menu).
+        struct timespec ate;
+        ocupado = 1;
+        pthread_mutex_unlock(&tr);
+        gamaLer();
+        pthread_mutex_lock(&tr);
+        ocupado = 0;
+        pthread_cond_broadcast(&cv);
+        clock_gettime(CLOCK_REALTIME, &ate);
+        ate.tv_sec += 3;
+        pthread_cond_timedwait(&cv, &tr, &ate);
+      } else pthread_cond_wait(&cv, &tr);
+      continue;
+    }
     for (i = 0; i < NAJ; i++) {
       Ajuste *a = &AJ[i];
       int q = alvoDe(a->chave, tela, suspenso);
@@ -270,6 +352,7 @@ static void *fio(void *u) {
 void tpkluz_iniciar(const char *dados) {
   pthread_t t;
   if (iniciado || !dados) return;
+  snprintf(marcaGama, sizeof marcaGama, "%s/gama-auto-testando.txt", dados);
   for (int i = 0; i < NAJ; i++) {
     snprintf(AJ[i].marca, sizeof AJ[i].marca, "%s/%s", dados, AJ[i].arqMarca);
     AJ[i].feito = -1;
@@ -280,8 +363,8 @@ void tpkluz_iniciar(const char *dados) {
 }
 
 void tpkluz_quadro(int telaCheia) {
-  static int ultTela = -1, ult[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-  int ch[8], i, mudou = telaCheia != ultTela;
+  static int ultTela = -1, ult[8] = { -1, -1, -1, -1, -1, -1, -1, -1 }, ultAuto = -1;
+  int ch[8], i, mudou = telaCheia != ultTela, au;
   if (!__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) return;
   // assperf_get so com o player em tela cheia: ler o assperf.txt cedo demais
   // perderia a guarda de queda (assperf_iniciar). Fora dela vale a ultima.
@@ -289,11 +372,14 @@ void tpkluz_quadro(int telaCheia) {
     ch[i] = telaCheia ? assperf_get(AJ[i].ap) : ult[i] < 0 ? 0 : ult[i];
     if (ch[i] != ult[i]) mudou = 1;
   }
+  au = telaCheia ? assperf_get(AP_GAMA) == AP_GAMA_AUTO : ultAuto > 0;
+  if (au != ultAuto) mudou = 1;
   if (!mudou) return;
-  ultTela = telaCheia;
+  ultTela = telaCheia; ultAuto = au;
   pthread_mutex_lock(&tr);
   for (i = 0; i < NAJ; i++) { ult[i] = ch[i]; AJ[i].chave = ch[i]; }
   tela = telaCheia;
+  autoGama = au;
   pthread_cond_broadcast(&cv);
   pthread_mutex_unlock(&tr);
 }

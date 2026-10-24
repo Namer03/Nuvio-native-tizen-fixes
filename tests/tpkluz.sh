@@ -25,6 +25,8 @@ roda "$D/lib" "$D/teste" cinza
 roda "$D/lib" "$D/teste" caicinza
 [ -f "$D/dados/cinza-original.txt" ] || { echo "tpkluz: a queda nao deixou a nota do video gray"; exit 1; }
 roda "$D/lib" "$D/teste" arranquecinza
+roda "$D/lib" env FAKE_AVOC_GAMMA=-1 "$D/teste" gama
+grep -q "slider -1: subtitle exponent 1.0426" "$D/log" || { cat "$D/log"; echo "tpkluz: falta a linha do gama"; exit 1; }
 roda "$D/semlib" "$D/teste" semlib
 roda "$D/lib" env FAKE_AVOC_GET_ERR=1 "$D/teste" erroget
 grep -q "before=1 set=0 result=0" "$D/log" || { cat "$D/log"; echo "tpkluz: falta a linha before/set/result"; exit 1; }
