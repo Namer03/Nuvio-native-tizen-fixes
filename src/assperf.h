@@ -103,7 +103,8 @@ void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: al
 typedef struct {
   unsigned blurs, finais, reusos, falhas, cpu, adiantados, criadas, reaproveitadas;
   double ms; int medido;
-  unsigned nTam[4]; double msTam[4];   // GPU, so com glFinish
+  unsigned nTam[4]; double msTam[4];   // GPU, so com os cronometros
+  double msGpu; unsigned nGpu;          // tempo de GPU medido, todos os pedidos
 } AssperfGpu;
 void assperf_med_gpublur(const AssperfGpu *g);
 typedef struct {
@@ -112,7 +113,7 @@ typedef struct {
 } AssperfAdiado;
 void assperf_med_adiado(const AssperfAdiado *a);
 long assperf_gpu_min(void);                  // pixels (libass ass_nv_set_deferred_min_area)
-int  assperf_gpu_adiante(void);              // gaussianos novos por quadro de UI para a fila (pre-blur)
+int  assperf_gpu_adiante(void);              // ms de GPU por quadro de UI para a fila (pre-blur)
 void assperf_gpublur_formato(const char *s);   // "R16F" etc. (fio GL, uma vez)
 void assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s
 #ifdef NV_ASSPERF_TESTE

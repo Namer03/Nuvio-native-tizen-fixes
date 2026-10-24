@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dlfcn.h>
 
 #ifndef GL_RED
 #define GL_RED 0x1903
@@ -166,10 +167,23 @@ static const char *FS_FINAL_FMT =
   "}\n"
   "void main() {\n"
   "  vec2 X = floor(vUv * uSaida) + uSub;\n"
-  "  float v = F(X);\n"
-  "  if (uDesl.x > 0.0 || uDesl.y > 0.0) {\n"
+  "  float v;\n"
+  "  if (uDesl.x <= 0.0 && uDesl.y <= 0.0) v = F(X);\n"
+  "  else if (uFix < 0.5) {\n"
+  /* sem fix o valor e linear: o deslocamento do libass e UMA leitura
+   * bilinear em X - desl (4x menos trabalho na sombra comum, 24/10) */
+  "#if NY > 0\n"
+  /* com o gaussiano vertical aqui, os pares de leitura so valem em linha
+   * inteira: duas linhas, e o x fracionario numa leitura bilinear */
+  "    float xs = X.x - uDesl.x;\n"
+  "    float a = amostra((vec2(xs, X.y) + 0.5) * uBEsc), b = amostra((vec2(xs, X.y - 1.0) + 0.5) * uBEsc);\n"
+  "    v = mix(a, b, uDesl.y) * 255.0 * dentro(X, uFonte);\n"
+  "#else\n"
+  "    v = amostra((X - uDesl + 0.5) * uBEsc) * 255.0 * dentro(X, uFonte);\n"
+  "#endif\n"
+  "  } else {\n"
   "    float a = F(X - vec2(1.0, 0.0)), b = F(X - vec2(0.0, 1.0)), c = F(X - vec2(1.0, 1.0));\n"
-  "    v = mix(mix(v, a, uDesl.x), mix(b, c, uDesl.x), uDesl.y);\n"
+  "    v = mix(mix(F(X), a, uDesl.x), mix(b, c, uDesl.x), uDesl.y);\n"
   "  }\n"
   "  gl_FragColor = vec4(clamp(v / 255.0, 0.0, 1.0));\n"
   "}\n";
@@ -293,10 +307,92 @@ static double ms_desde(const struct timespec *a) {
 
 static AgbStats S;
 
+// ---- tempo da GPU sem parar a GPU (GL_EXT_disjoint_timer_query) -------------------
+/* Na S95C (24/10) o glFinish por pedido, usado para medir, travava o fio GL
+ * ele mesmo. A Mali tem consultas de tempo: o resultado chega quadros depois,
+ * sem esperar. Sem a extensao, os cronometros voltam ao glFinish. */
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#define GL_QUERY_RESULT_EXT 0x8866
+#define GL_QUERY_RESULT_AVAILABLE_EXT 0x8867
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+typedef void (*FnGenQ)(GLsizei, GLuint *);
+typedef void (*FnBeginQ)(GLenum, GLuint);
+typedef void (*FnEndQ)(GLenum);
+typedef void (*FnGetQuiv)(GLuint, GLenum, GLuint *);
+typedef void (*FnGetQui64v)(GLuint, GLenum, unsigned long long *);
+static struct { FnGenQ gen, del; FnBeginQ begin; FnEndQ end; FnGetQuiv getuiv; FnGetQui64v get64; } Q;
+static int temTimer;
+#define AGB_CONSULTAS 64
+typedef struct { GLuint q; int balde, novo; } AgbConsulta;
+static AgbConsulta consultas[AGB_CONSULTAS];
+static int nConsultas, consultaAberta;
+static GLuint livresQ[AGB_CONSULTAS];
+static int nLivresQ;
+/* custo medido por gaussiano novo, por tamanho (ms): o orcamento do pre-blur */
+static double custoEma[4] = { 0.5, 1.5, 4.0, 10.0 };
+
+static void *proc_gl(const char *nome) {
+  typedef void *(*FnProc)(const char *);
+  static FnProc gp;
+  static int tentou;
+  void *f = NULL;
+  if (!tentou) {
+    void *h = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_NOLOAD);
+    if (!h) h = dlopen("libEGL.so", RTLD_LAZY | RTLD_NOLOAD);
+    if (!h) h = dlopen("libEGL.so.1", RTLD_LAZY);
+    if (h) gp = (FnProc)dlsym(h, "eglGetProcAddress");
+    tentou = 1;
+  }
+  if (gp) f = gp(nome);
+  return f;
+}
+
+static void timer_carregar(const char *ext) {
+  if (!strstr(ext, "GL_EXT_disjoint_timer_query")) return;
+  Q.gen = (FnGenQ)proc_gl("glGenQueriesEXT"); Q.del = (FnGenQ)proc_gl("glDeleteQueriesEXT");
+  Q.begin = (FnBeginQ)proc_gl("glBeginQueryEXT"); Q.end = (FnEndQ)proc_gl("glEndQueryEXT");
+  Q.getuiv = (FnGetQuiv)proc_gl("glGetQueryObjectuivEXT");
+  Q.get64 = (FnGetQui64v)proc_gl("glGetQueryObjectui64vEXT");
+  temTimer = Q.gen && Q.del && Q.begin && Q.end && Q.getuiv && Q.get64;
+}
+
+static int balde(long area) { return area < 16384 ? 0 : area < 65536 ? 1 : area < 262144 ? 2 : 3; }
+
+/* Resultados prontos (nao espera): somam no custo por tamanho. */
+static void consultas_colher(void) {
+  GLint disj = 0;
+  int i = 0;
+  if (!temTimer || !nConsultas) return;
+  glGetIntegerv(GL_GPU_DISJOINT_EXT, &disj);   // relogio da GPU pulou: descarta o lote
+  while (i < nConsultas) {
+    GLuint pronto = 0;
+    Q.getuiv(consultas[i].q, GL_QUERY_RESULT_AVAILABLE_EXT, &pronto);
+    if (!pronto) break;   // na ordem: as seguintes tambem nao estao
+    if (!disj) {
+      unsigned long long ns = 0;
+      double ms;
+      Q.get64(consultas[i].q, GL_QUERY_RESULT_EXT, &ns);
+      ms = (double)ns / 1e6;
+      S.msTam[consultas[i].balde] += ms;
+      S.msGpu += ms; S.nGpu++;
+      if (consultas[i].novo) {
+        S.nTam[consultas[i].balde]++;
+        custoEma[consultas[i].balde] = custoEma[consultas[i].balde] * 0.8 + ms * 0.2;
+      }
+    }
+    if (nLivresQ < AGB_CONSULTAS) livresQ[nLivresQ++] = consultas[i].q; else Q.del(1, &consultas[i].q);
+    i++;
+  }
+  if (i) { memmove(consultas, consultas + i, (size_t)(nConsultas - i) * sizeof consultas[0]); nConsultas -= i; }
+}
+
+double assgpublur_custo(long area) { return custoEma[balde(area)]; }
+
 void assgpublur_lote_ini(int medir) {
   if (E.aberto) return;
   memset(&E, 0, sizeof E);
   E.aberto = 1; E.medir = medir;
+  consultas_colher();
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &E.fbo);
   glGetIntegerv(GL_VIEWPORT, E.vp);
   glGetIntegerv(GL_CURRENT_PROGRAM, &E.prog);
@@ -323,7 +419,7 @@ void assgpublur_lote_ini(int medir) {
 static void lote_trabalhar(void) {
   if (E.trabalho) return;
   E.trabalho = 1;
-  if (E.medir) glFinish();
+  if (E.medir && !temTimer) glFinish();
   clock_gettime(CLOCK_MONOTONIC, &E.t0);
   E.tUlt = E.t0;
   glDisable(GL_BLEND);
@@ -359,9 +455,9 @@ void assgpublur_lote_fim(void) {
 #ifndef NV_AGB_TESTE
     gfx_estado_externo();   // o cache de programa/textura do gfx nao vale mais
 #endif
-    if (E.medir) glFinish();
+    if (E.medir && !temTimer) glFinish();
     S.ms += ms_desde(&E.t0);
-    S.medido = E.medir;
+    S.medido = E.medir ? (temTimer ? 2 : 1) : 0;
   }
   E.aberto = 0;
 }
@@ -377,6 +473,7 @@ int assgpublur_iniciar(void) {
   ext = (const char *)glGetString(GL_EXTENSIONS);
   ver = (const char *)glGetString(GL_VERSION);
   if (!ext) ext = "";
+  timer_carregar(ext);
   es3 = ver && strstr(ver, "OpenGL ES ") && ver[10] >= '3';
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &vboAnt);
@@ -704,8 +801,6 @@ static AgbBlur *borrar(const AgbPedido *p, unsigned long long chave, unsigned qu
   }
 }
 
-static int balde(long area) { return area < 16384 ? 0 : area < 65536 ? 1 : area < 262144 ? 2 : 3; }
-
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chaveOut) {
   unsigned long long kb, kf;
   AgbBlur *b = NULL;
@@ -734,10 +829,22 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
     }
   if (p->soCache) return 0;
   for (i = 0; i < nb; i++) if (cb[i].chave == kb) { b = &cb[i]; b->uso = quadro; break; }
+  /* tempo deste pedido na GPU (consulta, sem esperar) */
+  if (E.medir && temTimer && !consultaAberta && nConsultas < AGB_CONSULTAS) {
+    GLuint q = 0;
+    if (nLivresQ) q = livresQ[--nLivresQ]; else Q.gen(1, &q);
+    if (q) {
+      Q.begin(GL_TIME_ELAPSED_EXT, q);
+      consultas[nConsultas].q = q;
+      consultas[nConsultas].balde = balde(p->area > 0 ? p->area : (long)p->srcW * p->srcH);
+      consultas[nConsultas].novo = !b;
+      consultaAberta = 1;
+    }
+  }
   if (!b) { b = borrar(p, kb, quadro); novoBlur = 1; }
-  if (!b) { S.falhas++; return 0; }
+  if (!b) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; } S.falhas++; return 0; }
   prog = prog_final(b->ny);
-  if (!prog) { S.falhas++; return 0; }
+  if (!prog) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; } S.falhas++; return 0; }
   l = &fn[b->ny];
   lote_trabalhar();
   final_caber((size_t)p->w * (size_t)p->h * 4u, quadro);
@@ -769,6 +876,7 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   glBindTexture(GL_TEXTURE_2D, b->tex);
   desenhar_em(out, p->w, p->h);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+  if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; }
   if (fillTex) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -787,8 +895,8 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   bytesF += (size_t)p->w * (size_t)p->h * 4u;
   S.finais++;
   if (p->adiantado) S.adiantados++;
-  if (E.medir) {
-    /* custo real deste pedido na GPU, por tamanho (so com os cronometros) */
+  if (E.medir && !temTimer) {
+    /* custo real deste pedido na GPU, por tamanho (sem a extensao de tempo) */
     struct timespec t;
     double ms;
     int k = balde(p->area > 0 ? p->area : (long)p->srcW * p->srcH);
@@ -797,7 +905,8 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
     ms = (double)(t.tv_sec - E.tUlt.tv_sec) * 1000.0 + (double)(t.tv_nsec - E.tUlt.tv_nsec) / 1e6;
     E.tUlt = t;
     S.msTam[k] += ms;
-    if (novoBlur) S.nTam[k]++;
+    S.msGpu += ms; S.nGpu++;
+    if (novoBlur) { S.nTam[k]++; custoEma[k] = custoEma[k] * 0.8 + ms * 0.2; }
   }
   *chaveOut = kf;
   return out;

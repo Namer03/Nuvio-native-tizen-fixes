@@ -182,8 +182,64 @@ namespace NuvioTpk
                 }
             }
             catch (Exception e) { Log(".net scan failed: " + e.GetType().Name + ": " + e.Message); }
+            try { Completo(); } catch (Exception e) { Log(".net full dump failed: " + e.GetType().Name + ": " + e.Message); }
             Log(".net done (" + linhas + " member lines)");
         }
+
+        // Os tipos da Samsung que poem imagem no PLANO DE VIDEO (24/10: a
+        // libdali-extension-tv-photo chama Gfx_Videooutput_*): TODOS os membros,
+        // com assinatura, inclusive o Interop (nome da funcao nativa).
+        static readonly string[] TiposVideo = { "PhotoViewer", "VideoCanvas", "VideoView", "VideoPlane", "Canvas", "Photo" };
+        static void Completo()
+        {
+            int n = 0;
+            foreach (var nome in new[] { "Tizen.TV.NUI", "Tizen.TV.Multimedia", "Tizen.TV" })
+            {
+                Assembly a;
+                try { a = Assembly.Load(new AssemblyName(nome)); } catch { continue; }
+                Log(".net full " + nome + " from " + SafeLoc(a));
+                Type[] tipos;
+                try { tipos = a.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { tipos = e.Types; }
+                foreach (var t in tipos)
+                {
+                    if (t == null || t.FullName == null) continue;
+                    bool quer = false;
+                    foreach (var k in TiposVideo) if (t.FullName.Contains(k)) quer = true;
+                    if (!quer) continue;
+                    Log(".net type " + t.FullName + (t.BaseType != null ? " : " + t.BaseType.FullName : ""));
+                    MemberInfo[] ms;
+                    try
+                    {
+                        ms = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static |
+                                          BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                    }
+                    catch { continue; }
+                    foreach (var m in ms)
+                    {
+                        if (n++ > 900) { Log(".net full: stopped at 900 lines"); return; }
+                        var ci = m as ConstructorInfo;
+                        if (ci != null)
+                        {
+                            var sb = new StringBuilder();
+                            foreach (var p in ci.GetParameters()) sb.Append((sb.Length > 0 ? ", " : "") + p.ParameterType.Name + " " + p.Name);
+                            Log(".net   " + t.Name + "(" + sb + ")" + (ci.IsPublic ? "" : " (non-public)"));
+                            continue;
+                        }
+                        var mi = m as MethodInfo;
+                        if (mi != null)
+                        {
+                            var sb = new StringBuilder();
+                            foreach (var p in mi.GetParameters()) sb.Append((sb.Length > 0 ? ", " : "") + p.ParameterType.Name + " " + p.Name);
+                            Log(".net   " + Descreve(m).Split('(')[0] + "(" + sb + ")" + Descreve(m).Substring(Descreve(m).IndexOf(')') + 1));
+                            continue;
+                        }
+                        Log(".net   " + Descreve(m));
+                    }
+                }
+            }
+        }
+        static string SafeLoc(Assembly a) { try { return a.Location; } catch { return "?"; } }
 
         static bool Casa(string nome)
         {

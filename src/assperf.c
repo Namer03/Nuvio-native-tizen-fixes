@@ -364,6 +364,7 @@ static struct {
   double gbMs, gbMax;
   int gbMedido;
   unsigned gbN[4]; double gbMsTam[4];
+  double gbMsGpu; unsigned gbNGpu;
   unsigned adComBlur, adAdiados, adBe, adClip, adPeq;
   unsigned cpuN[4]; double cpuMs[4];
 } M;
@@ -474,6 +475,7 @@ void assperf_med_gpublur(const AssperfGpu *g) {
   M.gbAdiant += g->adiantados; M.gbCriadas += g->criadas; M.gbReap += g->reaproveitadas;
   if ((g->blurs || g->finais) && g->ms > 0) { M.gbLotes++; M.gbMs += g->ms; if (g->ms > M.gbMax) M.gbMax = g->ms; M.gbMedido = g->medido; }
   for (i = 0; i < 4; i++) { M.gbN[i] += g->nTam[i]; M.gbMsTam[i] += g->msTam[i]; }
+  M.gbMsGpu += g->msGpu; M.gbNGpu += g->nGpu;
   pthread_mutex_unlock(&medTrava);
 }
 void assperf_med_adiado(const AssperfAdiado *a) {
@@ -488,7 +490,7 @@ long assperf_gpu_min(void) {
   int v = assperf_get(AP_GPUMIN);
   return px[v < 0 || v > 3 ? 0 : v];
 }
-int assperf_gpu_adiante(void) { return 3; }
+int assperf_gpu_adiante(void) { return 6; }
 
 void assperf_med_alfa(float alfa, float opacidadeUsuario) {
   pthread_mutex_lock(&medTrava);
@@ -537,12 +539,14 @@ void assperf_med_tick(void) {
                " | libass composites with blur %u: to GPU %u, kept on CPU for \\be %u, vector clip %u\n",
                assperf_get(AP_GPUBLUR) ? "on" : "off", gbFormato, M.gbBlurs, M.gbFinais, M.gbLotes,
                M.gbLotes ? M.gbMs / M.gbLotes : 0.0, M.gbMax,
-               M.gbMedido ? " (GPU time, glFinish)" : " (submit time; Stage timers On measures GPU time)",
+               M.gbMedido == 2 ? " (submit time; GPU time below)" : M.gbMedido == 1 ? " (GPU time, glFinish)"
+                                : " (submit time; Stage timers On measures GPU time)",
                M.gbReusos, M.gbCpu, M.gbFalhas, M.adComBlur, M.adAdiados, M.adBe, M.adClip);
       if (M.adComBlur || M.gbLotes || M.gbAdiant)
         printf("[assperf] gpu blur 2: kept on CPU for size %u (minimum %ld px) | pictures made ahead for queued frames %u"
-               " | textures created %u, reused from the reserve %u\n",
-               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap);
+               " | textures created %u, reused from the reserve %u | GPU time %.0f ms in %u measured jobs (%.2f ms each)\n",
+               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap, M.gbMsGpu, M.gbNGpu,
+               M.gbNGpu ? M.gbMsGpu / M.gbNGpu : 0.0);
       { int i, alg = 0;
         for (i = 0; i < 4; i++) alg |= M.cpuN[i] || M.gbN[i];
         if (alg) {

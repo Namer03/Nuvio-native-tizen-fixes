@@ -1447,14 +1447,15 @@ static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedid
  * de UI, antes da hora. Quando o quadro entra em tela, as texturas ja estao
  * no cache do assgpublur e o fio GL nao para 20-75 ms de uma vez (24/10). */
 static void ass_gpu_adiantar_locked(void) {
-  int q, i, orcamento = assperf_gpu_adiante();
+  int q, i;
+  double gasto = 0, orcamento = (double)assperf_gpu_adiante();   // ms de GPU por quadro de UI
   AssperfGpu g;
   if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1 || !assperf_get(AP_GPUBLUR) || !assFilaN) return;
   memset(&g, 0, sizeof g);
   assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));   // com os cronometros: custo por tamanho tambem daqui
-  for (q = 0; q < assFilaN && orcamento > 0; q++) {
+  for (q = 0; q < assFilaN && gasto < orcamento; q++) {
     const AssCpuFrame *f = &assFila[q];
-    for (i = 0; i < f->count && orcamento > 0; i++) {
+    for (i = 0; i < f->count && gasto < orcamento; i++) {
       const AssCpuImage *im = &f->images[i];
       AgbPedido p;
       unsigned long long k;
@@ -1463,12 +1464,17 @@ static void ass_gpu_adiantar_locked(void) {
       if (!im->gpu) continue;
       ass_gpu_pedido(f, im, &p);
       p.adiantado = 1;
+      p.soCache = 1;
+      if (assgpublur_obter(&p, assGlQuadro, &k)) { assgpublur_stats(&st); continue; }   // ja pronta
+      p.soCache = 0;
       assgpublur_obter(&p, assGlQuadro, &k);
       assgpublur_stats(&st);   // conta e zera: o que este pedido fez (reusos nao contam aqui)
-      orcamento -= (int)st.blurs;
+      if (st.blurs) gasto += assgpublur_custo(p.area);
+      else if (st.finais) gasto += 0.3;
       g.blurs += st.blurs; g.finais += st.finais; g.falhas += st.falhas; g.adiantados += st.adiantados;
       g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas;
       for (z = 0; z < 4; z++) { g.nTam[z] += st.nTam[z]; g.msTam[z] += st.msTam[z]; }
+      g.msGpu += st.msGpu; g.nGpu += st.nGpu;
     }
   }
   assgpublur_lote_fim();
@@ -1584,7 +1590,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
         int z;
         g.blurs = st.blurs; g.finais = st.finais; g.reusos = st.reusos; g.falhas = st.falhas; g.cpu = assGpuCpu;
         g.adiantados = st.adiantados; g.criadas = st.criadas; g.reaproveitadas = st.reaproveitadas;
-        g.ms = st.ms; g.medido = st.medido;
+        g.ms = st.ms; g.medido = st.medido; g.msGpu = st.msGpu; g.nGpu = st.nGpu;
         for (z = 0; z < 4; z++) { g.nTam[z] = st.nTam[z]; g.msTam[z] = st.msTam[z]; }
         assperf_med_gpublur(&g);
       }

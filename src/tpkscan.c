@@ -405,10 +405,16 @@ __attribute__((visibility("default")))
 int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
   static const char *const FIXAS[] = { "libgfx-video-output", "libgraphics-control", "libvideoenhance", "libavoc",
                                        "libdali-extension-tv", "libtizen-extension-client", NULL };
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/share/dotnet.tizen/framework",
+                                      "/usr/share/dotnet.tizen/lib", NULL };
   int i, ok = 0;
+  size_t ln;
   struct stat st;
-  if (!nome || !*nome || strchr(nome, '/') || strstr(nome, "..") || strncmp(nome, "lib", 3) || !strstr(nome, ".so")) return 0;
+  if (!nome || !*nome || strchr(nome, '/') || strstr(nome, "..")) return 0;
+  ln = strlen(nome);
+  /* os assemblies .NET da Samsung para TV (PhotoViewer, video canvas) */
+  if (!strncmp(nome, "Tizen.TV", 8) && ln > 4 && !strcmp(nome + ln - 4, ".dll")) ok = 1;
+  else if (strncmp(nome, "lib", 3) || !strstr(nome, ".so")) return 0;
   for (i = 0; FIXAS[i] && !ok; i++) if (!strncmp(nome, FIXAS[i], strlen(FIXAS[i]))) ok = 1;
   pthread_mutex_lock(&exportTrava);
   for (i = 0; i < nLibsExport && !ok; i++) if (!strcmp(nome, libsExport[i])) ok = 1;
@@ -434,7 +440,8 @@ static void lista_cada(const char *dir, const char *nome, void *u) {
 }
 __attribute__((visibility("default")))
 size_t tpkscan_lib_lista(char *dst, size_t n) {
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", NULL };
+  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/share/dotnet.tizen/framework",
+                                      "/usr/share/dotnet.tizen/lib", NULL };
   LibLista l = { dst, n, 0 };
   int i;
   l.o = (size_t)snprintf(dst, n, "System libraries you can download for the display study (read-only copies).\n"
