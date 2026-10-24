@@ -1611,6 +1611,9 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #endif
     }
   }
+  /* Calibracao para casar com o video (AP_GAMA, AP_BRANCO): a imagem da TV
+   * (gama, contraste) so processa o plano de video, nunca a nossa camada. */
+  const double gama = assperf_gama(), branco = assperf_branco();
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
@@ -1626,6 +1629,9 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       float r = (float)((c >> 24) & 255u) / 255.0f, g = (float)((c >> 16) & 255u) / 255.0f,
             b = (float)((c >> 8) & 255u) / 255.0f, op = (float)(255u - (c & 255u)) / 255.0f;
       if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { r = cr / 255.0f; g = cg / 255.0f; b = cb / 255.0f; }
+      if (gama != 1.0 || branco != 1.0) {
+        r = (float)(pow(r, gama) * branco); g = (float)(pow(g, gama) * branco); b = (float)(pow(b, gama) * branco);
+      }
       gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
                0, 0, 0, 0, r, g, b, alpha * op);
     } else {

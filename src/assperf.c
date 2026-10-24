@@ -21,7 +21,7 @@ typedef struct {
   const char *ajuda;     // uma linha na folha
   int recomendado, leve; // presets (o Legacy e sempre 0)
   int n;
-  const char *valores[10];
+  const char *valores[11];
   int fixa;              // 1 = decidida na TV (23/10): fora da folha, sempre `recomendado` no .tpk
 } ApDef;
 
@@ -125,6 +125,14 @@ static const ApDef DEF[AP_N] = {
     "Changes the whole TV's video gray mode only during full-screen playback; the TV's own value goes back when this is Off, "
     "playback stops or the app pauses/closes. Compare the Colour test card's white with video white.",
     0, 0, 3, { "Off", "Set 0 (gray off)", "Set 1 (gray on)" } },
+  [AP_GAMA] = { "gama", "Subtitle gamma (match TV)",
+    "The TV's picture settings (gamma/BT.1886, contrast) only change the video, never the app. Minus brightens subtitle "
+    "mid-tones, plus darkens them: adjust until typeset masks blend into the video.",
+    0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
+  [AP_BRANCO] = { "branco", "Subtitle white (match TV)",
+    "Lowers subtitle white to match video white when the TV's Contrast is set lower. Raise the TV's Contrast "
+    "no higher than where video white matches the Colour test card's white patch.",
+    0, 0, 9, { "100% (off)", "99%", "98%", "97%", "96%", "95%", "94%", "92%", "90%" } },
 };
 
 static int val[AP_N] __attribute__((unused));
@@ -239,7 +247,8 @@ int assperf_get(int id) {
 
 int assperf_e_medida(int id) {
   return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_SNAP || id == AP_CARTAO || id == AP_SCAN ||
-         id == AP_JANELA || id == AP_LUZ || id == AP_CINZA;
+         id == AP_JANELA || id == AP_LUZ || id == AP_CINZA ||
+         id == AP_GAMA || id == AP_BRANCO;   // calibracao: fora dos presets e da guarda, mas fica gravada
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
 int assperf_fios(void) { int v = assperf_get(AP_FIOS); return v < 0 ? 1 : v > 3 ? 4 : v + 1; }
@@ -327,6 +336,18 @@ int assperf_adiante_fixo_ms(void) {
   static const int ms[6] = { 0, -1, 50, 100, 150, 250 };
   int v = assperf_get(AP_ADIANTE);
   return ms[v < 0 || v > 5 ? 0 : v];
+}
+/* Cada degrau de gama muda o expoente em 0,06 (1,00 = off). Linear no
+ * valor do pixel, como o gama da TV: o preto e o branco nao mudam. */
+double assperf_gama(void) {
+  int v = assperf_get(AP_GAMA);
+  int passo = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
+  return 1.0 + 0.06 * passo;
+}
+double assperf_branco(void) {
+  static const double b[9] = { 1.0, 0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.92, 0.90 };
+  int v = assperf_get(AP_BRANCO);
+  return b[v < 0 || v > 8 ? 0 : v];
 }
 long assperf_poda_ms(void) {
   static const long ms[4] = { 0, 30000, 120000, 300000 };

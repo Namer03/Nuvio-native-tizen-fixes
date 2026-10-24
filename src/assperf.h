@@ -58,6 +58,9 @@ enum {
                    // only during full-screen playback, the TV's own value goes back afterwards; never kept on
   AP_CINZA,        // TV video gray test (tpkluz.c, avoc_set_video_gray_onoff): 0 off (TV value), 1 set 0, 2 set 1;
                    // same rules as AP_LUZ
+  AP_GAMA,         // subtitle gamma to match the TV's video picture settings (gamma / BT.1886), which never
+                   // reach the app's layer: 0 off, 1..5 = -1..-5 (brighter mid-tones), 6..10 = +5..+1 (darker)
+  AP_BRANCO,       // subtitle white level to match a lower video contrast: 0 = 100% (off) .. 8 = 90%
   AP_N
 };
 
@@ -86,6 +89,10 @@ size_t assperf_fontes_teto(void);            // bytes
 double assperf_escala(void);                 // 1.0 .. 0.5
 int    assperf_adiante_fixo_ms(void);        // -1 = auto, 0 = off
 long   assperf_poda_ms(void);                // 0 = off
+// Ajuste de cor da legenda para casar com o video (AP_GAMA, AP_BRANCO). O
+// processamento de imagem da TV (contraste, gama) so vale no plano de video.
+double assperf_gama(void);                   // expoente: 1.0 = off
+double assperf_branco(void);                 // 1.0 = off .. 0.90
 
 // Marca da guarda de queda (assrender: faixa ASS ligada/desligada).
 void assperf_faixa_ativa(int ativa);
