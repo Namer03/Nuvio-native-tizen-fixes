@@ -448,6 +448,37 @@ static void atender(int c) {
     free(lista);
     return;
   }
+  /* Arquivos de config / featureconf (dynamic_backlight, ...), so leitura. */
+  if (!strncmp(caminho, "/ass-cfg", 8)) {
+    char rel[512], arq[900];
+    const char *q = strchr(caminho, '?');
+    size_t l = q ? (size_t)(q - caminho) : strlen(caminho);
+    if (l <= 9) {  /* "/ass-cfg" ou "/ass-cfg/" -> a lista */
+      char *lista = malloc(131072);
+      size_t n = lista ? tpkscan_cfg_lista(lista, 131072) : 0;
+      responderTexto(c, 200, "text/plain; charset=utf-8", NULL, lista ? lista : "", n);
+      free(lista);
+      return;
+    }
+    if (l - 9 >= sizeof rel) { responderTexto(c, 404, "text/plain", NULL, "", 0); return; }
+    memcpy(rel, caminho + 9, l - 9); rel[l - 9] = 0;
+    if (!tpkscan_cfg_caminho(rel, arq, sizeof arq)) { responderTexto(c, 403, "text/plain", NULL, "", 0); return; }
+    { int fd = open(arq, O_RDONLY);
+      struct stat st;
+      char cab[600], buf[65536];
+      const char *bn = strrchr(arq, '/');
+      int k;
+      ssize_t r;
+      bn = bn ? bn + 1 : arq;
+      if (fd < 0 || fstat(fd, &st)) { if (fd >= 0) close(fd); responderTexto(c, 404, "text/plain", NULL, "", 0); return; }
+      k = snprintf(cab, sizeof cab, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %lu\r\n"
+                   "Content-Disposition: attachment; filename=\"%s\"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                   (unsigned long)st.st_size, bn);
+      if (enviarTudo(c, cab, (size_t)k) == 0)
+        while ((r = read(fd, buf, sizeof buf)) > 0) if (enviarTudo(c, buf, (size_t)r)) break;
+      close(fd); }
+    return;
+  }
   /* Bibliotecas de imagem do sistema (tpkscan.c): a lista e cada arquivo,
    * so leitura, para estudar as funcoes de plano/saida de video. */
   if (!strncmp(caminho, "/ass-lib/", 9)) {

@@ -407,7 +407,7 @@ int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
                                        /* picture/OSD providers (define the EP/avoc/plane symbols) */
                                        "libep-system-api", "libep-common-ui-api", "libunipicture", "libmixer",
                                        "libIFAnetavoc", "libdisplay-panel", "libkeystone-ppi", "liblib-hdr-tv",
-                                       "libaifw_api_vision_picture_enhancer",
+                                       "libppi-factory-api", "libaifw_api_vision_picture_enhancer",
                                        /* video display path */
                                        "libvideo-dp-control", "libvideo-render-ctrl", "libvideo-sink",
                                        "libdali-extension-tv", "libtizen-extension-client", NULL };
@@ -505,6 +505,58 @@ size_t tpkscan_bin_lista(char *dst, size_t n) {
                          "If the daemon is named otherwise, note its exact name to allow it.\n\n");
   for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_todos, &l);
   return l.o;
+}
+
+/* ---- arquivos de config / featureconf (featureconf, dynamic_backlight, ...) ----
+ * So leitura, confinado aos CFG_ROOTS. Download por /ass-cfg/<caminho sem a
+ * barra inicial>. Se a lista vier vazia, a featureconf esta noutra raiz: avisar. */
+static const char *const CFG_ROOTS[] = {
+  "/usr/share/com.samsung", "/opt/share/com.samsung",
+  "/usr/share/featureconf", "/etc/configuration", "/usr/etc", NULL
+};
+typedef struct { LibLista *l; int nivel; } CfgWalk;
+static void cfg_file_cada(const char *dir, const char *nome, void *u) {
+  CfgWalk *w = u;
+  LibLista *l = w->l;
+  char c[900];
+  struct stat st;
+  if (l->o + 300 >= l->n) return;
+  snprintf(c, sizeof c, "%s/%s", dir, nome);
+  if (lstat(c, &st)) return;
+  if (S_ISDIR(st.st_mode)) {
+    if (w->nivel >= 6) return;
+    w->nivel++; listar(c, cfg_file_cada, w); w->nivel--;
+    return;
+  }
+  if (!S_ISREG(st.st_mode)) return;
+  /* c+1: tira a barra inicial -> caminho a usar depois de /ass-cfg/ */
+  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-cfg/%s  (%ld KB)\n", c + 1, (long)(st.st_size / 1024));
+}
+__attribute__((visibility("default")))
+size_t tpkscan_cfg_lista(char *dst, size_t n) {
+  LibLista l = { dst, n, 0 };
+  int i;
+  l.o = (size_t)snprintf(dst, n, "Config / featureconf files (read-only copies).\n"
+                         "Open http://<TV IP>:8099/ass-cfg/<path-without-leading-slash> to download one.\n\n");
+  for (i = 0; CFG_ROOTS[i]; i++) { CfgWalk w = { &l, 0 }; listar(CFG_ROOTS[i], cfg_file_cada, &w); }
+  return l.o;
+}
+/* rel = caminho sem a barra inicial. Reconstroi /rel, bloqueia ".." e confina
+ * a um CFG_ROOT. 1 = pode sair (caminho absoluto em c). */
+__attribute__((visibility("default")))
+int tpkscan_cfg_caminho(const char *rel, char *c, size_t n) {
+  struct stat st;
+  int i;
+  size_t ln;
+  if (!rel || !*rel || strstr(rel, "..")) return 0;
+  ln = (size_t)snprintf(c, n, "/%s", rel);
+  if (ln >= n) return 0;
+  for (i = 0; CFG_ROOTS[i]; i++) {
+    size_t rl = strlen(CFG_ROOTS[i]);
+    if (!strncmp(c, CFG_ROOTS[i], rl) && (c[rl] == '/' || c[rl] == 0))
+      return (!stat(c, &st) && S_ISREG(st.st_mode)) ? 1 : 0;
+  }
+  return 0;
 }
 
 /* Bibliotecas de imagem da Samsung achadas no scan de 23/10: TODAS as

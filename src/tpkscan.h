@@ -15,5 +15,9 @@ size_t tpkscan_lib_lista(char *dst, size_t n);
 // (so nomes + tamanho) para achar o nome do daemon avoc. Download continua
 // restrito a nomes com "avoc" em tpkscan_lib_caminho.
 size_t tpkscan_bin_lista(char *dst, size_t n);
+// Pagina /ass-cfg: arquivos de config / featureconf (featureconf,
+// dynamic_backlight, ...), so leitura, confinado a raizes fixas.
+size_t tpkscan_cfg_lista(char *dst, size_t n);
+int    tpkscan_cfg_caminho(const char *rel, char *c, size_t n);
 
 #endif
