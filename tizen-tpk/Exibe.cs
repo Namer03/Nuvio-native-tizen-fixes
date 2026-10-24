@@ -1,12 +1,12 @@
-// Testes de exibicao do Nuvio .tpk (src/tpkscan.c), folha ASS performance:
-//  - "Scan display APIs": a parte .NET. Reflexao, SO LEITURA, sobre os
-//    assemblies do TizenFX carregados: membros com nomes de brilho, luminancia,
-//    gama, plano, OSD, HDR... (inclusive os nao publicos e os [DllImport] do
-//    Interop, que dizem o nome da funcao nativa por tras). Nada e chamado.
-//  - "Window brightness (test)": Window.SetBrightness(int) por reflexao, se o
-//    TizenFX desta TV o tiver, nas nossas janelas (a principal e o GLWindow).
-//    Off devolve o valor que a janela tinha antes.
-// So no host Tizen 6+ (Program.cs). O C pede pelas funcoes registradas em
+// Teste de exibicao do Nuvio .tpk (src/tpkscan.c), folha ASS performance:
+// "Scan display APIs", a parte .NET. Reflexao, SO LEITURA, sobre os
+// assemblies do TizenFX carregados: membros com nomes de brilho, luminancia,
+// gama, plano, OSD, HDR... (inclusive os nao publicos e os [DllImport] do
+// Interop, que dizem o nome da funcao nativa por tras). Nada disso e chamado.
+// Tambem lista as "aux hints" que o gerenciador de janelas aceita nas nossas
+// janelas (Window.GetSupportedAuxiliaryHint*): so a lista, nenhuma e ligada.
+// (O teste de Window.SetBrightness saiu: devolveu False e nada mudou, 24/10.)
+// So no host Tizen 6+ (Program.cs). O C pede pela funcao registrada em
 // nv_tpk_exibe_registrar; tudo vai para o log com "[assperf]" (aba Subtitles).
 using System;
 using System.Collections.Generic;
@@ -19,24 +19,58 @@ namespace NuvioTpk
 {
     static class Exibe
     {
-        [DllImport("libnuvio.so")] static extern void nv_tpk_exibe_registrar(IntPtr scan, IntPtr brilho);
+        [DllImport("libnuvio.so")] static extern void nv_tpk_exibe_registrar(IntPtr scan);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnSemArg();
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnInt(int valor);
 
-        // Referencias vivas: o C guarda os ponteiros, o GC nao pode recolher.
+        // Referencia viva: o C guarda o ponteiro, o GC nao pode recolher.
         static FnSemArg fScan;
-        static FnInt fBrilho;
         static Func<object[]> janelas;
-        static readonly Dictionary<object, int> original = new Dictionary<object, int>();
 
         public static void Registrar(Action<Action> post, Func<object[]> windows)
         {
             janelas = windows;
-            fScan = () => Task.Run(() => Scan());
-            fBrilho = v => post(() => Brilho(v));
-            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan),
-                                   Marshal.GetFunctionPointerForDelegate(fBrilho));
+            fScan = () => { post(() => AuxHints()); Task.Run(() => Scan()); };
+            nv_tpk_exibe_registrar(Marshal.GetFunctionPointerForDelegate(fScan));
+        }
+
+        // Thread principal (post): as aux hints de cada janela nossa.
+        static void AuxHints()
+        {
+            object[] ws;
+            try { ws = janelas != null ? janelas() : new object[0]; }
+            catch (Exception e) { Log("aux hints: " + e.GetType().Name + ": " + e.Message); return; }
+            foreach (var w in ws)
+            {
+                if (w == null) continue;
+                var t = w.GetType();
+                try
+                {
+                    var cnt = t.GetMethod("GetSupportedAuxiliaryHintCount", Type.EmptyTypes);
+                    var um = t.GetMethod("GetSupportedAuxiliaryHint", new[] { typeof(uint) });
+                    var lista = t.GetMethod("GetSupportedAuxiliaryHints", Type.EmptyTypes);
+                    var nomes = new List<string>();
+                    if (cnt != null && um != null)
+                    {
+                        uint n = Convert.ToUInt32(cnt.Invoke(w, null));
+                        for (uint i = 0; i < n && i < 512; i++) nomes.Add(Convert.ToString(um.Invoke(w, new object[] { i })));
+                    }
+                    else if (lista != null)
+                    {
+                        var r = lista.Invoke(w, null) as System.Collections.IEnumerable;
+                        if (r != null) foreach (var x in r) nomes.Add(Convert.ToString(x));
+                    }
+                    else { Log("aux hints " + t.Name + ": no GetSupportedAuxiliaryHint* in this TizenFX"); continue; }
+                    Log("aux hints " + t.Name + ": " + nomes.Count + " supported");
+                    foreach (var h in nomes) Log("aux hint " + t.Name + ": " + h);
+                }
+                catch (TargetInvocationException e)
+                {
+                    var x = e.InnerException ?? e;
+                    Log("aux hints " + t.Name + ": " + x.GetType().Name + ": " + x.Message);
+                }
+                catch (Exception e) { Log("aux hints " + t.Name + ": " + e.GetType().Name + ": " + e.Message); }
+            }
         }
 
         static readonly string[] Chaves = {
@@ -132,53 +166,6 @@ namespace NuvioTpk
             return m.Name + " (" + m.MemberType + ")";
         }
 
-        // Thread principal (post). v: 100 ou 30; -1 = devolver o valor de antes.
-        static void Brilho(int v)
-        {
-            object[] ws;
-            try { ws = janelas != null ? janelas() : new object[0]; }
-            catch (Exception e) { LogB(e.GetType().Name + ": " + e.Message); return; }
-            foreach (var w in ws)
-            {
-                if (w == null) continue;
-                var t = w.GetType();
-                try
-                {
-                    var set = t.GetMethod("SetBrightness", new[] { typeof(int) });
-                    var get = t.GetMethod("GetBrightness", Type.EmptyTypes);
-                    string antes = get != null ? Convert.ToString(get.Invoke(w, null)) : "n/a";
-                    if (set == null)
-                    {
-                        LogB(t.Name + " has no SetBrightness(int) in this TizenFX (GetBrightness " +
-                             (get != null ? "= " + antes : "missing") + ")");
-                        continue;
-                    }
-                    int alvo = v;
-                    if (v < 0)
-                    {
-                        if (!original.TryGetValue(w, out alvo)) { LogB(t.Name + ": off (never changed)"); continue; }
-                        original.Remove(w);
-                    }
-                    else if (!original.ContainsKey(w))
-                    {
-                        int o;
-                        if (int.TryParse(antes, out o)) original[w] = o;
-                    }
-                    object r = set.Invoke(w, new object[] { alvo });
-                    string depois = get != null ? Convert.ToString(get.Invoke(w, null)) : "n/a";
-                    LogB(t.Name + ": before " + antes + " -> SetBrightness(" + alvo + ") returned " + Convert.ToString(r) +
-                         " -> now " + depois);
-                }
-                catch (TargetInvocationException e)
-                {
-                    var x = e.InnerException ?? e;
-                    LogB(t.Name + ": " + x.GetType().Name + ": " + x.Message);
-                }
-                catch (Exception e) { LogB(t.Name + ": " + e.GetType().Name + ": " + e.Message); }
-            }
-        }
-
         static void Log(string s) { try { NvVid.LogNativo("[assperf] scan " + s); } catch { } }
-        static void LogB(string s) { try { NvVid.LogNativo("[assperf] window brightness: " + s); } catch { } }
     }
 }

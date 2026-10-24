@@ -1,0 +1,427 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nv <noreply@anthropic.com>
+Date: Sat, 24 Oct 2026 12:00:00 +0200
+Subject: [PATCH 5/5] libass: deferred blur (sharp composites + recipe for a GPU
+ blur; ass_nv_defer_apply rebuilds the exact CPU picture)
+
+diff --git a/libass/ass.h b/libass/ass.h
+index 3fb7e54..4589c51 100644
+--- a/libass/ass.h
++++ b/libass/ass.h
+@@ -929,6 +929,77 @@ void ass_nv_par_stats_take(ASS_NvParStats *out);
+  */
+ ASS_Track *ass_nv_track_clone(ASS_Track *src);
+ 
++#define ASS_NV_API_DEFER 1
++
++/*
++ * 0005 (deferred blur). With it on, libass skips the gaussian blur of a
++ * composite (and the outline fix and the shadow subpixel shift that come
++ * after it) and hands the app the sharp bitmap plus the recipe, so the blur
++ * can run on the GPU. A composite is deferred only when it has a gaussian
++ * blur, no \be and no vector clip; everything else takes the normal path.
++ * The image's own bitmap is then the SHARP picture (do not draw it).
++ */
++
++/**
++ * \brief Turn deferred blur on or off for this renderer (default off).
++ * Deferred and normal composites have different cache keys, so switching
++ * needs no flush. Returns the new state.
++ */
++int ass_nv_set_deferred_blur(ASS_Renderer *priv, int on);
++int ass_nv_get_deferred_blur(ASS_Renderer *priv);
++
++typedef struct ass_nv_defer {
++    /* The whole sharp bitmap this image is a part of, already padded to the
++     * size libass's blur gives it (blurring it keeps its size). */
++    const unsigned char *src;
++    int src_w, src_h, src_stride;
++    int sub_x, sub_y;           // this image's top-left inside src (w x h of the image)
++    int core_x, core_y, core_w, core_h;  // src without the padding (libass's CPU blur input)
++    double r2x, r2y;            // gaussian variance in pixels^2 (sigma^2) along x and y
++    /* After the blur, when fix: v = v > g ? v - g / 2 : 0 (integers), with g
++     * the fill bitmap at (x + fill_dx, y + fill_dy) of src (0 outside it). */
++    int fix;
++    const unsigned char *fill;
++    int fill_w, fill_h, fill_stride, fill_dx, fill_dy;
++    /* Then (shadows) libass's subpixel shift, in 1/64 pixel (0..63):
++     * v[x] ~ v[x] * (64 - s) / 64 + v[x - 1] * s / 64, x first, then y. */
++    int shift_x, shift_y;
++} ASS_NvDefer;
++
++/**
++ * \brief The recipe of a deferred image. Returns 0 for a normal image (draw
++ * its bitmap as usual). Valid while the image is (ass_render_frame keeps it
++ * until the next frame of that renderer).
++ */
++int ass_nv_image_defer(const ASS_Image *img, ASS_NvDefer *out);
++
++/**
++ * \brief Apply the recipe on the CPU with libass's own blur, outline fix and
++ * shift: writes the w x h picture the normal path would have given (byte
++ * identical). For checks and as a fallback. Returns 0 on failure.
++ */
++int ass_nv_defer_apply_cpu(ASS_Renderer *priv, const ASS_Image *img,
++                           unsigned char *dst, int dst_stride);
++
++/**
++ * \brief The same from a recipe alone (the app's own copies of src and fill,
++ * any thread): writes the w x h picture at sub_x, sub_y. Returns 0 on failure.
++ */
++int ass_nv_defer_apply(const ASS_NvDefer *d, int w, int h, unsigned char *dst, int dst_stride);
++
++typedef struct ass_nv_defer_stats {
++    unsigned blurred;    // combined bitmaps with a gaussian blur, per frame
++    unsigned deferred;   // of those: deferred
++    unsigned kept_be;    // kept on the CPU: \be with the blur
++    unsigned kept_clip;  // kept on the CPU: vector clip
++} ASS_NvDeferStats;
++
++/**
++ * \brief Copy this renderer's deferred-blur counters and reset them. Call it
++ * from the thread that renders with it.
++ */
++void ass_nv_defer_stats_take(ASS_Renderer *priv, ASS_NvDeferStats *out);
++
+ #undef ASS_DEPRECATED
+ #undef ASS_DEPRECATED_ENUM
+ 
+diff --git a/libass/ass_bitmap.h b/libass/ass_bitmap.h
+index c337bf1..b7cf2df 100644
+--- a/libass/ass_bitmap.h
++++ b/libass/ass_bitmap.h
+@@ -48,6 +48,9 @@ void ass_synth_blur(const BitmapEngine *engine, Bitmap *bm,
+                     int be, double blur_r2x, double blur_r2y);
+ 
+ bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, double r2y);
++/* 0005: give `bm` the size and position ass_gaussian_blur would, without
++ * blurring (the picture lands at core[0], core[1]; core[2..3] = old w, h). */
++bool ass_nv_blur_pad(const BitmapEngine *engine, Bitmap *bm, double r2x, double r2y, int32_t core[4]);
+ void ass_shift_bitmap(Bitmap *bm, int shift_x, int shift_y);
+ void ass_fix_outline(Bitmap *bm_g, Bitmap *bm_o);
+ 
+diff --git a/libass/ass_blur.c b/libass/ass_blur.c
+index ec91a92..a23abf6 100644
+--- a/libass/ass_blur.c
++++ b/libass/ass_blur.c
+@@ -165,6 +165,37 @@ static void find_best_method(BlurMethod *blur, double r2)
+         blur->coeff[i] = (int) (0x10000 * mu[i] + 0.5);
+ }
+ 
++bool ass_nv_blur_pad(const BitmapEngine *engine, Bitmap *bm, double r2x, double r2y, int32_t core[4])
++{
++    BlurMethod blur_x, blur_y;
++    find_best_method(&blur_x, r2x);
++    if (r2y == r2x)
++        memcpy(&blur_y, &blur_x, sizeof(blur_y));
++    else find_best_method(&blur_y, r2y);
++
++    uint32_t w = bm->w, h = bm->h;
++    int offset_x = ((2 * blur_x.radius + 9) << blur_x.level) - 5;
++    int offset_y = ((2 * blur_y.radius + 9) << blur_y.level) - 5;
++    uint32_t end_w = ((w + offset_x) & ~((1 << blur_x.level) - 1)) - 4;
++    uint32_t end_h = ((h + offset_y) & ~((1 << blur_y.level) - 1)) - 4;
++    int32_t dl = ((blur_x.radius + 4) << blur_x.level) - 4;
++    int32_t dt = ((blur_y.radius + 4) << blur_y.level) - 4;
++    if ((uint64_t) end_w * end_h > INT_MAX / 4)
++        return false;
++
++    Bitmap nb;
++    if (!ass_alloc_bitmap(engine, &nb, end_w, end_h, true))
++        return false;
++    for (uint32_t y = 0; y < h; y++)
++        memcpy(nb.buffer + (y + dt) * nb.stride + dl, bm->buffer + y * bm->stride, w);
++    nb.left = bm->left - dl;
++    nb.top  = bm->top  - dt;
++    ass_free_bitmap(bm);
++    *bm = nb;
++    core[0] = dl; core[1] = dt; core[2] = w; core[3] = h;
++    return true;
++}
++
+ /**
+  * \brief Perform approximate gaussian blur
+  * \param r2x in: desired standard deviation along X axis squared
+diff --git a/libass/ass_cache.h b/libass/ass_cache.h
+index 53eac20..5d5b50a 100644
+--- a/libass/ass_cache.h
++++ b/libass/ass_cache.h
+@@ -32,6 +32,13 @@ typedef uint64_t ass_hashcode;
+ 
+ typedef struct {
+     Bitmap bm, bm_o, bm_s;
++    /* 0005 deferred blur: the bitmaps are sharp (padded) and this is the
++     * recipe; see ass_nv_image_defer. */
++    int nv_defer, nv_blur_fill, nv_fix_o, nv_fix_s;
++    double nv_r2x, nv_r2y;
++    int nv_shift_x, nv_shift_y;
++    int32_t nv_s_left0, nv_s_top0;      // shadow source left/top before the integer offset
++    int32_t nv_core[3][4];              // bm, bm_o, bm_s: x, y, w, h of the unpadded part
+ } CompositeHashValue;
+ 
+ typedef struct {
+@@ -76,6 +83,7 @@ enum {
+     FILTER_NONZERO_SHADOW = 0x04,
+     FILTER_FILL_IN_SHADOW = 0x08,
+     FILTER_FILL_IN_BORDER = 0x10,
++    FILTER_NV_DEFER       = 0x20,   // 0005: deferred blur (different cache key)
+ };
+ 
+ // ass_cache_get() takes ownership of the bitmaps array and either frees it
+diff --git a/libass/ass_render.c b/libass/ass_render.c
+index 4466581..509141f 100644
+--- a/libass/ass_render.c
++++ b/libass/ass_render.c
+@@ -2540,6 +2540,23 @@ static void render_and_combine_glyphs(RenderContext *state,
+                 double blur_scale_y = state->blur_scale_y * blur_radius_scale;
+                 filter->blur_x = quantize_blur(info->blur * blur_scale_x, &shadow_mask_x);
+                 filter->blur_y = quantize_blur(info->blur * blur_scale_y, &shadow_mask_y);
++                {
++                    /* 0005: the same test ass_synth_blur makes before blurring. */
++                    double nv_r2x = restore_blur(filter->blur_x), nv_r2y = restore_blur(filter->blur_y);
++                    if (nv_r2x > 0.001 || nv_r2y > 0.001) {
++                        render_priv->nv_defer_stats.blurred++;
++                        if (!render_priv->nv_defer_blur)
++                            ;
++                        else if (filter->be)
++                            render_priv->nv_defer_stats.kept_be++;
++                        else if (state->clip_drawing_text.str)
++                            render_priv->nv_defer_stats.kept_clip++;
++                        else {
++                            filter->flags |= FILTER_NV_DEFER;
++                            render_priv->nv_defer_stats.deferred++;
++                        }
++                    }
++                }
+                 if (flags & FILTER_NONZERO_SHADOW) {
+                     int32_t x = double_to_d6(info->shadow_x * state->border_scale_x);
+                     int32_t y = double_to_d6(info->shadow_y * state->border_scale_y);
+@@ -2667,6 +2684,175 @@ int ass_be_padding(int be)
+ 
+ static size_t nv_ass_composite_construct(void *key, void *value, void *priv);
+ 
++/* 0005 deferred blur: the composite stays sharp (padded to the blurred size)
++ * and records what the normal path below would do after the blur. Returns 0
++ * when the composite must take the normal path (nothing changed yet). */
++static int nv_defer_construct(ASS_Renderer *render_priv, CompositeHashKey *k,
++                              CompositeHashValue *v, double r2x, double r2y)
++{
++    const BitmapEngine *engine = &render_priv->engine;
++    int flags = k->filter.flags;
++    int blur_fill = !(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3);
++    int fix_o = !(flags & FILTER_FILL_IN_BORDER);
++    /* An outline fix against a BLURRED fill never happens in libass (a
++     * bordered fill stays sharp); if it ever did, keep the exact CPU path. */
++    if (blur_fill && fix_o && v->bm.buffer && v->bm_o.buffer)
++        return 0;
++    if (blur_fill && v->bm.buffer && !ass_nv_blur_pad(engine, &v->bm, r2x, r2y, v->nv_core[0]))
++        return 0;
++    if (v->bm_o.buffer && !ass_nv_blur_pad(engine, &v->bm_o, r2x, r2y, v->nv_core[1])) {
++        if (blur_fill && v->bm.buffer) {
++            /* undo the padding of bm: back to the picture alone */
++            Bitmap c;
++            int32_t *core = v->nv_core[0];
++            if (!ass_alloc_bitmap(engine, &c, core[2], core[3], false))
++                return 0;   // out of memory either way
++            for (int32_t y = 0; y < core[3]; y++)
++                memcpy(c.buffer + y * c.stride, v->bm.buffer + (y + core[1]) * v->bm.stride + core[0], core[2]);
++            c.left = v->bm.left + core[0];
++            c.top  = v->bm.top  + core[1];
++            ass_free_bitmap(&v->bm);
++            v->bm = c;
++        }
++        return 0;
++    }
++    v->nv_defer = 1;
++    v->nv_blur_fill = blur_fill && v->bm.buffer;
++    v->nv_r2x = r2x;
++    v->nv_r2y = r2y;
++    v->nv_fix_o = fix_o;
++    if (flags & FILTER_NONZERO_SHADOW) {
++        if (flags & FILTER_NONZERO_BORDER) {
++            ass_copy_bitmap(engine, &v->bm_s, &v->bm_o);
++            memcpy(v->nv_core[2], v->nv_core[1], sizeof(v->nv_core[2]));
++            v->nv_fix_s = !(flags & FILTER_FILL_IN_SHADOW);
++        } else if (flags & FILTER_BORDER_STYLE_3) {
++            v->bm_s = v->bm_o;
++            memset(&v->bm_o, 0, sizeof(v->bm_o));
++            memcpy(v->nv_core[2], v->nv_core[1], sizeof(v->nv_core[2]));
++        } else {
++            ass_copy_bitmap(engine, &v->bm_s, &v->bm);
++            memcpy(v->nv_core[2], v->nv_core[0], sizeof(v->nv_core[2]));
++        }
++        v->nv_s_left0 = v->bm_s.left;
++        v->nv_s_top0  = v->bm_s.top;
++        v->bm_s.left += k->filter.shadow.x >> 6;
++        v->bm_s.top  += k->filter.shadow.y >> 6;
++        v->nv_shift_x = k->filter.shadow.x & SUBPIXEL_MASK;
++        v->nv_shift_y = k->filter.shadow.y & SUBPIXEL_MASK;
++    }
++    return 1;
++}
++
++int ass_nv_image_defer(const ASS_Image *img, ASS_NvDefer *out)
++{
++    const ASS_ImagePriv *p = (const ASS_ImagePriv *) img;
++    const CompositeHashValue *v = p ? p->source : NULL;
++    const Bitmap *b;
++    int which;
++    if (!v || !v->nv_defer)
++        return 0;
++    switch (img->type) {
++    case IMAGE_TYPE_CHARACTER: if (!v->nv_blur_fill) return 0; b = &v->bm;   which = 0; break;
++    case IMAGE_TYPE_OUTLINE:   b = &v->bm_o; which = 1; break;
++    case IMAGE_TYPE_SHADOW:    b = &v->bm_s; which = 2; break;
++    default: return 0;
++    }
++    if (!b->buffer || img->bitmap < b->buffer ||
++        img->bitmap >= b->buffer + b->stride * b->h)
++        return 0;
++    ptrdiff_t off = img->bitmap - b->buffer;
++    memset(out, 0, sizeof(*out));
++    out->src = b->buffer;
++    out->src_w = b->w;
++    out->src_h = b->h;
++    out->src_stride = (int) b->stride;
++    out->sub_x = (int) (off % b->stride);
++    out->sub_y = (int) (off / b->stride);
++    out->core_x = v->nv_core[which][0];
++    out->core_y = v->nv_core[which][1];
++    out->core_w = v->nv_core[which][2];
++    out->core_h = v->nv_core[which][3];
++    out->r2x = v->nv_r2x;
++    out->r2y = v->nv_r2y;
++    int fix = which == 1 ? v->nv_fix_o : which == 2 ? v->nv_fix_s : 0;
++    if (fix && v->bm.buffer) {
++        int32_t l0 = which == 2 ? v->nv_s_left0 : b->left;
++        int32_t t0 = which == 2 ? v->nv_s_top0  : b->top;
++        out->fix = 1;
++        out->fill = v->bm.buffer;
++        out->fill_w = v->bm.w;
++        out->fill_h = v->bm.h;
++        out->fill_stride = (int) v->bm.stride;
++        out->fill_dx = l0 - v->bm.left;
++        out->fill_dy = t0 - v->bm.top;
++    }
++    if (which == 2) {
++        out->shift_x = v->nv_shift_x;
++        out->shift_y = v->nv_shift_y;
++    }
++    return 1;
++}
++
++#include <pthread.h>
++static pthread_once_t nv_defer_engine_once = PTHREAD_ONCE_INIT;
++static BitmapEngine nv_defer_engine;
++
++static void nv_defer_engine_init(void)
++{
++    unsigned flags = ASS_CPU_FLAG_ALL;
++#if CONFIG_LARGE_TILES
++    flags |= ASS_FLAG_LARGE_TILES;
++#endif
++    nv_defer_engine = ass_bitmap_engine_init(flags);
++}
++
++int ass_nv_defer_apply(const ASS_NvDefer *d, int w, int h, unsigned char *dst, int dst_stride)
++{
++    Bitmap t;
++    pthread_once(&nv_defer_engine_once, nv_defer_engine_init);
++    if (w <= 0 || h <= 0 || d->sub_x < 0 || d->sub_y < 0 ||
++        d->sub_x + w > d->src_w || d->sub_y + h > d->src_h)
++        return 0;
++    if (!ass_alloc_bitmap(&nv_defer_engine, &t, d->core_w, d->core_h, true))
++        return 0;
++    for (int y = 0; y < d->core_h; y++)
++        memcpy(t.buffer + y * t.stride, d->src + (ptrdiff_t) (y + d->core_y) * d->src_stride + d->core_x, d->core_w);
++    t.left = d->core_x;
++    t.top  = d->core_y;
++    if (!ass_gaussian_blur(&nv_defer_engine, &t, d->r2x, d->r2y) ||
++        t.left != 0 || t.top != 0 || t.w != d->src_w || t.h != d->src_h) {
++        ass_free_bitmap(&t);
++        return 0;
++    }
++    if (d->fix) {
++        Bitmap g;
++        g.left = -d->fill_dx;
++        g.top  = -d->fill_dy;
++        g.w = d->fill_w;
++        g.h = d->fill_h;
++        g.stride = d->fill_stride;
++        g.buffer = (uint8_t *) d->fill;
++        ass_fix_outline(&g, &t);
++    }
++    if (d->shift_x || d->shift_y)
++        ass_shift_bitmap(&t, d->shift_x, d->shift_y);
++    for (int y = 0; y < h; y++)
++        memcpy(dst + (ptrdiff_t) y * dst_stride, t.buffer + (ptrdiff_t) (y + d->sub_y) * t.stride + d->sub_x, w);
++    ass_free_bitmap(&t);
++    return 1;
++}
++
++int ass_nv_defer_apply_cpu(ASS_Renderer *priv, const ASS_Image *img,
++                           unsigned char *dst, int dst_stride)
++{
++    ASS_NvDefer d;
++    (void) priv;
++    if (!ass_nv_image_defer(img, &d))
++        return 0;
++    return ass_nv_defer_apply(&d, img->w, img->h, dst, dst_stride);
++}
++
+ size_t ass_composite_construct(void *key, void *value, void *priv)
+ {
+     int nv_prev = ass_nv_stage_enter(ASS_NV_ST_COMPOSE);
+@@ -2757,6 +2943,10 @@ static size_t nv_ass_composite_construct(void *key, void *value, void *priv)
+     int flags = k->filter.flags;
+     double r2x = restore_blur(k->filter.blur_x);
+     double r2y = restore_blur(k->filter.blur_y);
++    if ((flags & FILTER_NV_DEFER) && nv_defer_construct(render_priv, k, v, r2x, r2y))
++        return sizeof(CompositeHashKey) + sizeof(CompositeHashValue) +
++            k->bitmap_count * sizeof(BitmapRef) +
++            bitmap_size(&v->bm) + bitmap_size(&v->bm_o) + bitmap_size(&v->bm_s);
+     if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
+         ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
+     ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
+diff --git a/libass/ass_render.h b/libass/ass_render.h
+index e1eb7d2..25d9bd1 100644
+--- a/libass/ass_render.h
++++ b/libass/ass_render.h
+@@ -338,6 +338,9 @@ struct ass_renderer {
+     BitmapEngine engine;
+ 
+     ASS_Style user_override_style;
++
++    int nv_defer_blur;              // 0005: deferred blur (ass_nv_set_deferred_blur)
++    ASS_NvDeferStats nv_defer_stats;
+ };
+ 
+ typedef struct render_priv {
+diff --git a/libass/ass_render_api.c b/libass/ass_render_api.c
+index 0dbb598..e340661 100644
+--- a/libass/ass_render_api.c
++++ b/libass/ass_render_api.c
+@@ -445,6 +445,23 @@ void ass_nv_flush_caches(ASS_Renderer *priv)
+     ass_reconfigure(priv);
+ }
+ 
++int ass_nv_set_deferred_blur(ASS_Renderer *priv, int on)
++{
++    priv->nv_defer_blur = on ? 1 : 0;
++    return priv->nv_defer_blur;
++}
++
++int ass_nv_get_deferred_blur(ASS_Renderer *priv)
++{
++    return priv->nv_defer_blur;
++}
++
++void ass_nv_defer_stats_take(ASS_Renderer *priv, ASS_NvDeferStats *out)
++{
++    *out = priv->nv_defer_stats;
++    memset(&priv->nv_defer_stats, 0, sizeof(priv->nv_defer_stats));
++}
++
+ int ass_nv_simd_available(void)
+ {
+     return ass_get_cpu_flags(ASS_CPU_FLAG_ALL) != ASS_CPU_FLAG_NONE;

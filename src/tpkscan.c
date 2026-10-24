@@ -15,7 +15,9 @@
 //     a assinatura exata (para a proxima build poder chamar a certa);
 //  3. as bibliotecas do sistema: funcoes exportadas com nomes de brilho,
 //     luminancia, gama, plano, OSD, HDR, PQ...;
-//  4. a API .NET (pelo host, Exibe.cs): membros com esses nomes.
+//  4. as chaves de configuracao (vconf) e o sysfs com nomes de imagem;
+//  5. a API .NET (pelo host, Exibe.cs): membros com esses nomes e as "aux
+//     hints" que o gerenciador de janelas aceita nas nossas janelas.
 //
 // Nada e chamado alem de leituras: nenhuma funcao achada e executada. O texto
 // completo vai para /ass-snap-display-scan.txt na pagina do log; o log
@@ -45,16 +47,15 @@
 #define RTLD_DEFAULT ((void *)0)
 #endif
 
-// ---- ganchos do host .NET (tizen-tpk/Exibe.cs) --------------------------------
+// ---- gancho do host .NET (tizen-tpk/Exibe.cs) ---------------------------------
+/* O teste de Window.SetBrightness saiu (24/10: devolveu False, nada mudou na
+ * tela); o host so registra o scan .NET. */
 typedef void (*TsFnSem)(void);
-typedef void (*TsFnInt)(int);
 static TsFnSem hScanNet;
-static TsFnInt hBrilho;
 
 __attribute__((visibility("default")))
-void nv_tpk_exibe_registrar(TsFnSem scanNet, TsFnInt brilho) {
+void nv_tpk_exibe_registrar(TsFnSem scanNet) {
   hScanNet = scanNet;
-  hBrilho = brilho;
 }
 
 // ---- texto do scan ------------------------------------------------------------
@@ -373,11 +374,21 @@ static void scan_abrir_protocolos(ScanTxt *t) {
 
 typedef struct { ScanTxt *t; int libs, comAchado, simbolos; } ScanLib;
 
+/* Bibliotecas de imagem da Samsung achadas no scan de 23/10: TODAS as
+ * exportacoes vao para o arquivo (sem filtro de nome nem limite de 80), para
+ * ver se ha um ganho/brilho da camada grafica. So leitura, como o resto. */
+static int lib_inteira(const char *nome) {
+  static const char *const L[] = { "libavoc", "libvideoenhance", "libgraphics-control", "libpicture", "libgfx", "libpq", NULL };
+  int i;
+  for (i = 0; L[i]; i++) if (!strncmp(nome, L[i], strlen(L[i]))) return 1;
+  return 0;
+}
+
 static void scan_um(const char *dir, const char *nome, void *u) {
   ScanLib *sc = u;
   char c[600], primeiros[400];
   struct stat st;
-  int fd, achados = 0;
+  int fd, achados = 0, inteira = lib_inteira(nome), todas = 0;
   size_t po = 0;
   unsigned char *m;
   if (!strstr(nome, ".so")) return;
@@ -412,6 +423,7 @@ static void scan_um(const char *dir, const char *nome, void *u) {
           if (sy->st_shndx == SHN_UNDEF || sy->st_name >= ss->sh_size || (tp != STT_FUNC && tp != STT_OBJECT) ||
               (bd != STB_GLOBAL && bd != STB_WEAK)) continue;
           sn = (const char *)(m + ss->sh_offset + sy->st_name);
+          if (inteira) { todas++; sl(sc->t, 0, "lib-all %s: %s %s", nome, tp == STT_FUNC ? "fn" : "data", sn); }
           if (!casa(sn, CHAVES_SIMBOLO)) continue;
           /* C++ (DALi, Evas) tem milhares de "Plane"/"Color" de geometria: so
            * os nomes C e os mangled com as palavras mais fortes. */
@@ -427,6 +439,7 @@ static void scan_um(const char *dir, const char *nome, void *u) {
     }
   }
   munmap(m, (size_t)st.st_size);
+  if (inteira) sl(sc->t, 1, "lib %s: all %d exports written to the file (lines \"lib-all %s\")", nome, todas, nome);
   if (achados) {
     sc->comAchado++; sc->simbolos += achados;
     if (achados > 80) sl(sc->t, 0, "lib %s: ... %d more", nome, achados - 80);
@@ -446,6 +459,77 @@ static void scan_libs(ScanTxt *t) {
      sc.libs, sc.comAchado, sc.simbolos);
 }
 
+// ---- 4. chaves de configuracao (vconf) e sysfs: o que a TV guarda de imagem ----------
+/* So nomes e valores pequenos, lidos como arquivo; o sandbox pode negar (o
+ * log diz). As chaves com nomes de imagem dizem o que o modo de imagem mexe. */
+static const char *const CHAVES_CFG[] = {
+  "picture", "bright", "lumin", "gamma", "contrast", "hdr", "tone", "osd", "graphic", "gfx", "backlight", "dimm",
+  "colour", "color", "white", "peak", "abl", "logo", "eco", "pq", NULL
+};
+
+typedef struct { ScanTxt *t; int nivel, vistos, achados, logados; } ScanCfg;
+
+static void cfg_valor(ScanTxt *t, int log, const char *c) {
+  unsigned char b[96];
+  char txt[200];
+  size_t o = 0;
+  ssize_t k;
+  int fd = open(c, O_RDONLY), i;
+  if (fd < 0) { sl(t, log, "cfg %s: unreadable", c); return; }
+  k = read(fd, b, sizeof b);
+  close(fd);
+  if (k < 0) { sl(t, log, "cfg %s: unreadable", c); return; }
+  /* vconf: int32 tipo (40 string, 41 int, 42 double, 43 bool) e o valor. */
+  if (k >= 8 && b[1] == 0 && b[2] == 0 && b[3] == 0 && (b[0] == 41 || b[0] == 43)) {
+    int32_t v; memcpy(&v, b + 4, 4);
+    sl(t, log, "cfg %s = %d (%s)", c, v, b[0] == 41 ? "int" : "bool"); return;
+  }
+  if (k >= 12 && b[0] == 42 && !b[1] && !b[2] && !b[3]) { double v; memcpy(&v, b + 4, 8); sl(t, log, "cfg %s = %g (double)", c, v); return; }
+  for (i = (k >= 4 && b[0] == 40 && !b[1]) ? 4 : 0; i < k && o + 4 < sizeof txt; i++)
+    o += (size_t)snprintf(txt + o, sizeof txt - o, (b[i] >= 32 && b[i] < 127) ? "%c" : "\\x%02x", b[i]);
+  txt[o] = 0;
+  sl(t, log, "cfg %s = \"%s\"%s", c, txt, k == (ssize_t)sizeof b ? "..." : "");
+}
+
+static void cfg_cada(const char *dir, const char *nome, void *u) {
+  ScanCfg *sc = u;
+  char c[700];
+  struct stat st;
+  snprintf(c, sizeof c, "%s/%s", dir, nome);
+  if (lstat(c, &st)) return;
+  if (++sc->vistos > 60000) return;
+  /* Em /sys/class cada entrada e um link para o aparelho: segue so esses, e so 2 niveis. */
+  if (S_ISLNK(st.st_mode) && sc->nivel == 0 && !strncmp(dir, "/sys/", 5) && !stat(c, &st) && S_ISDIR(st.st_mode)) {
+    int antes = sc->nivel;
+    sc->nivel = 6; listar(c, cfg_cada, sc); sc->nivel = antes;
+    return;
+  }
+  if (S_ISDIR(st.st_mode)) {
+    if (sc->nivel >= 7) return;
+    sc->nivel++; listar(c, cfg_cada, sc); sc->nivel--;
+    return;
+  }
+  if (!casa(c, CHAVES_CFG)) return;
+  sc->achados++;
+  if (S_ISREG(st.st_mode) && st.st_size <= 4096) cfg_valor(sc->t, sc->logados++ < 120, c);
+  else sl(sc->t, 0, "cfg %s (%s, %lld bytes)", c, S_ISREG(st.st_mode) ? "file" : "other", (long long)st.st_size);
+}
+
+static void scan_cfg(ScanTxt *t) {
+  static const char *const DIRS[] = {
+    "/opt/var/kdb/db", "/opt/var/kdb/memory", "/var/run/memory", "/run/memory",
+    "/sys/class/backlight", "/sys/class/graphics", "/sys/class/drm", "/sys/class/video4linux", "/sys/class/display",
+    "/opt/usr/home/owner/share/picture", "/opt/etc/picture", "/etc/picture", NULL
+  };
+  int i;
+  for (i = 0; DIRS[i]; i++) {
+    ScanCfg sc = { t, 0, 0, 0, 0 };
+    int n = listar(DIRS[i], cfg_cada, &sc);
+    if (n < 0) sl(t, 1, "cfg %s: not readable here", DIRS[i]);
+    else sl(t, 1, "cfg %s: %d entries looked at, %d with picture-related names", DIRS[i], sc.vistos, sc.achados);
+  }
+}
+
 // ---- fio ------------------------------------------------------------------------
 static int scanRodando;
 
@@ -453,6 +537,7 @@ static void *scan_fio(void *u) {
   ScanTxt *t = u;
   scan_wayland(t);
   scan_libs(t);
+  scan_cfg(t);
   sl(t, 1, "done: full text at http://<TV IP>:8099/ass-snap-display-scan.txt%s",
      hScanNet ? " (the .NET part follows in the log as [assperf] scan .net)" : "");
   fflush(stdout);
@@ -464,8 +549,6 @@ static void *scan_fio(void *u) {
 }
 
 void tpkscan_tick(void) {
-  static int brilhoAplicado;
-  int b;
   if (assperf_get(AP_SCAN)) {
     assperf_definir(AP_SCAN, 0);
     if (__atomic_exchange_n(&scanRodando, 1, __ATOMIC_ACQ_REL)) { printf("[assperf] scan: already running\n"); fflush(stdout); }
@@ -484,12 +567,6 @@ void tpkscan_tick(void) {
         assperf_bench_estado(0, "Display scan: could not start a thread");
       } else pthread_detach(fio);
     }
-  }
-  b = assperf_get(AP_BRILHO);
-  if (b != brilhoAplicado) {
-    brilhoAplicado = b;
-    if (hBrilho) hBrilho(b == 1 ? 100 : b == 2 ? 30 : -1);
-    else { printf("[assperf] window brightness: not available on this host package\n"); fflush(stdout); }
   }
 }
 #endif

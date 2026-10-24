@@ -9,7 +9,8 @@
 #     engine on random input, several seeds.
 #  2. verify.c: real libass renders of samples/*.ass on a time grid, C engine
 #     vs NEON engine, every ASS_Image compared byte for byte, plus a check that
-#     the stage timers count frames.
+#     the stage timers count frames, 3 renderers at once, and (0005) the
+#     deferred-blur recipes rebuilt on the CPU against the normal path.
 #
 # Exits non-zero on any difference, which fails the build.
 set -e

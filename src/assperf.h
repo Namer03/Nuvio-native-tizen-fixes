@@ -47,12 +47,10 @@ enum {
   AP_ESTILO,       // player subtitle style (colour, border, box, bold, font, opacity) on STYLED ASS:
                    // 0 applies (old), 1 ignored (drawn as authored, like mpv / NuvioMobile)
   AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
+  AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
   AP_SNAP,         // ASS snapshot: 0 off, 1 take now (an action: logs events/styles/colours + images on the log page)
   AP_CARTAO,       // colour test card over the video: 0 off, 1 on
-  AP_PARALELO,     // parallel renderers (TPK, libass 0004): 0 off (old), 1 = 2, 2 = 3 lookahead renderers
-  AP_PARMIN,       // smallest blur job split across the blur threads: 0 64k lanes (old), 1 16k, 2 4k, 3 1k
   AP_SCAN,         // scan display APIs: 0 off, 1 run (an action: read-only scan, see the log page)
-  AP_BRILHO,       // window brightness request (test): 0 off, 1 = 100, 2 = 30 (not kept across starts)
   AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
   AP_N
 };
@@ -98,6 +96,12 @@ void assperf_med_adiante(double ms);                              // adiantament
 void assperf_med_relay(int blocos, int usados);                   // mkvfix -> mkvass
 void assperf_med_poda(int removidos);
 void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
+// Blur na GPU (assrender): um lote do fio GL com trabalho novo, e a conta do
+// libass por quadro (worker).
+void assperf_med_gpublur(unsigned blurs, unsigned finais, unsigned reusos, unsigned falhas, unsigned cpu,
+                         double ms, int medido);
+void assperf_med_adiado(unsigned comBlur, unsigned adiados, unsigned be, unsigned clip);
+void assperf_gpublur_formato(const char *s);   // "R16F" etc. (fio GL, uma vez)
 void assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // provas no computador
@@ -114,7 +118,7 @@ typedef struct {
   // divisao do blur entre os fios (libass 0004: ass_nv_par_stats_take)
   unsigned parJobs, parSplit, parSmall, parBusy, parOne;
   unsigned long long parLanes, parLanesSplit;
-  int renderers;             // renderers que alimentaram esta medida (1 = so o principal)
+  int renderers;             // sempre 1 (os renderers em paralelo sairam)
 } AssperfEstagios;
 void assperf_med_estagios(const AssperfEstagios *e);
 extern const char *const assperf_estagio_nome[8];
@@ -123,12 +127,6 @@ int  assperf_e_medida(int id);
 // Chave decidida pelos testes na TV: fora da folha, sempre o valor bom no .tpk.
 int  assperf_fixa(int id);
 int  assperf_fios(void);                     // 1..4
-int  assperf_paralelo(void);                 // renderers: 1 (off) .. 3
-size_t assperf_par_min(void);                // int16 lanes (libass ass_nv_set_par_min)
-// Renderers em paralelo (assrender): um render de um ajudante, e um quadro
-// dele que entrou na tela.
-void assperf_med_ajudante(double ms, int publicado);
-void assperf_med_ajudante_exibido(int doAjudante);
 // Arquivos do ultimo "ASS snapshot" para a pagina do log (/ass-snap*.bmp).
 // `nome` sem a barra. 1 = achou (buf continua do assperf; copie antes de soltar a trava).
 void assperf_snap_guardar(const char *nome, unsigned char *buf, size_t n);   // toma posse de buf
