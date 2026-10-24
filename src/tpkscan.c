@@ -418,6 +418,20 @@ int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
   struct stat st;
   if (!nome || !*nome || strchr(nome, '/') || strstr(nome, "..")) return 0;
   ln = strlen(nome);
+  /* avoc daemon / related executables ("avoc", "avocd", ...): read-only copy
+   * from the system bin dirs. Scoped to names containing "avoc" so this never
+   * exposes an arbitrary binary; .so names fall through to the lib path below.
+   * Add other exact daemon names to BINS if your panel names it differently. */
+  {
+    static const char *const BINS[] = { NULL };
+    static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
+    int okb = (strstr(nome, "avoc") && !strstr(nome, ".so"));
+    for (i = 0; BINS[i] && !okb; i++) if (!strcmp(nome, BINS[i])) okb = 1;
+    if (okb) for (i = 0; BINDIRS[i]; i++) {
+      snprintf(c, n, "%s/%s", BINDIRS[i], nome);
+      if (!stat(c, &st) && S_ISREG(st.st_mode)) return 1;
+    }
+  }
   /* os assemblies .NET da Samsung para TV (PhotoViewer, video canvas) */
   if (!strncmp(nome, "Tizen.TV", 8) && ln > 4 && !strcmp(nome + ln - 4, ".dll")) ok = 1;
   else if (strncmp(nome, "lib", 3) || !strstr(nome, ".so")) return 0;
@@ -444,16 +458,29 @@ static void lista_cada(const char *dir, const char *nome, void *u) {
   if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
   l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-lib/%s  (%s, %ld KB)\n", nome, dir, (long)(st.st_size / 1024));
 }
+/* avoc daemon / executables found in the bin dirs (discovery aid). */
+static void bin_lista_cada(const char *dir, const char *nome, void *u) {
+  LibLista *l = u;
+  char c[600];
+  struct stat st;
+  if (l->o + 200 >= l->n || !strstr(nome, "avoc") || strstr(nome, ".so")) return;
+  snprintf(c, sizeof c, "%s/%s", dir, nome);
+  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
+  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-lib/%s  (%s, %ld KB)\n", nome, dir, (long)(st.st_size / 1024));
+}
 __attribute__((visibility("default")))
 size_t tpkscan_lib_lista(char *dst, size_t n) {
   static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
                                       "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
+  static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
   LibLista l = { dst, n, 0 };
   int i;
   l.o = (size_t)snprintf(dst, n, "System libraries you can download for the display study (read-only copies).\n"
                          "Libraries that call the plane / video output functions are added after 'Scan display APIs'.\n"
                          "Open http://<TV IP>:8099/ass-lib/<name> to download one.\n\n");
   for (i = 0; DIRS[i]; i++) listar(DIRS[i], lista_cada, &l);
+  l.o += (size_t)snprintf(l.dst + l.o, l.n - l.o, "\navoc daemon / executables (/usr/bin, read-only):\n");
+  for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_cada, &l);
   return l.o;
 }
 
