@@ -378,188 +378,14 @@ typedef struct { ScanTxt *t; int libs, comAchado, simbolos; } ScanLib;
 
 /* Quem CHAMA as funcoes de plano/saida de video da Samsung (simbolos
  * indefinidos com estes prefixos): mostra como os argumentos sao montados.
- * Essas bibliotecas (e as das funcoes) podem ser baixadas pela pagina do log
- * (/ass-lib/) para estudar as assinaturas. So leitura. */
+ * So leitura. */
 static const char *const PREF_USO[] = {
   "Gfx_Videooutput", "Gfx_Set_Plane", "Gfx_Set_plane", "Gfx_Get_Top_Plane", "ppi_graphics_control",
   "avoc_set_osd", "avoc_get_luminance", "avoc_set_luminance", "avoc_get_oled_logo", "ppi_ve_set_osd",
   "ppi_ve_set_luminance", NULL
 };
-#define LIBS_EXPORT_MAX 48
-static char libsExport[LIBS_EXPORT_MAX][96];
-static int nLibsExport;
-static pthread_mutex_t exportTrava = PTHREAD_MUTEX_INITIALIZER;
-static void export_add(const char *nome) {
-  int i;
-  pthread_mutex_lock(&exportTrava);
-  for (i = 0; i < nLibsExport; i++) if (!strcmp(libsExport[i], nome)) break;
-  if (i == nLibsExport && nLibsExport < LIBS_EXPORT_MAX && strlen(nome) < sizeof libsExport[0])
-    snprintf(libsExport[nLibsExport++], sizeof libsExport[0], "%s", nome);
-  pthread_mutex_unlock(&exportTrava);
-}
 
-/* As bibliotecas de imagem e as que as chamam: nome sem barra, achado em
- * /usr/lib, /lib ou /usr/lib/driver. 1 = pode baixar (caminho em `c`). */
-__attribute__((visibility("default")))
-int tpkscan_lib_caminho(const char *nome, char *c, size_t n) {
-  static const char *const FIXAS[] = { "libgfx-video-output", "libgraphics-control", "libvideoenhance", "libavoc",
-                                       /* picture/OSD providers (define the EP/avoc/plane symbols) */
-                                       "libep-system-api", "libep-common-ui-api", "libunipicture", "libmixer",
-                                       "libave", "libIFAnetavoc", "libdisplay-panel", "libkeystone-ppi", "liblib-hdr-tv",
-                                       "libppi-factory-api", "libaifw_api_vision_picture_enhancer",
-                                       /* video display path */
-                                       "libvideo-dp-control", "libvideo-render-ctrl", "libvideo-sink",
-                                       "libdali-extension-tv", "libtizen-extension-client", NULL };
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
-                                      "/prd/usr/lib", "/prd/lib", "/prd/usr/lib/driver",
-                                      "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
-  int i, ok = 0;
-  size_t ln;
-  struct stat st;
-  if (!nome || !*nome || strchr(nome, '/') || strstr(nome, "..")) return 0;
-  ln = strlen(nome);
-  /* avoc daemon / related executables ("avoc", "avocd", ...): read-only copy
-   * from the system bin dirs. Scoped to names containing "avoc" so this never
-   * exposes an arbitrary binary; .so names fall through to the lib path below.
-   * Add other exact daemon names to BINS if your panel names it differently. */
-  {
-    static const char *const BINS[] = { NULL };
-    static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
-    int okb = (strstr(nome, "avoc") && !strstr(nome, ".so"));
-    for (i = 0; BINS[i] && !okb; i++) if (!strcmp(nome, BINS[i])) okb = 1;
-    if (okb) for (i = 0; BINDIRS[i]; i++) {
-      snprintf(c, n, "%s/%s", BINDIRS[i], nome);
-      if (!stat(c, &st) && S_ISREG(st.st_mode)) return 1;
-    }
-  }
-  /* os assemblies .NET da Samsung para TV (PhotoViewer, video canvas) */
-  if (!strncmp(nome, "Tizen.TV", 8) && ln > 4 && !strcmp(nome + ln - 4, ".dll")) ok = 1;
-  else if (strncmp(nome, "lib", 3) || !strstr(nome, ".so")) return 0;
-  for (i = 0; FIXAS[i] && !ok; i++) if (!strncmp(nome, FIXAS[i], strlen(FIXAS[i]))) ok = 1;
-  pthread_mutex_lock(&exportTrava);
-  for (i = 0; i < nLibsExport && !ok; i++) if (!strcmp(nome, libsExport[i])) ok = 1;
-  pthread_mutex_unlock(&exportTrava);
-  if (!ok) return 0;
-  for (i = 0; DIRS[i]; i++) {
-    snprintf(c, n, "%s/%s", DIRS[i], nome);
-    if (!stat(c, &st) && S_ISREG(st.st_mode)) return 1;
-  }
-  return 0;
-}
-
-/* Lista de baixar para a pagina do log (texto). */
-typedef struct { char *dst; size_t n, o; } LibLista;
 static int listar(const char *dir, void (*cada)(const char *dir, const char *nome, void *u), void *u);
-static void lista_cada(const char *dir, const char *nome, void *u) {
-  LibLista *l = u;
-  char c[600];
-  struct stat st;
-  if (l->o + 200 >= l->n || !tpkscan_lib_caminho(nome, c, sizeof c) || strncmp(c, dir, strlen(dir))) return;
-  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
-  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-lib/%s  (%s, %ld KB)\n", nome, dir, (long)(st.st_size / 1024));
-}
-/* avoc daemon / executables found in the bin dirs (discovery aid). */
-static void bin_lista_cada(const char *dir, const char *nome, void *u) {
-  LibLista *l = u;
-  char c[600];
-  struct stat st;
-  if (l->o + 200 >= l->n || !strstr(nome, "avoc") || strstr(nome, ".so")) return;
-  snprintf(c, sizeof c, "%s/%s", dir, nome);
-  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
-  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-lib/%s  (%s, %ld KB)\n", nome, dir, (long)(st.st_size / 1024));
-}
-__attribute__((visibility("default")))
-size_t tpkscan_lib_lista(char *dst, size_t n) {
-  static const char *const DIRS[] = { "/usr/lib", "/lib", "/usr/lib/driver", "/usr/lib/dali", "/usr/lib/tv",
-                                      "/prd/usr/lib", "/prd/lib", "/prd/usr/lib/driver",
-                                      "/usr/share/dotnet.tizen/framework", "/usr/share/dotnet.tizen/lib", NULL };
-  static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
-  LibLista l = { dst, n, 0 };
-  int i;
-  l.o = (size_t)snprintf(dst, n, "System libraries you can download for the display study (read-only copies).\n"
-                         "Libraries that call the plane / video output functions are added after 'Scan display APIs'.\n"
-                         "Open http://<TV IP>:8099/ass-lib/<name> to download one.\n\n");
-  for (i = 0; DIRS[i]; i++) listar(DIRS[i], lista_cada, &l);
-  l.o += (size_t)snprintf(l.dst + l.o, l.n - l.o, "\navoc daemon / executables (/usr/bin, read-only):\n");
-  for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_cada, &l);
-  l.o += (size_t)snprintf(l.dst + l.o, l.n - l.o, "\nFull executable list: http://<TV IP>:8099/ass-bin\n");
-  return l.o;
-}
-
-/* Todos os executaveis das bin dirs (nomes + tamanho), para achar o daemon. */
-static void bin_lista_todos(const char *dir, const char *nome, void *u) {
-  LibLista *l = u;
-  char c[600];
-  struct stat st;
-  if (l->o + 200 >= l->n || strstr(nome, ".so")) return;
-  snprintf(c, sizeof c, "%s/%s", dir, nome);
-  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
-  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "%s/%s  (%ld KB)\n", dir, nome, (long)(st.st_size / 1024));
-}
-__attribute__((visibility("default")))
-size_t tpkscan_bin_lista(char *dst, size_t n) {
-  static const char *const BINDIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
-  LibLista l = { dst, n, 0 };
-  int i;
-  l.o = (size_t)snprintf(dst, n, "Executables in the system bin dirs (names + size, read-only).\n"
-                         "Only names containing \"avoc\" are downloadable via /ass-lib/<name>.\n"
-                         "If the daemon is named otherwise, note its exact name to allow it.\n\n");
-  for (i = 0; BINDIRS[i]; i++) listar(BINDIRS[i], bin_lista_todos, &l);
-  return l.o;
-}
-
-/* ---- arquivos de config / featureconf (featureconf, dynamic_backlight, ...) ----
- * So leitura, confinado aos CFG_ROOTS. Download por /ass-cfg/<caminho sem a
- * barra inicial>. Se a lista vier vazia, a featureconf esta noutra raiz: avisar. */
-static const char *const CFG_ROOTS[] = {
-  "/usr/share/com.samsung", "/opt/share/com.samsung",
-  "/usr/share/featureconf", "/etc/configuration", "/usr/etc",
-  "/etc/dbus-1", "/usr/share/dbus-1", NULL
-};
-typedef struct { LibLista *l; int nivel; } CfgWalk;
-static void cfg_file_cada(const char *dir, const char *nome, void *u) {
-  CfgWalk *w = u;
-  LibLista *l = w->l;
-  char c[900];
-  struct stat st;
-  if (l->o + 300 >= l->n) return;
-  snprintf(c, sizeof c, "%s/%s", dir, nome);
-  if (lstat(c, &st)) return;
-  if (S_ISDIR(st.st_mode)) {
-    if (w->nivel >= 6) return;
-    w->nivel++; listar(c, cfg_file_cada, w); w->nivel--;
-    return;
-  }
-  if (!S_ISREG(st.st_mode)) return;
-  /* c+1: tira a barra inicial -> caminho a usar depois de /ass-cfg/ */
-  l->o += (size_t)snprintf(l->dst + l->o, l->n - l->o, "/ass-cfg/%s  (%ld KB)\n", c + 1, (long)(st.st_size / 1024));
-}
-__attribute__((visibility("default")))
-size_t tpkscan_cfg_lista(char *dst, size_t n) {
-  LibLista l = { dst, n, 0 };
-  int i;
-  l.o = (size_t)snprintf(dst, n, "Config / featureconf files (read-only copies).\n"
-                         "Open http://<TV IP>:8099/ass-cfg/<path-without-leading-slash> to download one.\n\n");
-  for (i = 0; CFG_ROOTS[i]; i++) { CfgWalk w = { &l, 0 }; listar(CFG_ROOTS[i], cfg_file_cada, &w); }
-  return l.o;
-}
-/* rel = caminho sem a barra inicial. Reconstroi /rel, bloqueia ".." e confina
- * a um CFG_ROOT. 1 = pode sair (caminho absoluto em c). */
-__attribute__((visibility("default")))
-int tpkscan_cfg_caminho(const char *rel, char *c, size_t n) {
-  struct stat st;
-  int i;
-  size_t ln;
-  if (!rel || !*rel || strstr(rel, "..")) return 0;
-  ln = (size_t)snprintf(c, n, "/%s", rel);
-  if (ln >= n) return 0;
-  for (i = 0; CFG_ROOTS[i]; i++) {
-    size_t rl = strlen(CFG_ROOTS[i]);
-    if (!strncmp(c, CFG_ROOTS[i], rl) && (c[rl] == '/' || c[rl] == 0))
-      return (!stat(c, &st) && S_ISREG(st.st_mode)) ? 1 : 0;
-  }
-  return 0;
-}
 
 /* Bibliotecas de imagem da Samsung achadas no scan de 23/10: TODAS as
  * exportacoes vao para o arquivo (sem filtro de nome nem limite de 80), para
@@ -641,9 +467,8 @@ static void scan_um(const char *dir, const char *nome, void *u) {
   }
   munmap(m, (size_t)st.st_size);
   if (usos) {
-    sl(sc->t, 1, "lib %s CALLS %d display/plane function(s): %s%s (download: /ass-lib/%s)", nome, usos, usoPrim,
-       uo >= sizeof usoPrim - 80 ? ", ..." : "", nome);
-    export_add(nome);
+    sl(sc->t, 1, "lib %s CALLS %d display/plane function(s): %s%s", nome, usos, usoPrim,
+       uo >= sizeof usoPrim - 80 ? ", ..." : "");
   }
   if (inteira) sl(sc->t, 1, "lib %s: all %d exports written to the file (lines \"lib-all %s\")", nome, todas, nome);
   if (achados) {
@@ -737,30 +562,6 @@ static void scan_cfg(ScanTxt *t) {
   }
 }
 
-// ---- 5. executaveis das bin dirs: achar o daemon avoc -----------------------------
-/* So nomes (download continua restrito a "avoc" em tpkscan_lib_caminho). */
-typedef struct { ScanTxt *t; int vistos, achados; } ScanBin;
-static void bin_cada(const char *dir, const char *nome, void *u) {
-  ScanBin *sc = u;
-  char c[700];
-  struct stat st;
-  if (strstr(nome, ".so")) return;
-  snprintf(c, sizeof c, "%s/%s", dir, nome);
-  if (lstat(c, &st) || !S_ISREG(st.st_mode)) return;
-  sc->vistos++;
-  if (!strstr(nome, "avoc")) return;
-  sc->achados++;
-  sl(sc->t, 1, "bin %s/%s (%ld KB) -- download: /ass-lib/%s", dir, nome, (long)(st.st_size / 1024), nome);
-}
-static void scan_bins(ScanTxt *t) {
-  static const char *const DIRS[] = { "/usr/bin", "/usr/sbin", "/bin", NULL };
-  ScanBin sc = { t, 0, 0 };
-  int i;
-  for (i = 0; DIRS[i]; i++) listar(DIRS[i], bin_cada, &sc);
-  sl(t, 1, "bins: %d executable(s) seen, %d matching \"avoc\" (full list at http://<TV IP>:8099/ass-bin)",
-     sc.vistos, sc.achados);
-}
-
 // ---- fio ------------------------------------------------------------------------
 static int scanRodando;
 
@@ -768,7 +569,6 @@ static void *scan_fio(void *u) {
   ScanTxt *t = u;
   scan_wayland(t);
   scan_libs(t);
-  scan_bins(t);
   scan_cfg(t);
   sl(t, 1, "done: full text at http://<TV IP>:8099/ass-snap-display-scan.txt%s",
      hScanNet ? " (the .NET part follows in the log as [assperf] scan .net)" : "");
