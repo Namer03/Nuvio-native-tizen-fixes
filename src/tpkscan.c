@@ -514,7 +514,8 @@ size_t tpkscan_bin_lista(char *dst, size_t n) {
  * barra inicial>. Se a lista vier vazia, a featureconf esta noutra raiz: avisar. */
 static const char *const CFG_ROOTS[] = {
   "/usr/share/com.samsung", "/opt/share/com.samsung",
-  "/usr/share/featureconf", "/etc/configuration", "/usr/etc", NULL
+  "/usr/share/featureconf", "/etc/configuration", "/usr/etc",
+  "/etc/dbus-1", "/usr/share/dbus-1", NULL
 };
 typedef struct { LibLista *l; int nivel; } CfgWalk;
 static void cfg_file_cada(const char *dir, const char *nome, void *u) {
