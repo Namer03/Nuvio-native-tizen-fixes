@@ -9,6 +9,8 @@
 // "Window hint (test)": poe UMA dica do gerenciador de janelas na janela
 // principal (AddAuxiliaryHint), das que o scan de 24/10 listou com cara de
 // brilho/plano; Off tira. O dono olha se o branco do cartao de teste sobe.
+// Os dois ultimos valores nao sao dicas: ligam/desligam o alfa
+// pre-multiplicado do GLView (PremultPor; a borda escura de 24/10).
 // So no host Tizen 6+ (Program.cs). O C pede pela funcao registrada em
 // nv_tpk_exibe_registrar; tudo vai para o log com "[assperf]" (aba Subtitles).
 using System;
@@ -68,6 +70,10 @@ namespace NuvioTpk
                     LogD("removed hint id " + dicaId + " -> " + Convert.ToString(r));
                     dicaPosta = false;
                 }
+                if (premPosto) PremultVoltar(ws);
+                // Depois das dicas: o GLView diz ao DALi que o nosso RGB ja vem
+                // multiplicado pelo alfa (=1) ou nao (=0). Ver PremultPor.
+                if (v == Dicas.GetLength(0) + 1 || v == Dicas.GetLength(0) + 2) { PremultPor(ws, v == Dicas.GetLength(0) + 1); return; }
                 if (v < 1 || v > Dicas.GetLength(0)) { LogD("off"); return; }
                 string nome = Dicas[v - 1, 0], valor = Dicas[v - 1, 1];
                 var add = t.GetMethod("AddAuxiliaryHint", new[] { typeof(string), typeof(string) });
@@ -88,6 +94,50 @@ namespace NuvioTpk
         }
         static void LogD(string s) { try { NvVid.LogNativo("[assperf] window hint: " + s); } catch { } }
 
+        // BORDA ESCURA (24/10): o nosso GL escreve RGB ja multiplicado pelo alfa
+        // (blend SRC_ALPHA sobre o furo transparente). Se o DALi compoe o GLView
+        // como alfa "reto", multiplica de novo e toda borda suave escurece (o
+        // contorno preto das mascaras; o branco a 50 % do cartao fica como o
+        // cinza 25 %). Pelo Renderer do GLView (reflexao: so liga se existir),
+        // poe BlendPreMultipliedAlpha e loga o valor de antes; Off devolve.
+        static bool premPosto;
+        static object premRend, premOrig;
+        static PropertyInfo premProp;
+        static object GlView(object[] ws)
+        {
+            foreach (var w in ws) if (w != null && w.GetType().Name == "GLView") return w;
+            return null;
+        }
+        static void PremultPor(object[] ws, bool on)
+        {
+            object view = GlView(ws);
+            if (view == null) { LogD("premult: no GLView (only the Tizen 8/9 package draws in one)"); return; }
+            var t = view.GetType();
+            var cnt = t.GetProperty("RendererCount");
+            var get = t.GetMethod("GetRendererAt", new[] { typeof(uint) });
+            if (cnt == null || get == null) { LogD("premult: GLView has no RendererCount/GetRendererAt in this TizenFX"); return; }
+            uint n = Convert.ToUInt32(cnt.GetValue(view));
+            if (n == 0) { LogD("premult: GLView exposes 0 renderers (its drawing is internal): cannot set"); return; }
+            object r = get.Invoke(view, new object[] { 0u });
+            var prop = r != null ? r.GetType().GetProperty("BlendPreMultipliedAlpha") : null;
+            if (prop == null || !prop.CanWrite) { LogD("premult: renderer has no writable BlendPreMultipliedAlpha"); return; }
+            premOrig = prop.GetValue(r);
+            prop.SetValue(r, on);
+            premRend = r; premProp = prop; premPosto = true;
+            LogD("premult: GLView renderers=" + n + ", BlendPreMultipliedAlpha before=" + Convert.ToString(premOrig) +
+                 " set=" + on + " reads back=" + Convert.ToString(prop.GetValue(r)));
+        }
+        static void PremultVoltar(object[] ws)
+        {
+            premPosto = false;
+            try
+            {
+                premProp.SetValue(premRend, premOrig);
+                LogD("premult: restored BlendPreMultipliedAlpha=" + Convert.ToString(premOrig));
+            }
+            catch (Exception e) { LogD("premult: restore failed " + e.GetType().Name + ": " + e.Message); }
+        }
+
         // Thread principal (post): as aux hints de cada janela nossa.
         static void AuxHints()
         {
@@ -96,7 +146,7 @@ namespace NuvioTpk
             catch (Exception e) { Log("aux hints: " + e.GetType().Name + ": " + e.Message); return; }
             foreach (var w in ws)
             {
-                if (w == null) continue;
+                if (w == null || w.GetType().Name == "GLView") continue;   // a view, nao uma janela
                 var t = w.GetType();
                 try
                 {

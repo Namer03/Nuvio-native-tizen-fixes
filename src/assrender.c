@@ -2903,16 +2903,19 @@ static void ass_snap_ler_tela(void) {
   free(faixa); free(rgb); free(alf);
 }
 
-/* Cartao de teste de cor: branco 100/90/75/50 %, branco a 50 % de alfa e
- * preto, 120x120 cada, no alto da tela, pelo mesmo blending das legendas. */
+/* Cartao de teste de cor: branco 100/90/75/50 %, branco a 50 % de alfa,
+ * cinza 25 % e preto, 120x120 cada, no alto da tela, pelo mesmo blending das
+ * legendas. Num quadro preto o 5o tem de igualar o 4o; igual ao 6o (25 %) =
+ * a borda suave multiplicada pelo alfa duas vezes (contorno das mascaras). */
 static void ass_cartao_desenhar(void) {
-  static const float cor[6][4] = {
-    { 1, 1, 1, 1 }, { .9f, .9f, .9f, 1 }, { .75f, .75f, .75f, 1 }, { .5f, .5f, .5f, 1 }, { 1, 1, 1, .5f }, { 0, 0, 0, 1 }
+  static const float cor[7][4] = {
+    { 1, 1, 1, 1 }, { .9f, .9f, .9f, 1 }, { .75f, .75f, .75f, 1 }, { .5f, .5f, .5f, 1 }, { 1, 1, 1, .5f },
+    { .25f, .25f, .25f, 1 }, { 0, 0, 0, 1 }
   };
   int i;
   if (!assperf_get(AP_CARTAO)) return;
   gfx_tex_aspect_atual = 0.0f;
-  for (i = 0; i < 6; i++)
+  for (i = 0; i < 7; i++)
     gfx_rect((GfxRect){ 600.0f + i * 130.0f, 40.0f, 120.0f, 120.0f }, 0, GFX_COR, 0, 0, 0, 0.0f,
              cor[i][0], cor[i][1], cor[i][2], cor[i][3]);
 }
