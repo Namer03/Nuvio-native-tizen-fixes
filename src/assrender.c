@@ -124,6 +124,7 @@ char *assrender_marcar_tailandes(const char *txt) {
 #if defined(NV_TPK) && defined(ASS_NV_API_DEFER)
 #define ASS_GPU 1
 #include "assgpublur.h"
+#include "agbfio.h"
 #else
 #define ASS_GPU 0
 #endif
@@ -975,6 +976,11 @@ static void ass_aplicar_assperf_locked(void) {
 /* -1 = a GPU ainda nao tentou; 0 = os shaders falharam (o blur fica na CPU);
  * 1 = pronta. Escrito pelo fio GL. */
 static int assGpuOk = -1;
+/* 1 = o blur na GPU roda no fio proprio (agbfio.h; teste "GPU blur experiment"
+ * = Own GPU thread): a UI nao chama o assgpublur, so o agbfio. Fio GL. */
+static int assFioModo;
+static unsigned assFioEsperas;
+static double assFioEsperaMs;
 
 /* Worker, sob assTrava, antes de cada render: o libass adia o blur quando a
  * folha pede e a GPU nao falhou. */
@@ -1307,7 +1313,8 @@ static void ass_tc_apagar(void) {
   free(assSlot); assSlot = NULL; assSlotCap = 0;
   assMainEnviado = 0;
 #if ASS_GPU
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_apagar();
+  if (assFioModo) agbfio_apagar();
+  else if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_apagar();
 #endif
 }
 
@@ -1465,22 +1472,6 @@ static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedid
   p->area = (long)im->g.coreW * (long)im->g.coreH;
 }
 
-/* Os pedidos de GPU de um quadro, para o atlas do lote (assgpublur_preparar:
- * um envio para todos os bitmaps novos em vez de um por letreiro). Fio GL. */
-static AgbPedido *assPeds;
-static int assPedsCap;
-static void ass_gpu_preparar(const AssCpuFrame *f) {
-  int i, n = 0;
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1) return;
-  if (f->count > assPedsCap) {
-    AgbPedido *nv = (AgbPedido *)realloc(assPeds, (size_t)f->count * sizeof *nv);
-    if (!nv) return;
-    assPeds = nv; assPedsCap = f->count;
-  }
-  for (i = 0; i < f->count; i++) if (f->images[i].gpu) ass_gpu_pedido(f, &f->images[i], &assPeds[n++]);
-  if (n > 1) assgpublur_preparar(assPeds, n, assGlQuadro);
-}
-
 /* PRE-BLUR (fio GL, sob assFilaTrava): os quadros que ja estao na fila
  * (Render ahead) tem os seus letreiros borrados aos poucos, alguns por quadro
  * de UI, antes da hora. Quando o quadro entra em tela, as texturas ja estao
@@ -1492,13 +1483,20 @@ static void ass_gpu_adiantar_locked(void) {
   double gasto = 0, orcamento = (double)assperf_gpu_adiante();
   struct timespec ini0, agoraT;
   AssperfGpu g;
+  if (assFioModo) {
+    /* fio proprio: tudo o que esta na fila vai para ele, sem orcamento (o
+     * trabalho e do outro fio; aqui so a copia dos bitmaps) */
+    for (q = 0; q < assFilaN; q++)
+      for (i = 0; i < assFila[q].count; i++)
+        if (assFila[q].images[i].gpu) { AgbPedido p; ass_gpu_pedido(&assFila[q], &assFila[q].images[i], &p); agbfio_pedir(&p); }
+    return;
+  }
   if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1 || !assperf_get(AP_GPUBLUR) || !assFilaN) return;
   memset(&g, 0, sizeof g);
   clock_gettime(CLOCK_MONOTONIC, &ini0);
   assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));
   for (q = 0; q < assFilaN && gasto < orcamento; q++) {
     const AssCpuFrame *f = &assFila[q];
-    ass_gpu_preparar(f);
     for (i = 0; i < f->count && gasto < orcamento; i++) {
       const AssCpuImage *im = &f->images[i];
       AgbPedido p;
@@ -1516,7 +1514,7 @@ static void ass_gpu_adiantar_locked(void) {
       clock_gettime(CLOCK_MONOTONIC, &agoraT);
       gasto = ass_ms_entre(&ini0, &agoraT);
       g.blurs += st.blurs; g.finais += st.finais; g.falhas += st.falhas; g.adiantados += st.adiantados;
-      g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas; g.atlas += st.atlas; g.atlasItens += st.atlasItens;
+      g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas;
       for (z = 0; z < 4; z++) { g.nTam[z] += st.nTam[z]; g.msTam[z] += st.msTam[z]; }
       g.msGpu += st.msGpu; g.nGpu += st.nGpu;
     }
@@ -1533,6 +1531,18 @@ static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsig
   GLuint t = 0;
   int ok = __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE);
   *gk = 0; *idx = -1; *tw = im->w; *th = im->h;
+  if (assFioModo) {
+    AgbPedido p;
+    struct timespec w0, w1;
+    ass_gpu_pedido(f, im, &p);
+    clock_gettime(CLOCK_MONOTONIC, &w0);
+    t = agbfio_obter(&p, assGlQuadro, gk, tw, th, 150);
+    clock_gettime(CLOCK_MONOTONIC, &w1);
+    if (t) return t;
+    *tw = im->w; *th = im->h;
+    ok = 0;   // nao deu: a receita na CPU (abaixo)
+    (void)w0; (void)w1;
+  }
   if (ok != 0) {
     if (ok < 0) {
       ok = assgpublur_iniciar();
@@ -1562,6 +1572,24 @@ static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsig
 }
 #endif
 
+#if ASS_GPU
+/* Liga/desliga o fio proprio do blur conforme o teste (fio GL). */
+static void ass_gpu_modo(void) {
+  int quer = assperf_get(AP_EXPER) == 1 && assperf_get(AP_GPUBLUR) && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 0;
+  if (quer == assFioModo) return;
+  if (quer) {
+    if (!agbfio_ligar()) return;   // o log diz por que; segue no fio da UI
+    assFioModo = 1;
+  } else {
+    agbfio_desligar();
+    assFioModo = 0;
+    __atomic_store_n(&assGpuOk, -1, __ATOMIC_RELEASE);   // a UI recria o assgpublur no contexto dela
+  }
+  assMainEnviado = 0;
+  gfx_estado_externo();
+}
+#endif
+
 /* O que o ultimo ass_main_desenhar gastou (fio GL): para o [quadro-cpu]. */
 static double assSubUpload, assSubGpu, assSubDesenho;
 
@@ -1577,6 +1605,10 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
   struct timespec tdz0, tdz1;
   assSubUpload = assSubGpu = assSubDesenho = 0;
   assGlQuadro++;
+#if ASS_GPU
+  ass_gpu_modo();
+  agbfio_quadro(assGlQuadro);
+#endif
   if (alfa != assMainFmt || cache != assMainCache) {
     /* Formato ou modo mudou no meio: nada do que esta na GPU serve. */
     ass_tc_apagar();
@@ -1612,10 +1644,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #if ASS_GPU
     { int temGpu = 0;
       for (i = 0; i < assMain.count && !temGpu; i++) temGpu = assMain.images[i].gpu;
-      if (temGpu) {
-        assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));
-        if (alfa) ass_gpu_preparar(&assMain);
-      } }
+      if (temGpu && !assFioModo) assgpublur_lote_ini(assperf_get(AP_ESTAGIOS)); }
 #endif
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
@@ -1647,14 +1676,27 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     }
 #if ASS_GPU
     { AgbStats st;
-      assgpublur_lote_fim();
-      assgpublur_stats(&st);
+      if (assFioModo) {
+        AgbPassos ps; unsigned esp; double espMs;
+        agbfio_colher(&st, &ps, &esp, &espMs);
+        assFioEsperas += esp; assFioEsperaMs += espMs;
+        if (ps.lotes) {
+          AssperfGpuPassos gp;
+          memset(&gp, 0, sizeof gp);
+          gp.lotes = ps.lotes; gp.lotesTrab = ps.lotesTrab; gp.envios = ps.envios; gp.passadas = ps.passadas; gp.finais = ps.finais;
+          gp.salvar = ps.salvar; gp.envio = ps.envio; gp.passadasMs = ps.passadasMs; gp.finalMs = ps.finalMs;
+          gp.restaurar = ps.restaurar; gp.loteMs = ps.loteMs; gp.loteMax = ps.loteMax;
+          assperf_med_gpupassos(&gp);
+        }
+      } else {
+        assgpublur_lote_fim();
+        assgpublur_stats(&st);
+      }
       if (st.blurs || st.finais || st.reusos || st.falhas || assGpuCpu) {
         AssperfGpu g;
         int z;
         g.blurs = st.blurs; g.finais = st.finais; g.reusos = st.reusos; g.falhas = st.falhas; g.cpu = assGpuCpu;
         g.adiantados = st.adiantados; g.criadas = st.criadas; g.reaproveitadas = st.reaproveitadas;
-        g.atlas = st.atlas; g.atlasItens = st.atlasItens;
         g.ms = st.ms; g.medido = st.medido; g.msGpu = st.msGpu; g.nGpu = st.nGpu;
         for (z = 0; z < 4; z++) { g.nTam[z] = st.nTam[z]; g.msTam[z] = st.msTam[z]; }
         assperf_med_gpublur(&g);
@@ -1675,7 +1717,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     for (i = 0; i < assMain.count; i++) {
       if (assMainIdx[i] >= 0 && assMainIdx[i] < assTcN) assTc[assMainIdx[i]].uso = assGlQuadro;
 #if ASS_GPU
-      if (assMain.images[i].gpu) assgpublur_usar(assMainGk[i], assGlQuadro);
+      if (assMain.images[i].gpu) { if (assFioModo) agbfio_usar(assMainGk[i], assGlQuadro); else assgpublur_usar(assMainGk[i], assGlQuadro); }
 #endif
     }
   }
@@ -2909,8 +2951,8 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     sb.desenho = subNovo ? assSubDesenho : 0; sb.adiante = subAdiante;
     assperf_sub_somar(&sb); }
 #if ASS_GPU
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_aparar(assGlQuadro);
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) {
+  if (!assFioModo && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_aparar(assGlQuadro);
+  if (!assFioModo && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) {
     AgbPassos ps; AssperfGpuPassos gp;
     assgpublur_passos(&ps);
     if (ps.lotes || ps.qEmit || ps.qLidas || ps.qDisj) {
@@ -2922,7 +2964,19 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     }
   }
 #endif
-  if (assperf_med_tick()) assfios_relatorio();
+  if (assperf_med_tick()) {
+#if ASS_GPU
+    if (assFioModo || assperf_get(AP_EXPER)) {
+      printf("[assperf] gpu blur experiment: %s", assperf_valor_rotulo(AP_EXPER, assperf_get(AP_EXPER)));
+      if (assFioModo) printf(" | the UI thread waited for the blur thread %u times, %.0f ms in all (the gpu blur steps above are the blur thread's)",
+                             assFioEsperas, assFioEsperaMs);
+      if (assperf_get(AP_EXPER) == 2) printf(" | GPU blur from %ld px right now", assperf_gpu_min());
+      printf("\n");
+      assFioEsperas = 0; assFioEsperaMs = 0;
+    }
+#endif
+    assfios_relatorio();
+  }
   return n;
 }
 

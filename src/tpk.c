@@ -91,6 +91,8 @@ int tpk_egl_carregar(void) {
   PEGA(CreateWindowSurface, "eglCreateWindowSurface"); PEGA(CreateContext, "eglCreateContext");
   PEGA(SwapInterval, "eglSwapInterval"); PEGA(SwapBuffers, "eglSwapBuffers");
   PEGA(MakeCurrent, "eglMakeCurrent"); PEGA(GetProcAddress, "eglGetProcAddress");
+  PEGA(QueryString, "eglQueryString"); PEGA(CreatePbufferSurface, "eglCreatePbufferSurface");
+  PEGA(DestroySurface, "eglDestroySurface"); PEGA(DestroyContext, "eglDestroyContext");
 #undef PEGA
   // These calls are unconditional in the context handoff and GL diagnostics.
 #define REQUIRED(c, n) if (!tpkEgl.c) { snprintf(erro, sizeof erro, "libEGL missing %s", n); return -1; }

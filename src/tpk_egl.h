@@ -27,6 +27,11 @@ typedef struct {
   // Para as funcoes de GLES3/extensao que a libGLESv2 do link nao declara
   // (glInvalidateFramebuffer, glDiscardFramebufferEXT): gpunivel.c.
   void      *(*GetProcAddress)(const char *);
+  // Fio proprio do blur na GPU (agbfio.c): contexto compartilhado, sem janela.
+  const char *(*QueryString)(EGLDisplay, EGLint);
+  EGLSurface (*CreatePbufferSurface)(EGLDisplay, EGLConfig, const EGLint *);
+  EGLBoolean (*DestroySurface)(EGLDisplay, EGLSurface);
+  EGLBoolean (*DestroyContext)(EGLDisplay, EGLContext);
 } TpkEgl;
 extern TpkEgl tpkEgl;
 int tpk_egl_carregar(void);   // 0 = ok
@@ -47,4 +52,8 @@ int tpk_egl_carregar(void);   // 0 = ok
 #define eglCreateContext      tpkEgl.CreateContext
 #define eglSwapInterval       tpkEgl.SwapInterval
 #define eglSwapBuffers        tpkEgl.SwapBuffers
+#define eglQueryString        tpkEgl.QueryString
+#define eglCreatePbufferSurface tpkEgl.CreatePbufferSurface
+#define eglDestroySurface     tpkEgl.DestroySurface
+#define eglDestroyContext     tpkEgl.DestroyContext
 #endif

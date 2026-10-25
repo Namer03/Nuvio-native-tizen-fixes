@@ -39,7 +39,6 @@ typedef struct {
   double msTam[4];       // e o tempo de GPU desses pedidos
   double msGpu;          // tempo de GPU de todos os pedidos medidos (consultas ou glFinish)
   unsigned nGpu;
-  unsigned atlas, atlasItens;   // envios do atlas do lote e bitmaps que foram nele
 } AgbStats;
 
 // Fio GL. 1 = shaders e alvos prontos (uma vez; depois so devolve o resultado).
@@ -52,10 +51,6 @@ void assgpublur_lote_fim(void);
 // Textura final (RGBA8, w x h, alfa = o valor) do pedido; 0 = falhou.
 // `quadro` = contador de quadros GL (o cache nunca recicla o que esta em uso).
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chave);
-// Dentro do lote, ANTES dos assgpublur_obter: os bitmaps que esses pedidos vao
-// borrar sobem juntos, numa textura so (um envio). Opcional: sem ela cada
-// pedido sobe o seu. O atlas vale ate assgpublur_lote_fim.
-void assgpublur_preparar(const AgbPedido *ps, int n, unsigned quadro);
 // Quadro repetido: mantem viva a textura de `chave`.
 void assgpublur_usar(unsigned long long chave, unsigned quadro);
 // Le o alfa de uma textura final (snapshot). 1 = ok.
@@ -78,6 +73,15 @@ void assgpublur_apagar(void);           // solta tudo da GPU (troca de faixa)
 void assgpublur_ultimo_tam(int *w, int *h);
 // Chamar por quadro: depois de ~5 s sem blur novo solta caches e reserva.
 void assgpublur_aparar(unsigned quadro);
+// Fio proprio (agbfio.c): chave do cache final de um pedido (pura, qualquer
+// fio), se ela esta no cache, o modo (sem gfx_*, reserva espera 3 quadros) e
+// soltar TUDO, programas e FBO incluidos (troca de contexto: o proximo
+// assgpublur_iniciar recria no contexto de quem chamar).
+unsigned long long assgpublur_chave(const AgbPedido *p);
+int  assgpublur_tem(unsigned long long chave);
+void assgpublur_modo_fio(int on);
+void assgpublur_soltar_final(unsigned long long chave);   // so no modo fio: quem solta as finais e o agbfio
+void assgpublur_reiniciar(void);
 // So para testes: forca o formato intermediario (0 auto, 1 RGBA8).
 void assgpublur_forcar_rgba8(int on);
 

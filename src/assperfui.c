@@ -15,7 +15,7 @@
 /* Linhas da folha: o preset e as chaves que ainda se ajustam, nesta ordem.
  * As chaves fixas (assperf_fixa: decididas nos testes na TV) nao aparecem. */
 static const int AU_ORDEM[] = {
-  AP_GPUBLUR, AP_GPUMIN, AP_FIOS, AP_ESCALA, AP_CACHE, AP_HINTING,
+  AP_GPUBLUR, AP_GPUMIN, AP_EXPER, AP_FIOS, AP_ESCALA, AP_CACHE, AP_HINTING,
   AP_CONTRASTE, AP_GAMA, AP_BENCH, AP_ESTAGIOS, AP_LOG,
 };
 #define AU_NCHAVES ((int)(sizeof AU_ORDEM / sizeof AU_ORDEM[0]))

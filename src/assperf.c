@@ -109,6 +109,10 @@ static const ApDef DEF[AP_N] = {
     "Set the same number as the TV's Gamma/BT.1886 (it only changes the video): subtitles get Samsung's own curve "
     "(1 - 0.0426 per step).",
     0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
+  [AP_EXPER] = { "exper", "GPU blur experiment",
+    "Test (26/10). Own GPU thread: the GPU blur work runs on a separate thread with its own GL context, so the UI thread only draws "
+    "finished pictures. Balance: while the UI thread is busy with GPU blur, more signs go to the CPU blur threads. Off: as before.",
+    0, 0, 3, { "Off (previous build)", "Own GPU thread", "Balance CPU/GPU" } },
   [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
     "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
     "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",
@@ -129,7 +133,7 @@ static void aplicarPreset(int p) {
     if (assperf_e_medida(i)) continue;   // medida nao e comportamento: o preset nao mexe
     val[i] = p == 2 ? DEF[i].leve : DEF[i].recomendado;
   }
-  if (p == 1) { val[AP_FIOS] = 0; val[AP_GPUBLUR] = 0; }
+  if (p == 1) { val[AP_FIOS] = 0; val[AP_GPUBLUR] = 0; val[AP_EXPER] = 0; }   // a queda volta sem o teste tambem
 }
 
 static void gravar(void) {
@@ -220,7 +224,7 @@ int assperf_get(int id) {
 }
 
 int assperf_e_medida(int id) {
-  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH ||
+  return id == AP_LOG || id == AP_ESTAGIOS || id == AP_BENCH || id == AP_EXPER ||
          id == AP_GAMA || id == AP_CONTRASTE;   // calibracao: fora dos presets e da guarda, mas fica gravada
 }
 int assperf_fixa(int id) { return id >= 0 && id < AP_N && DEF[id].fixa; }
@@ -335,6 +339,7 @@ static struct {
 } A;
 
 static double agoraS(void);
+static void balanco_gl(double glMs, double t);
 
 static double auto_custo_locked(double t) {
   /* Each side ages on its own: a side with no new frame for 1 s counts 0. */
@@ -403,6 +408,7 @@ void assperf_escala_custo(double libassMs) {
 }
 
 void assperf_escala_custo_gl(double glMs) {
+  balanco_gl(glMs, agoraS());   // so o fio GL chama
   pthread_mutex_lock(&autoTrava);
   A.ultAmostra = A.ultGl = agoraS();
   if (A.ignora <= 0) { A.emaGl = A.nGl ? A.emaGl * 0.7 + glMs * 0.3 : glMs; A.nGl++; }
@@ -489,7 +495,7 @@ static struct {
     double frameMs, frameMax, stageMs[8], piorStage[8];
   } est;
   // blur na GPU
-  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes, gbAdiant, gbCriadas, gbReap, gbAtlas, gbAtlasItens;
+  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes, gbAdiant, gbCriadas, gbReap;
   double gbMs, gbMax;
   int gbMedido;
   unsigned gbN[4]; double gbMsTam[4];
@@ -606,7 +612,6 @@ void assperf_med_gpublur(const AssperfGpu *g) {
   if ((g->blurs || g->finais) && g->ms > 0) { M.gbLotes++; M.gbMs += g->ms; if (g->ms > M.gbMax) M.gbMax = g->ms; M.gbMedido = g->medido; }
   for (i = 0; i < 4; i++) { M.gbN[i] += g->nTam[i]; M.gbMsTam[i] += g->msTam[i]; }
   M.gbMsGpu += g->msGpu; M.gbNGpu += g->nGpu;
-  M.gbAtlas += g->atlas; M.gbAtlasItens += g->atlasItens;
   pthread_mutex_unlock(&medTrava);
 }
 void assperf_med_adiado(const AssperfAdiado *a) {
@@ -636,10 +641,42 @@ void assperf_sub_somar(const AssperfSub *x) {
 }
 void assperf_sub_tomar(AssperfSub *out) { *out = subQuadro; memset(&subQuadro, 0, sizeof subQuadro); }
 
+/* BALANCE (teste 26/10, AP_EXPER = 2): enquanto o fio GL gasta muito com o blur
+ * na GPU por quadro novo, so os letreiros maiores vao para ela; o resto fica
+ * nos fios de blur da CPU (os nucleos ficavam 35-45 % ocupados). Degraus: o
+ * minimo da folha, 256k, 1M px, nenhum. Sobe acima de BAL_SOBE_MS (1 s entre
+ * degraus), desce depois de 3 s abaixo de BAL_DESCE_MS. */
+#define BAL_SOBE_MS  10.0
+#define BAL_DESCE_MS  3.0
+static int balNivel;
+static double balEma, balTroca, balLeve;
 long assperf_gpu_min(void) {
   static const long px[4] = { 0, 16384, 65536, 262144 };
+  static const long degrau[4] = { 0, 262144, 1048576, 1L << 30 };
   int v = assperf_get(AP_GPUMIN);
-  return px[v < 0 || v > 3 ? 0 : v];
+  long m = px[v < 0 || v > 3 ? 0 : v];
+  if (assperf_get(AP_EXPER) == 2) {
+    int n = __atomic_load_n(&balNivel, __ATOMIC_RELAXED);
+    if (n > 0 && degrau[n] > m) m = degrau[n];
+  }
+  return m;
+}
+static void balanco_gl(double glMs, double t) {
+  int n = balNivel;
+  if (assperf_get(AP_EXPER) != 2) { if (n) __atomic_store_n(&balNivel, 0, __ATOMIC_RELAXED); return; }
+  balEma = balEma > 0 ? balEma * 0.7 + glMs * 0.3 : glMs;
+  if (balEma > BAL_SOBE_MS && n < 3 && t - balTroca >= 1.0) {
+    n++; balTroca = t; balLeve = 0;
+  } else if (balEma < BAL_DESCE_MS && n > 0) {
+    if (!balLeve) balLeve = t;
+    if (t - balLeve >= 3.0 && t - balTroca >= 2.0) { n--; balTroca = t; balLeve = 0; }
+  } else if (balEma >= BAL_DESCE_MS) balLeve = 0;
+  if (n != balNivel) {
+    static const char *nome[4] = { "the panel's minimum", "256k px", "1M px", "none (all on the CPU)" };
+    __atomic_store_n(&balNivel, n, __ATOMIC_RELAXED);
+    printf("[assperf] balance: GPU blur only for signs from %s (UI thread %.1f ms of GPU blur per new frame)\n", nome[n], balEma);
+    fflush(stdout);
+  }
 }
 int assperf_gpu_adiante(void) { return 3; }   // ms medidos no fio GL por quadro de UI (25/10)
 
@@ -708,8 +745,8 @@ int assperf_med_tick(void) {
                M.gbReusos, M.gbCpu, M.gbFalhas, M.adComBlur, M.adAdiados, M.adBe, M.adClip);
       if (M.adComBlur || M.gbLotes || M.gbAdiant)
         printf("[assperf] gpu blur 2: kept on CPU for size %u (minimum %ld px) | pictures made ahead for queued frames %u"
-               " | textures created %u, reused from the reserve %u | one-upload batches %u holding %u bitmaps\n",
-               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap, M.gbAtlas, M.gbAtlasItens);
+               " | textures created %u, reused from the reserve %u\n",
+               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap);
       if (M.gp.lotesTrab || M.gp.qEmit) {
         double resto = M.gp.loteMs - M.gp.salvar - M.gp.envio - M.gp.passadasMs - M.gp.finalMs - M.gp.restaurar;
         printf("[assperf] gpu blur steps (GL thread time, all batches): %u batches with work (of %u), %.1f ms in all, longest %.1f ms"

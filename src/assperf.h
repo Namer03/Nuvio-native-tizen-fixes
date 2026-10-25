@@ -53,6 +53,7 @@ enum {
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
   AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
+  AP_EXPER,        // TEST 26/10: 0 off, 1 GPU blur on its own GL thread (agbfio.c), 2 balance CPU/GPU by the GL thread's load
   AP_N
 };
 
@@ -119,7 +120,6 @@ typedef struct {
   double ms; int medido;
   unsigned nTam[4]; double msTam[4];   // GPU, so com os cronometros
   double msGpu; unsigned nGpu;          // tempo de GPU medido, todos os pedidos
-  unsigned atlas, atlasItens;           // envios do atlas do lote e bitmaps neles
 } AssperfGpu;
 // Passos de um lote do blur na GPU, em tempo de CPU do fio GL (assgpublur), e
 // as consultas de tempo da GPU (emitidas, lidas, descartadas pelo "disjoint").
