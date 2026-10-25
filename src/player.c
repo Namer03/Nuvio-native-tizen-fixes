@@ -98,6 +98,7 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 #include "mkvass.h"
 #include "relogio.h"
 #include "legimagem.h"
+#include "telalag.h"
 #include "intro.h"
 #include "proximo.h"
 #include "creditosauto.h"
@@ -444,7 +445,12 @@ static double posLegenda(void) {
   /* CORRECAO DA LEGENDA (legimagem.h, dono 25/10): a imagem da TV anda um
    * pouco atras da nossa camada enquanto TOCA; pausada, nao. So tocando, com
    * leituras carimbadas, e nunca logo depois de um seek ainda sem leitura. */
-  if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) v -= legimagem_ms() / 1000.0;
+  /* Menos o atraso extra da NOSSA camada quando a GPU fica para tras em
+   * legenda pesada (telalag.h): a correcao e ajustada em cena leve. */
+  if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) {
+    int c = legimagem_ms() - telalag_extra_ms();
+    if (c > 0) v -= c / 1000.0;
+  }
 #endif
   return v;
 }
@@ -4804,6 +4810,7 @@ void player_atualizar(float dt, Uint32 agora) {
             legimagem_tipo(tp, sizeof tp);
             printf(" | subtitle correction %d ms (%s)%s", legimagem_ms(), tp,
                    legimagem_fps() > 1.0 ? ", on the frame grid" : "");
+            { char lag[240]; telalag_relatorio(lag, sizeof lag); if (lag[0]) printf("%s", lag); }
             video_tpk_leituras_rajada(raj, sizeof raj);
             if (raj[0]) printf("\n[relogio] last readings dt/dp ms: %s", raj); } }
 #endif

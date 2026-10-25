@@ -109,6 +109,14 @@ static const ApDef DEF[AP_N] = {
     "Set the same number as the TV's Gamma/BT.1886 (it only changes the video): subtitles get Samsung's own curve "
     "(1 - 0.0426 per step).",
     0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
+  [AP_FILA] = { "fila", "GPU queue limit",
+    "Waits at the start of a frame until the GPU is at most this many frames behind. Heavy signs reach the screen sooner "
+    "(less lag), but the menu and subtitles draw fewer frames per second. The [relogio] line shows the lag and the wait.",
+    0, 0, 3, { "Off", "1 frame", "2 frames" } },
+  [AP_LAGCOMP] = { "lagcomp", "Heavy-scene compensation",
+    "On: when the GPU falls behind on heavy signs, the subtitle correction gets smaller by the measured extra lag, "
+    "so one correction set on light scenes holds on heavy ones too. Off: the correction stays fixed.",
+    1, 1, 2, { "Off", "On" } },
   [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
     "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
     "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",
@@ -311,7 +319,11 @@ size_t assperf_fontes_teto(void) {
  *     never before AUTO_MIN75_S seconds at 75 %;
  *   - after a switch the first AUTO_IGNORA frames do not count (cold caches at
  *     the new size would read as "heavy" and bounce straight back);
- *   - no new frame for 1 s (no sign on screen) counts as light. */
+ *   - a pause in new frames (a heavy sign standing still) is NOT light: in
+ *     log 2 of 25/10 Auto went back to 100 % on "libass 0.0 + GL 0.0" and was
+ *     heavy again a second later, 2-3 switches per 10 s, each one redrawing
+ *     everything at the new size. Only AUTO_OCIOSO_S with nothing new (the
+ *     scene is over) counts as light; shorter pauses neither count nor reset. */
 #define AUTO_DESCE_MS  28.0
 #define AUTO_FORTE_MS  45.0   // this heavy goes down even right after coming back up
 #define AUTO_SOBE_MS   12.0
@@ -319,6 +331,7 @@ size_t assperf_fontes_teto(void) {
 #define AUTO_MIN75_S    5.0
 #define AUTO_MIN100_S   2.0
 #define AUTO_IGNORA       3
+#define AUTO_OCIOSO_S   8.0
 static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct {
   int em75;                  // 1 = rendering at 75 % now
@@ -368,13 +381,23 @@ double assperf_escala_quadro(void) {
     if (pronto && (custo > AUTO_FORTE_MS || (custo > AUTO_DESCE_MS && t - A.desde >= AUTO_MIN100_S)))
       auto_trocar_locked(1, t);
   } else {
-    int vazio = t - A.ultAmostra > 1.0 || custo == 0.0;   // nothing new for 1 s: light, even with frames still to ignore
-    if (vazio || (custo < AUTO_SOBE_MS && A.ignora <= 0)) {
+    double parado = t - A.ultAmostra;
+    if (parado > AUTO_OCIOSO_S || (parado <= 1.0 && custo < AUTO_SOBE_MS && A.ignora <= 0 && (A.nLib > 0 || A.nGl > 0))) {
       if (!A.leveDesde) A.leveDesde = t;
       if (t - A.leveDesde >= AUTO_LEVE_S && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t);
-    } else A.leveDesde = 0;
+    } else if (parado <= 1.0 && A.ignora <= 0 && custo >= AUTO_SOBE_MS) A.leveDesde = 0;
+    /* else: a pause of 1-8 s, or frames still being ignored: hold */
   }
   r = A.em75 ? 0.75 : 1.0;
+  pthread_mutex_unlock(&autoTrava);
+  return r;
+}
+
+int assperf_legendas_pesadas(void) {
+  double t = agoraS();
+  int r;
+  pthread_mutex_lock(&autoTrava);
+  r = A.em75 || (t - A.ultAmostra < 2.0 && auto_custo_locked(t) > AUTO_DESCE_MS);
   pthread_mutex_unlock(&autoTrava);
   return r;
 }

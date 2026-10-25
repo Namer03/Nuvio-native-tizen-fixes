@@ -28,6 +28,7 @@
 #include "bidi.h"
 #include "layout.h"
 #include "legimagem.h"
+#include "telalag.h"
 
 // --- identity -------------------------------------------------------------------
 // FNV-1a 64 over the fields that identify a candidate within one media session.
@@ -849,12 +850,14 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       *icone = "aj_clock";
       break; }
     case LR_CORR: {
-      // "Automatic · 50 ms · 24 fps": the learned value for this kind of video;
+      // "Automatic · 200 ms · 24 fps": the learned value for this kind of video;
       // left/right nudge it (10 ms), it stays automatic.
       char tp[24];
       legimagem_tipo(tp, ts > 24 ? 24 : ts);
       snprintf(nome, tn, "%s", i18n("Correção da legenda"));
-      snprintf(sub, ts, "%s Â· %d ms Â· %s", i18n("Automático"), legimagem_ms(), tp);
+      { int x = telalag_atual_ms();   // heavy signs right now: what comes off (telalag.h)
+        if (x > 0) snprintf(sub, ts, "%s · %d ms (−%d) · %s", i18n("Automático"), legimagem_ms(), x, tp);
+        else snprintf(sub, ts, "%s · %d ms · %s", i18n("Automático"), legimagem_ms(), tp); }
       *icone = "aj_clock";
       break; }
     case LR_CAND:

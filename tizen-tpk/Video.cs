@@ -321,28 +321,49 @@ namespace NuvioTpk
             int minha = Volatile.Read(ref sessao);
             // Polling must not occupy the command queue: firmware reads can take seconds.
             int ger = Volatile.Read(ref posGer);
-            _ = Task.Run(() => {
-                var p = Volatile.Read(ref player);
-                long inicio = Stopwatch.GetTimestamp();
-                try {
-                    if (p != null && playerSessao == minha && minha == Volatile.Read(ref sessao) && p.State == PlayerState.Playing) {
-                        int ms = p.GetPlayPosition();
-                        long fim = Stopwatch.GetTimestamp();
-                        lock (trocaTrava) {
-                            if (minha == sessao && player == p && ger == posGer) { posMs = ms; Informar(ms, 0, inicio, fim); }
-                        }
-                    }
-                } catch (InvalidOperationException e) {
-                    Log("posicao: " + e.Message);
-                    Preso(minha, -1);
-                } catch { }
-                finally {
-                    long ms = (Stopwatch.GetTimestamp() - inicio) * 1000 / Stopwatch.Frequency;
-                    if (ms >= 50) Log("[video] tpk consulta posicao levou " + ms + " ms (fio video)");
-                    if (ms >= 5000 && minha == Volatile.Read(ref sessao)) NvVid.Evento(EV_CONSULTA_LENTA, 0, 0);
-                    Volatile.Write(ref f.consulta, 0);
+            _ = Task.Run(() => LerTique(f, minha, ger));
+        }
+
+        // Subtitle clock (owner 25/10): its own thread, every 40 ms. The NUI timer
+        // on the main thread fell to 32 readings in 10 s on heavy signs (log 4,
+        // 25/10) against ~260 on light ones; the thread pool can starve as well.
+        // Same one-query-in-flight flag as Tique and LerPosicao.
+        public void IniciaRelogio(Func<bool> parar)
+        {
+            new Thread(() => {
+                while (!parar()) {
+                    try {
+                        var f = Volatile.Read(ref fio);
+                        if (f != null && Interlocked.Exchange(ref f.consulta, 1) == 0)
+                            LerTique(f, Volatile.Read(ref sessao), Volatile.Read(ref posGer));
+                    } catch { }
+                    Thread.Sleep(40);
                 }
-            });
+            }) { IsBackground = true, Name = "Nuvio relogio" }.Start();
+        }
+
+        void LerTique(FioVideo f, int minha, int ger)
+        {
+            var p = Volatile.Read(ref player);
+            long inicio = Stopwatch.GetTimestamp();
+            try {
+                if (p != null && playerSessao == minha && minha == Volatile.Read(ref sessao) && p.State == PlayerState.Playing) {
+                    int ms = p.GetPlayPosition();
+                    long fim = Stopwatch.GetTimestamp();
+                    lock (trocaTrava) {
+                        if (minha == sessao && player == p && ger == posGer) { posMs = ms; Informar(ms, 0, inicio, fim); }
+                    }
+                }
+            } catch (InvalidOperationException e) {
+                Log("posicao: " + e.Message);
+                Preso(minha, -1);
+            } catch { }
+            finally {
+                long ms = (Stopwatch.GetTimestamp() - inicio) * 1000 / Stopwatch.Frequency;
+                if (ms >= 50) Log("[video] tpk consulta posicao levou " + ms + " ms (fio video)");
+                if (ms >= 5000 && minha == Volatile.Read(ref sessao)) NvVid.Evento(EV_CONSULTA_LENTA, 0, 0);
+                Volatile.Write(ref f.consulta, 0);
+            }
         }
 
         // ---- subtitle clock (owner 25/10) ------------------------------------

@@ -196,7 +196,7 @@ namespace NuvioTpk
         object GlViewOuNulo() { return null; }   // GLView so existe na API11 (Exibe.cs: premult)
 #endif
         volatile bool fim;
-        NuiTimer vigia, prime, posTimer;
+        NuiTimer vigia, prime;
         Video video;
 #if NV_TEXTO
         Texto texto;
@@ -629,11 +629,10 @@ namespace NuvioTpk
             };
             vigia.Start();
             // Subtitle clock (owner 25/10): the TV position every 40 ms instead of
-            // every 250 ms (a reading costs ~1 ms). Tique keeps one query in flight
-            // and only reads while Playing, so this is idle otherwise.
-            posTimer = new NuiTimer(40);
-            posTimer.Tick += (s, e) => { if (!fim) video.Tique(); return !fim; };
-            posTimer.Start();
+            // every 250 ms (a reading costs ~1 ms), on its own thread (Video.cs):
+            // the main thread starved this timer on heavy signs. One query in
+            // flight, only while Playing, so this is idle otherwise.
+            video.IniciaRelogio(() => fim);
 
             AgendaPrime();
         }

@@ -53,6 +53,8 @@ enum {
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
   AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
+  AP_FILA,         // GPU queue limit: 0 off, 1 = 1 frame, 2 = 2 frames behind at most (telalag.c)
+  AP_LAGCOMP,      // heavy-scene lag compensation of the subtitle correction: 0 off, 1 on (telalag.c)
   AP_N
 };
 
@@ -83,6 +85,10 @@ double assperf_escala(void);                 // 1.0 .. 0.5 (Auto: the scale it i
 // when subtitles get heavy). Worker: the scale for the next render; Auto
 // decides here from the cost the worker and the GL thread report.
 double assperf_escala_quadro(void);
+// 1 while the subtitles are heavy (Auto at 75 %, or a new frame costing over
+// the Auto threshold in the last 2 s). For other work to yield to libass
+// (owner 25/10: libass comes before the seek thumbnails).
+int    assperf_legendas_pesadas(void);
 void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
 void   assperf_escala_custo_gl(double glMs);    // GL thread: upload + GPU blur of a new frame
 void   assperf_escala_reset(void);              // track change: back to 100 %
