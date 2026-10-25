@@ -7,7 +7,6 @@
 #include "tpk_egl.h"
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -31,13 +30,9 @@ static struct { TlSync s; double t0; } fila[TL_FILA];
 static int nFila;
 static double t0Quadro;
 
-/* lag (ms per frame, frame start -> GPU done) */
-static double ema, base, segSoma, segInicio, ultUso;
-static int segN, temBase, aplicado;
-/* 10 s window */
-static double jLagSoma, jLagMax, jEspera, jExtraMax;
-static int jN, jEsperaN, jExtraN;
-static double jExtraSoma;
+/* 10 s window: lag (ms per frame, frame start -> GPU done) and the queue limit */
+static double jLagSoma, jLagMax, jEspera;
+static int jN, jEsperaN, jLimN, jQuadros;
 
 static double agoraMs(void) {
   struct timespec ts;
@@ -69,26 +64,6 @@ static int pronto(void) {
   return 1;
 }
 
-static void amostra(double lag, double t) {
-  if (t - ultUso > 2000.0) {   /* not timing subtitles: start over when they come back */
-    temBase = 0; ema = 0; segN = 0; segSoma = 0; segInicio = t; aplicado = 0;
-    return;
-  }
-  ema = ema > 0 ? ema * 0.85 + lag * 0.15 : lag;
-  jLagSoma += lag; jN++;
-  if (lag > jLagMax) jLagMax = lag;
-  /* Baseline = the lightest 1 s average since subtitles started. It creeps up
-   * 0.2 ms per second, so one odd light second is forgotten over minutes, and
-   * a minute of heavy signs moves it only ~12 ms. */
-  segSoma += lag; segN++;
-  if (t - segInicio >= 1000.0) {
-    double m = segSoma / segN;
-    if (!temBase || m < base) { base = m; temBase = 1; }
-    else base += 0.2;
-    segSoma = 0; segN = 0; segInicio = t;
-  }
-}
-
 static void colher(void) {
   int i = 0;
   double t;
@@ -96,18 +71,33 @@ static void colher(void) {
     unsigned r = pWait(fila[i].s, 0, 0);
     if (r != TL_ALREADY_SIGNALED && r != TL_CONDITION_SATISFIED && r != TL_WAIT_FAILED) break;
     t = agoraMs();
-    if (r != TL_WAIT_FAILED) amostra(t - fila[i].t0, t);
+    if (r != TL_WAIT_FAILED) {
+      double lag = t - fila[i].t0;
+      jLagSoma += lag; jN++;
+      if (lag > jLagMax) jLagMax = lag;
+    }
     pDel(fila[i].s);
     i++;
   }
   if (i) { memmove(fila, fila + i, (size_t)(nFila - i) * sizeof fila[0]); nFila -= i; }
 }
 
+/* GPU QUEUE LIMIT, by situation (owner 25/10, logs 5 and 7): 1 frame helped
+ * only while Render resolution Auto was at 75 % on heavy signs (lag peaks
+ * 47-56 ms against 67-117 without); at a fixed 100 % on heavy signs it made
+ * them worse (169-217 ms against ~118): there the GL thread itself is the
+ * bottleneck and the wait only adds a stall. Light scenes: no difference. */
+static int limite(void) {
+  return assperf_get(AP_ESCALA) == 5 && assperf_escala() < 1.0 ? 1 : 0;
+}
+
 void telalag_quadro_inicio(void) {
   int lim;
   if (!pronto()) return;
   colher();
-  lim = assperf_get(AP_FILA);   /* 1 or 2 frames behind at most */
+  jQuadros++;
+  lim = limite();
+  if (lim) jLimN++;
   if (lim > 0 && nFila >= lim) {
     double t = agoraMs();
     /* wait for the frame that leaves only lim-1 still running (100 ms cap) */
@@ -128,45 +118,21 @@ void telalag_quadro_fim(void) {
   fila[nFila].s = s; fila[nFila].t0 = t0Quadro; nFila++;
 }
 
-int telalag_extra_ms(void) {
-  double t = agoraMs(), x;
-  int alvo;
-  ultUso = t;
-  if (estado <= 0 || !temBase || !assperf_get(AP_LAGCOMP)) { aplicado = 0; return 0; }
-  x = ema - base;
-  if (x < 0) x = 0;
-  if (x > 250) x = 250;
-  alvo = (int)(x / 5.0 + 0.5) * 5;
-  /* 10 ms of hysteresis: the frame grid would otherwise flip a sign between
-   * two frames on every small wobble */
-  if (abs(alvo - aplicado) >= 10 || (alvo == 0 && aplicado < 10)) aplicado = alvo;
-  jExtraSoma += aplicado; jExtraN++;
-  if (aplicado > jExtraMax) jExtraMax = aplicado;
-  return aplicado;
-}
-
-int telalag_atual_ms(void) { return aplicado; }
-
 void telalag_relatorio(char *dst, size_t n) {
   if (!n) return;
   dst[0] = 0;
-  if (estado <= 0 || !jN) { jEspera = 0; jEsperaN = 0; return; }
-  {
-    size_t o = (size_t)snprintf(dst, n,
-      " | screen lag avg %.0f max %.0f ms (light baseline %.0f) -> correction lowered by %.0f ms on average, %.0f at most%s",
-      jLagSoma / jN, jLagMax, temBase ? base : 0.0, jExtraN ? jExtraSoma / jExtraN : 0.0, jExtraMax,
-      assperf_get(AP_LAGCOMP) ? "" : " (compensation Off)");
-    if (o < n && assperf_get(AP_FILA))
-      snprintf(dst + o, n - o, " | GPU queue limit %d: waited %.0f ms in %d frames", assperf_get(AP_FILA), jEspera, jEsperaN);
+  if (estado > 0 && jN) {
+    size_t o = (size_t)snprintf(dst, n, " | screen lag avg %.0f max %.0f ms", jLagSoma / jN, jLagMax);
+    if (o < n)
+      snprintf(dst + o, n - o, " | GPU queue limit (auto, at 75 %%): on in %d of %d frames, waited %.0f ms",
+               jLimN, jQuadros, jEspera);
   }
-  jLagSoma = jLagMax = jEspera = jExtraMax = jExtraSoma = 0;
-  jN = jEsperaN = jExtraN = 0;
+  jLagSoma = jLagMax = jEspera = 0;
+  jN = jEsperaN = jLimN = jQuadros = 0;
 }
 
 #else
 void telalag_quadro_inicio(void) {}
 void telalag_quadro_fim(void) {}
-int  telalag_extra_ms(void) { return 0; }
-int  telalag_atual_ms(void) { return 0; }
 void telalag_relatorio(char *dst, size_t n) { if (n) dst[0] = 0; }
 #endif

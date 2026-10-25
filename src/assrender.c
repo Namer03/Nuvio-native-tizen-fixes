@@ -1465,6 +1465,22 @@ static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedid
   p->area = (long)im->g.coreW * (long)im->g.coreH;
 }
 
+/* Os pedidos de GPU de um quadro, para o atlas do lote (assgpublur_preparar:
+ * um envio para todos os bitmaps novos em vez de um por letreiro). Fio GL. */
+static AgbPedido *assPeds;
+static int assPedsCap;
+static void ass_gpu_preparar(const AssCpuFrame *f) {
+  int i, n = 0;
+  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1) return;
+  if (f->count > assPedsCap) {
+    AgbPedido *nv = (AgbPedido *)realloc(assPeds, (size_t)f->count * sizeof *nv);
+    if (!nv) return;
+    assPeds = nv; assPedsCap = f->count;
+  }
+  for (i = 0; i < f->count; i++) if (f->images[i].gpu) ass_gpu_pedido(f, &f->images[i], &assPeds[n++]);
+  if (n > 1) assgpublur_preparar(assPeds, n, assGlQuadro);
+}
+
 /* PRE-BLUR (fio GL, sob assFilaTrava): os quadros que ja estao na fila
  * (Render ahead) tem os seus letreiros borrados aos poucos, alguns por quadro
  * de UI, antes da hora. Quando o quadro entra em tela, as texturas ja estao
@@ -1482,6 +1498,7 @@ static void ass_gpu_adiantar_locked(void) {
   assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));
   for (q = 0; q < assFilaN && gasto < orcamento; q++) {
     const AssCpuFrame *f = &assFila[q];
+    ass_gpu_preparar(f);
     for (i = 0; i < f->count && gasto < orcamento; i++) {
       const AssCpuImage *im = &f->images[i];
       AgbPedido p;
@@ -1499,7 +1516,7 @@ static void ass_gpu_adiantar_locked(void) {
       clock_gettime(CLOCK_MONOTONIC, &agoraT);
       gasto = ass_ms_entre(&ini0, &agoraT);
       g.blurs += st.blurs; g.finais += st.finais; g.falhas += st.falhas; g.adiantados += st.adiantados;
-      g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas;
+      g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas; g.atlas += st.atlas; g.atlasItens += st.atlasItens;
       for (z = 0; z < 4; z++) { g.nTam[z] += st.nTam[z]; g.msTam[z] += st.msTam[z]; }
       g.msGpu += st.msGpu; g.nGpu += st.nGpu;
     }
@@ -1595,7 +1612,10 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #if ASS_GPU
     { int temGpu = 0;
       for (i = 0; i < assMain.count && !temGpu; i++) temGpu = assMain.images[i].gpu;
-      if (temGpu) assgpublur_lote_ini(assperf_get(AP_ESTAGIOS)); }
+      if (temGpu) {
+        assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));
+        if (alfa) ass_gpu_preparar(&assMain);
+      } }
 #endif
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
@@ -1634,6 +1654,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
         int z;
         g.blurs = st.blurs; g.finais = st.finais; g.reusos = st.reusos; g.falhas = st.falhas; g.cpu = assGpuCpu;
         g.adiantados = st.adiantados; g.criadas = st.criadas; g.reaproveitadas = st.reaproveitadas;
+        g.atlas = st.atlas; g.atlasItens = st.atlasItens;
         g.ms = st.ms; g.medido = st.medido; g.msGpu = st.msGpu; g.nGpu = st.nGpu;
         for (z = 0; z < 4; z++) { g.nTam[z] = st.nTam[z]; g.msTam[z] = st.msTam[z]; }
         assperf_med_gpublur(&g);

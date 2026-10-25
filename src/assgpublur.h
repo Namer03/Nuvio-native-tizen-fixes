@@ -39,6 +39,7 @@ typedef struct {
   double msTam[4];       // e o tempo de GPU desses pedidos
   double msGpu;          // tempo de GPU de todos os pedidos medidos (consultas ou glFinish)
   unsigned nGpu;
+  unsigned atlas, atlasItens;   // envios do atlas do lote e bitmaps que foram nele
 } AgbStats;
 
 // Fio GL. 1 = shaders e alvos prontos (uma vez; depois so devolve o resultado).
@@ -51,6 +52,10 @@ void assgpublur_lote_fim(void);
 // Textura final (RGBA8, w x h, alfa = o valor) do pedido; 0 = falhou.
 // `quadro` = contador de quadros GL (o cache nunca recicla o que esta em uso).
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chave);
+// Dentro do lote, ANTES dos assgpublur_obter: os bitmaps que esses pedidos vao
+// borrar sobem juntos, numa textura so (um envio). Opcional: sem ela cada
+// pedido sobe o seu. O atlas vale ate assgpublur_lote_fim.
+void assgpublur_preparar(const AgbPedido *ps, int n, unsigned quadro);
 // Quadro repetido: mantem viva a textura de `chave`.
 void assgpublur_usar(unsigned long long chave, unsigned quadro);
 // Le o alfa de uma textura final (snapshot). 1 = ok.

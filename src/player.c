@@ -445,12 +445,7 @@ static double posLegenda(void) {
   /* CORRECAO DA LEGENDA (legimagem.h, dono 25/10): a imagem da TV anda um
    * pouco atras da nossa camada enquanto TOCA; pausada, nao. So tocando, com
    * leituras carimbadas, e nunca logo depois de um seek ainda sem leitura. */
-  /* Menos o atraso extra da NOSSA camada quando a GPU fica para tras em
-   * legenda pesada (telalag.h): a correcao e ajustada em cena leve. */
-  if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) {
-    int c = legimagem_ms() - telalag_extra_ms();
-    if (c > 0) v -= c / 1000.0;
-  }
+  if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) v -= legimagem_ms() / 1000.0;
 #endif
   return v;
 }

@@ -49,7 +49,7 @@ static const ApDef DEF[AP_N] = {
     2, 2, 4, { "Off", "30 s", "2 min", "5 min" }, 1 },
   [AP_ADIANTE] = { "adiante", "Render ahead",
     "Renders the moment the frame will actually be on screen. 100 ms (tested 24/10) also gives the GPU blur time to prepare queued frames.",
-    3, 3, 6, { "Off (old)", "Auto", "50 ms", "100 ms", "150 ms", "250 ms" } },
+    3, 3, 6, { "Off (old)", "Auto", "50 ms", "100 ms", "150 ms", "250 ms" }, 1 },   // fixed 25/10: 100 ms (steadier than 250, less memory; Off up to 4 frames late)
   [AP_SEGURAR] = { "segurar", "Early frames",
     "With render ahead, a frame that is ready early waits for its moment instead of showing at once.",
     1, 1, 2, { "Show at once", "Hold until due" }, 1 },
@@ -109,14 +109,6 @@ static const ApDef DEF[AP_N] = {
     "Set the same number as the TV's Gamma/BT.1886 (it only changes the video): subtitles get Samsung's own curve "
     "(1 - 0.0426 per step).",
     0, 0, 11, { "Off", "-1", "-2", "-3", "-4", "-5", "+5", "+4", "+3", "+2", "+1" } },
-  [AP_FILA] = { "fila", "GPU queue limit",
-    "Waits at the start of a frame until the GPU is at most this many frames behind. Heavy signs reach the screen sooner "
-    "(less lag), but the menu and subtitles draw fewer frames per second. The [relogio] line shows the lag and the wait.",
-    0, 0, 3, { "Off", "1 frame", "2 frames" } },
-  [AP_LAGCOMP] = { "lagcomp", "Heavy-scene compensation",
-    "On: when the GPU falls behind on heavy signs, the subtitle correction gets smaller by the measured extra lag, "
-    "so one correction set on light scenes holds on heavy ones too. Off: the correction stays fixed.",
-    1, 1, 2, { "Off", "On" } },
   [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
     "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
     "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",
@@ -497,7 +489,7 @@ static struct {
     double frameMs, frameMax, stageMs[8], piorStage[8];
   } est;
   // blur na GPU
-  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes, gbAdiant, gbCriadas, gbReap;
+  unsigned gbBlurs, gbFinais, gbReusos, gbFalhas, gbCpu, gbLotes, gbAdiant, gbCriadas, gbReap, gbAtlas, gbAtlasItens;
   double gbMs, gbMax;
   int gbMedido;
   unsigned gbN[4]; double gbMsTam[4];
@@ -614,6 +606,7 @@ void assperf_med_gpublur(const AssperfGpu *g) {
   if ((g->blurs || g->finais) && g->ms > 0) { M.gbLotes++; M.gbMs += g->ms; if (g->ms > M.gbMax) M.gbMax = g->ms; M.gbMedido = g->medido; }
   for (i = 0; i < 4; i++) { M.gbN[i] += g->nTam[i]; M.gbMsTam[i] += g->msTam[i]; }
   M.gbMsGpu += g->msGpu; M.gbNGpu += g->nGpu;
+  M.gbAtlas += g->atlas; M.gbAtlasItens += g->atlasItens;
   pthread_mutex_unlock(&medTrava);
 }
 void assperf_med_adiado(const AssperfAdiado *a) {
@@ -715,9 +708,8 @@ int assperf_med_tick(void) {
                M.gbReusos, M.gbCpu, M.gbFalhas, M.adComBlur, M.adAdiados, M.adBe, M.adClip);
       if (M.adComBlur || M.gbLotes || M.gbAdiant)
         printf("[assperf] gpu blur 2: kept on CPU for size %u (minimum %ld px) | pictures made ahead for queued frames %u"
-               " | textures created %u, reused from the reserve %u | GPU time %.0f ms in %u measured jobs (%.2f ms each)\n",
-               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap, M.gbMsGpu, M.gbNGpu,
-               M.gbNGpu ? M.gbMsGpu / M.gbNGpu : 0.0);
+               " | textures created %u, reused from the reserve %u | one-upload batches %u holding %u bitmaps\n",
+               M.adPeq, assperf_gpu_min(), M.gbAdiant, M.gbCriadas, M.gbReap, M.gbAtlas, M.gbAtlasItens);
       if (M.gp.lotesTrab || M.gp.qEmit) {
         double resto = M.gp.loteMs - M.gp.salvar - M.gp.envio - M.gp.passadasMs - M.gp.finalMs - M.gp.restaurar;
         printf("[assperf] gpu blur steps (GL thread time, all batches): %u batches with work (of %u), %.1f ms in all, longest %.1f ms"

@@ -1,10 +1,9 @@
 // SUBTITLE CORRECTION (.tpk, owner 25/10). The TV's picture runs a little
 // behind the app's own layer while playing (its picture processing), so
-// subtitles drawn on time looked early (~200 ms on the S95C in light scenes); paused, the frame stands still
+// subtitles drawn on time looked early (170-210 ms on the S95C); paused, the frame stands still
 // and there is no difference. The correction delays subtitles by that much,
 // ONLY while playing. "Auto": one learned value per kind of video (frame rate,
-// HDR) that the person nudges from the Subtitles sheet; starts at 200 ms.
-// On heavy signs our own layer is late too: telalag.h takes that off.
+// HDR) that the person nudges from the Subtitles sheet; starts at 190 ms.
 #ifndef NV_LEGIMAGEM_H
 #define NV_LEGIMAGEM_H
 

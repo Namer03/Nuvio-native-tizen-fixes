@@ -10,7 +10,7 @@
 #include <string.h>
 
 #define LI_ARQ "legimagem.txt"
-#define LI_PADRAO 200   /* owner 25/10: light scenes want 200-210 ms on the S95C */
+#define LI_PADRAO 190   /* owner 25/10: 170-210 ms on the S95C depending on the scene */
 #define LI_MAX 300
 #define LI_TIPOS 16
 
