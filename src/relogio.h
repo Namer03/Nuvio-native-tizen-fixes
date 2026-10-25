@@ -12,10 +12,12 @@
  * atrasada e a de MAIOR off — o relogio usa o maximo das ultimas amostras. */
 
 #define RELOGIO_AMOSTRAS 12
+// Carimbadas (.tpk): a ~25 leituras/s, 32 cobrem ~1,3 s.
+#define RELOGIO_AMOSTRAS_C 32
 
 typedef struct {
-  double off[RELOGIO_AMOSTRAS];
-  double inc[RELOGIO_AMOSTRAS];  // carimbadas: +- incerteza de cada amostra (s)
+  double off[RELOGIO_AMOSTRAS_C];
+  double inc[RELOGIO_AMOSTRAS_C];  // carimbadas: +- incerteza de cada amostra (s)
   int    n, prox;
   int    carimbo;            // 1 = alimentado por relogio_amostra_carimbo
   double ultPos, ultAgora;   // ultima amostra
@@ -40,9 +42,9 @@ void   relogio_taxa(Relogio *r, double taxa);
  * CHEGADA, a legenda atrasava o tanto da consulta mais rapida da janela, mais
  * nas cenas pesadas. O host carimba o MEIO da consulta (`agora`, mesmo relogio
  * monotonico) e diz a meia duracao (`incerteza`): a posicao foi lida em algum
- * ponto de [agora - incerteza, agora + incerteza]. O deslocamento sai da
- * intersecao desses intervalos nas ultimas amostras (o video anda a taxa
- * conhecida), o meio dela; sem intersecao, a amostra mais precisa.
+ * ponto de [agora - incerteza, agora + incerteza]. O deslocamento e a
+ * MEDIANA das ultimas amostras (25/10: no log da S95C a legenda ora adiantava
+ * ora atrasava um quadro; a mediana nao segue uma leitura fora da curva).
  * Posicao parada com o carimbo andando (buffering, fim) segura a legenda. */
 void   relogio_amostra_carimbo(Relogio *r, double posSeg, double agora, double incerteza, int tocando);
 

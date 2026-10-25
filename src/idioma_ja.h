@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "色とガラス"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "ASS 字幕の色、位置、同時表示のセリフに対応します。"),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "外部字幕の色、位置、同時表示のセリフに対応します。コントロールを隠している間も有効です。"),
+  T("Correção da legenda", "字幕の補正"),
   T("Correção desfeita; o atraso manual continua", "補正を取り消しました。手動の遅延は維持されます"),
   T("Correções", "修正"),
   T("Correções e opções de fontes.", "修正とソースの設定。"),

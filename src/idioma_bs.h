@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Boje i staklo"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Boje, pozicije i istovremeni redovi u ASS titlovima."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Boje, pozicije i istovremeni redovi u vanjskim titlovima, uključujući i kada su kontrole skrivene."),
+  T("Correção da legenda", "Korekcija titlova"),
   T("Correção desfeita; o atraso manual continua", "Ispravka poništena; ručno kašnjenje ostaje"),
   T("Correções", "Ispravke"),
   T("Correções e opções de fontes.", "Ispravke i opcije izvora."),

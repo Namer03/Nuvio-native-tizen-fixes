@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Χρώματα και γυαλί"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Χρώματα, θέσεις και ταυτόχρονες γραμμές στους υπότιτλους ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Χρώματα, θέσεις και ταυτόχρονες γραμμές στους εξωτερικούς υπότιτλους, ακόμα και όταν τα χειριστήρια είναι κρυφά."),
+  T("Correção da legenda", "Διόρθωση υποτίτλων"),
   T("Correção desfeita; o atraso manual continua", "Η διόρθωση αναιρέθηκε, η χειροκίνητη καθυστέρηση μένει"),
   T("Correções", "Διορθώσεις"),
   T("Correções e opções de fontes.", "Διορθώσεις και επιλογές πηγών."),

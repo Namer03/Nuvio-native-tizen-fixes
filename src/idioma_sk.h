@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Farby a sklo"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Farby, pozície a súbežné riadky v titulkoch ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Farby, pozície a súbežné riadky v externých titulkoch, aj keď sú ovládacie prvky skryté."),
+  T("Correção da legenda", "Korekcia titulkov"),
   T("Correção desfeita; o atraso manual continua", "Oprava vrátená; ručné oneskorenie zostáva"),
   T("Correções", "Opravy"),
   T("Correções e opções de fontes.", "Opravy a voľby zdrojov."),

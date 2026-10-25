@@ -54,8 +54,8 @@ static const ApDef DEF[AP_N] = {
     "With render ahead, a frame that is ready early waits for its moment instead of showing at once.",
     1, 1, 2, { "Show at once", "Hold until due" }, 1 },
   [AP_CACHE] = { "cache", "libass bitmap cache",
-    "Memory libass keeps for rendered glyphs and blurs. Bigger means fewer re-renders of repeated signs.",
-    1, 2, 4, { "32 MB (old)", "64 MB", "128 MB", "16 MB" } },
+    "Memory libass keeps for rendered glyphs and blurs. Bigger means fewer re-renders of repeated signs. With the blur on the GPU the blurred pictures live there, so 32 MB is enough (25/10, memory).",
+    0, 1, 4, { "32 MB", "64 MB", "128 MB", "16 MB" } },
   [AP_GLIFOS] = { "glifos", "libass glyph cache",
     "How many glyph outlines libass keeps.",
     0, 0, 4, { "Default (old)", "1000", "4000", "10000" }, 1 },
@@ -625,7 +625,7 @@ long assperf_gpu_min(void) {
   int v = assperf_get(AP_GPUMIN);
   return px[v < 0 || v > 3 ? 0 : v];
 }
-int assperf_gpu_adiante(void) { return 6; }
+int assperf_gpu_adiante(void) { return 3; }   // ms medidos no fio GL por quadro de UI (25/10)
 
 void assperf_med_alfa(float alfa, float opacidadeUsuario) {
   pthread_mutex_lock(&medTrava);

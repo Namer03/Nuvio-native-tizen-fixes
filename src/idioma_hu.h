@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Színek és üveg"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Színek, pozíciók és egyidejű sorok az ASS-feliratokban."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Színek, pozíciók és egyidejű sorok a külső feliratokban, akkor is, ha a vezérlők el vannak rejtve."),
+  T("Correção da legenda", "Feliratkorrekció"),
   T("Correção desfeita; o atraso manual continua", "Javítás visszavonva; a kézi késleltetés marad"),
   T("Correções", "Javítások"),
   T("Correções e opções de fontes.", "Javítások és forrásbeállítások."),

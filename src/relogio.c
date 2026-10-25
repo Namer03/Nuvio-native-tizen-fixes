@@ -30,17 +30,17 @@ static double maxOff(const Relogio *r) {
   return m;
 }
 
-/* Carimbadas: o meio da intersecao dos intervalos [off - inc, off + inc]; sem
- * intersecao (amostras incoerentes), o off da amostra de menor incerteza. */
+/* Carimbadas: a mediana dos deslocamentos (robusta a uma leitura fora da
+ * curva e a posicao que anda em degraus). */
 static double offCarimbo(const Relogio *r) {
-  int i, melhor = 0;
-  double lo = r->off[0] - r->inc[0], hi = r->off[0] + r->inc[0];
-  for (i = 1; i < r->n; i++) {
-    if (r->off[i] - r->inc[i] > lo) lo = r->off[i] - r->inc[i];
-    if (r->off[i] + r->inc[i] < hi) hi = r->off[i] + r->inc[i];
-    if (r->inc[i] < r->inc[melhor]) melhor = i;
+  double v[RELOGIO_AMOSTRAS_C];
+  int i, j, n = r->n;
+  for (i = 0; i < n; i++) {
+    double x = r->off[i];
+    for (j = i; j > 0 && v[j - 1] > x; j--) v[j] = v[j - 1];
+    v[j] = x;
   }
-  return lo <= hi ? (lo + hi) * 0.5 : r->off[melhor];
+  return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) * 0.5;
 }
 
 static double offAtual(const Relogio *r) { return r->carimbo ? offCarimbo(r) : maxOff(r); }
@@ -75,8 +75,8 @@ void relogio_amostra_carimbo(Relogio *r, double posSeg, double agora, double inc
     }
     r->off[r->prox] = off;
     r->inc[r->prox] = incerteza * taxaDe(r);
-    r->prox = (r->prox + 1) % RELOGIO_AMOSTRAS;
-    if (r->n < RELOGIO_AMOSTRAS) r->n++; }
+    r->prox = (r->prox + 1) % RELOGIO_AMOSTRAS_C;
+    if (r->n < RELOGIO_AMOSTRAS_C) r->n++; }
   r->ultPos = posSeg; r->ultAgora = agora; r->temAmostra = 1;
 }
 

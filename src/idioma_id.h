@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Warna dan kaca"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Warna, posisi, dan baris bersamaan pada subtitel ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Warna, posisi, dan baris bersamaan pada subtitel eksternal, termasuk saat kontrol disembunyikan."),
+  T("Correção da legenda", "Koreksi subtitle"),
   T("Correção desfeita; o atraso manual continua", "Koreksi dibatalkan; jeda manual tetap"),
   T("Correções", "Perbaikan"),
   T("Correções e opções de fontes.", "Perbaikan dan opsi sumber."),

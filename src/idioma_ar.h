@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "الألوان والزجاج"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "الألوان والمواضع والأسطر المتزامنة في ترجمات ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "الألوان والمواضع والأسطر المتزامنة في الترجمات الخارجية، حتى عند إخفاء الأزرار."),
+  T("Correção da legenda", "تصحيح الترجمة"),
   T("Correção desfeita; o atraso manual continua", "تم التراجع عن التصحيح؛ أُبقي التأخير اليدوي"),
   T("Correções", "الإصلاحات"),
   T("Correções e opções de fontes.", "الإصلاحات وخيارات المصدر."),

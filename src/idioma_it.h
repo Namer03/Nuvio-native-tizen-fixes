@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Colori e vetro"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Colori, posizioni e righe simultanee nei sottotitoli ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Colori, posizioni e righe simultanee nei sottotitoli esterni, anche quando i controlli sono nascosti."),
+  T("Correção da legenda", "Correzione sottotitoli"),
   T("Correção desfeita; o atraso manual continua", "Correzione annullata; il ritardo manuale resta"),
   T("Correções", "Correzioni"),
   T("Correções e opções de fontes.", "Correzioni e opzioni delle fonti."),

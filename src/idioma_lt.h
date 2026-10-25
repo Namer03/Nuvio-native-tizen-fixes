@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Spalvos ir stiklas"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Spalvos, pozicijos ir vienu metu rodomos eilutės ASS subtitruose."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Spalvos, pozicijos ir vienu metu rodomos eilutės išoriniuose subtitruose, taip pat kai valdikliai paslėpti."),
+  T("Correção da legenda", "Subtitrų korekcija"),
   T("Correção desfeita; o atraso manual continua", "Pataisa atšaukta; rankinis vėlavimas lieka"),
   T("Correções", "Pataisymai"),
   T("Correções e opções de fontes.", "Pataisymai ir šaltinių parinktys."),

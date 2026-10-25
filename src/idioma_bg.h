@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Цветове и стъкло"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Цветове, позиции и едновременни редове в ASS субтитрите."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Цветове, позиции и едновременни редове във външните субтитри, включително когато контролите са скрити."),
+  T("Correção da legenda", "Корекция на субтитрите"),
   T("Correção desfeita; o atraso manual continua", "Корекцията е отменена; ръчното забавяне остава"),
   T("Correções", "Поправки"),
   T("Correções e opções de fontes.", "Поправки и опции за източниците."),

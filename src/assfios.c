@@ -50,6 +50,26 @@ static int abrir_schedstat(long tid) {
 
 static long uiTid;   // escrito so pelo fio da UI; o relatorio (mesmo fio) le
 
+/* Sem schedstat (a S95C, 25/10): o tempo de CPU do fio por /proc/.../stat,
+ * utime + stime (campos 14 e 15, em ticks), depois do ultimo ')' do comm. */
+static int ler_stat_ns(const char *p, unsigned long long *run) {
+  char b[512], *f;
+  unsigned long ut = 0, st = 0;
+  int fd = open(p, O_RDONLY | O_CLOEXEC);
+  ssize_t k;
+  static long hz;
+  if (fd < 0) return 0;
+  k = read(fd, b, sizeof b - 1);
+  close(fd);
+  if (k <= 0) return 0;
+  b[k] = 0;
+  f = strrchr(b, ')');
+  if (!f || sscanf(f + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) != 2) return 0;
+  if (!hz) { hz = sysconf(_SC_CLK_TCK); if (hz <= 0) hz = 100; }
+  *run = (unsigned long long)(ut + st) * (1000000000ULL / (unsigned long long)hz);
+  return 1;
+}
+
 void assfios_ui_quadro(double *cpuMs, double *esperaMs) {
   static int fd = -2;
   static unsigned long long runAnt, espAnt;
@@ -144,7 +164,7 @@ static int cmp_grupo(const void *a, const void *b) {
 void assfios_relatorio(void) {
   Fio agora[FIOS_MAX];
   Grupo g[GRUPOS_MAX];
-  int nAgora = 0, ng = 0, i, j, pct[NUCLEOS_MAX], nn, temEspera = 0;
+  int nAgora = 0, ng = 0, i, j, pct[NUCLEOS_MAX], nn, temEspera = 0, lidos = 0;
   DIR *d = opendir("/proc/self/task");
   struct dirent *e;
   struct timespec t;
@@ -161,8 +181,13 @@ void assfios_relatorio(void) {
     Grupo *gr;
     if (tid <= 0) continue;
     snprintf(p, sizeof p, "/proc/self/task/%ld/schedstat", tid);
-    if (!ler_texto(p, st, sizeof st) || sscanf(st, "%llu %llu", &run, &esp) != 2) continue;
-    temEspera = 1;
+    if (ler_texto(p, st, sizeof st) && sscanf(st, "%llu %llu", &run, &esp) == 2) temEspera = 1;
+    else {
+      snprintf(p, sizeof p, "/proc/self/task/%ld/stat", tid);
+      if (!ler_stat_ns(p, &run)) continue;
+      esp = 0;
+    }
+    lidos++;
     agora[nAgora].tid = tid; agora[nAgora].run = run; agora[nAgora].esp = esp; nAgora++;
     if (!temAnt) continue;
     for (j = 0; j < nAnt; j++) if (ant[j].tid == tid) { runAnt = ant[j].run; espAnt = ant[j].esp; break; }
@@ -180,9 +205,10 @@ void assfios_relatorio(void) {
   nn = nucleos_carga(pct, NUCLEOS_MAX);
   tAnt = t;
   if (!temAnt) { temAnt = 1; return; }   // a primeira janela so guarda a base
-  if (!temEspera) return;
+  if (!lidos) return;
   qsort(g, (size_t)ng, sizeof g[0], cmp_grupo);
-  o += (size_t)snprintf(linha + o, sizeof linha - o, "[assperf] threads %.0fs (on a core / waiting for a core, s):", janela);
+  o += (size_t)snprintf(linha + o, sizeof linha - o, temEspera ? "[assperf] threads %.0fs (on a core / waiting for a core, s):"
+                                                               : "[assperf] threads %.0fs (on a core, s; this TV has no wait stats):", janela);
   if (nn > 0) {
     o += (size_t)snprintf(linha + o, sizeof linha - o, " cores %d busy", nn);
     for (i = 0; i < nn && o < sizeof linha; i++)
@@ -195,14 +221,18 @@ void assfios_relatorio(void) {
     for (k = 0; k < 3; k++)
       for (i = 0; i < ng; i++)
         if (!strcmp(g[i].nome, nossos[k]) && o < sizeof linha) {
-          o += (size_t)snprintf(linha + o, sizeof linha - o, " %s%s%.0d: %.2f/%.2f", g[i].nome, g[i].n > 1 ? " x" : "",
-                                g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9, g[i].esp / 1e9);
+          o += temEspera ? (size_t)snprintf(linha + o, sizeof linha - o, " %s%s%.0d: %.2f/%.2f", g[i].nome, g[i].n > 1 ? " x" : "",
+                                            g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9, g[i].esp / 1e9)
+                         : (size_t)snprintf(linha + o, sizeof linha - o, " %s%s%.0d: %.2f", g[i].nome, g[i].n > 1 ? " x" : "",
+                                            g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9);
           g[i].n = -1;
         }
     for (i = 0; i < ng && mostrados < 5 && o < sizeof linha; i++) {
       if (g[i].n < 0) continue;
-      o += (size_t)snprintf(linha + o, sizeof linha - o, " | %s%s%.0d: %.2f/%.2f", g[i].nome, g[i].n > 1 ? " x" : "",
-                            g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9, g[i].esp / 1e9);
+      o += temEspera ? (size_t)snprintf(linha + o, sizeof linha - o, " | %s%s%.0d: %.2f/%.2f", g[i].nome, g[i].n > 1 ? " x" : "",
+                                        g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9, g[i].esp / 1e9)
+                     : (size_t)snprintf(linha + o, sizeof linha - o, " | %s%s%.0d: %.2f", g[i].nome, g[i].n > 1 ? " x" : "",
+                                        g[i].n > 1 ? g[i].n : 0, g[i].run / 1e9);
       mostrados++;
     } }
   printf("%s\n", linha);

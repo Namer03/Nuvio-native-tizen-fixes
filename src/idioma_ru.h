@@ -1515,6 +1515,7 @@
   T("Cores e vidro", "Цвета и стекло"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Цвета, позиции и одновременные реплики в субтитрах ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Цвета, позиции и одновременные реплики во внешних субтитрах, в том числе при скрытых элементах управления."),
+  T("Correção da legenda", "Коррекция субтитров"),
   T("Correção desfeita; o atraso manual continua", "Исправление отменено; ручная задержка сохранена"),
   T("Correções", "Исправления"),
   T("Correções e opções de fontes.", "Исправления и опции источников."),

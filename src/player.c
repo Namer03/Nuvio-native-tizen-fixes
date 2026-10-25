@@ -97,6 +97,7 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 #include "assrender.h"
 #include "mkvass.h"
 #include "relogio.h"
+#include "legimagem.h"
 #include "intro.h"
 #include "proximo.h"
 #include "creditosauto.h"
@@ -436,8 +437,16 @@ static int fontePrincipal(void) {
 }
 static void medirAssistido(void);
 static double posLegenda(void) {
+  double v;
   if (!relLeg.temAmostra || scrubbing) return posSeg;
-  return relogio_ler(&relLeg, monoSeg());
+  v = relogio_ler(&relLeg, monoSeg());
+#ifdef NV_TPK
+  /* CORRECAO DA LEGENDA (legimagem.h, dono 25/10): a imagem da TV anda um
+   * pouco atras da nossa camada enquanto TOCA; pausada, nao. So tocando, com
+   * leituras carimbadas, e nunca logo depois de um seek ainda sem leitura. */
+  if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) v -= legimagem_ms() / 1000.0;
+#endif
+  return v;
 }
 // Creditos tambem sao pulaveis — e o "Skip Outro" do web.
 static int skipDisponivel(void), skipLiberado;
@@ -4790,7 +4799,13 @@ void player_atualizar(float dt, Uint32 agora) {
         { unsigned nl; double med, mx;
           video_tpk_leituras(&nl, &med, &mx);
           printf(" | TV position readings %u in 10 s, query avg %.0f max %.0f ms%s", nl, med, mx,
-                 relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)"); }
+                 relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)");
+          { char tp[24], raj[400];
+            legimagem_tipo(tp, sizeof tp);
+            printf(" | subtitle correction %d ms (%s)%s", legimagem_ms(), tp,
+                   legimagem_fps() > 1.0 ? ", on the frame grid" : "");
+            video_tpk_leituras_rajada(raj, sizeof raj);
+            if (raj[0]) printf("\n[relogio] last readings dt/dp ms: %s", raj); } }
 #endif
         printf("\n");
       } }
@@ -5582,6 +5597,9 @@ static void desenharLegendaPrincipal(float *topoPilha){
                              assrender_texto_simples() ? 1920 : video_largura(),
                              assrender_texto_simples() ? 1080 : video_altura(),
                              assrender_texto_simples() ? 1.0 : escalaFonteAss());
+#ifdef NV_TPK
+    assrender_definir_fps(legimagem_fps());   // frame grid (assrender.c)
+#endif
     assrender_desenhar(posLeg, atraso, alpha,
                         0, 0, NV_TELA_W, NV_TELA_H);
     // R4: libass nao informa onde pintou. Estima duas linhas no tamanho da

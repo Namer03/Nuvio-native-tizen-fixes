@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Farger og glass"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Farger, posisjoner og samtidige replikker i ASS-undertekster."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Farger, posisjoner og samtidige replikker i eksterne undertekster, også når kontrollene er skjult."),
+  T("Correção da legenda", "Undertekstkorrigering"),
   T("Correção desfeita; o atraso manual continua", "Korrigering angret; manuell forsinkelse beholdes"),
   T("Correções", "Rettinger"),
   T("Correções e opções de fontes.", "Rettelser og kildevalg."),

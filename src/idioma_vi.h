@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Màu và kính"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Màu sắc, vị trí và các dòng đồng thời trong phụ đề ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Màu sắc, vị trí và các dòng đồng thời trong phụ đề ngoài, kể cả khi các nút điều khiển đang ẩn."),
+  T("Correção da legenda", "Hiệu chỉnh phụ đề"),
   T("Correção desfeita; o atraso manual continua", "Đã hoàn tác chỉnh sửa; độ trễ thủ công vẫn giữ"),
   T("Correções", "Bản sửa lỗi"),
   T("Correções e opções de fontes.", "Bản sửa lỗi và tùy chọn nguồn."),

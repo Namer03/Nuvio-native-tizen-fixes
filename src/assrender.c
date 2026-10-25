@@ -1289,6 +1289,7 @@ static int *assMainIdx;          // e o indice dela em assTc (-1 = sem cache)
 #if ASS_GPU
 static unsigned long long *assMainGk;   // imagem adiada: a chave da textura no cache do assgpublur
 #endif
+static int *assMainTw, *assMainTh;      // tamanho da TEXTURA de cada imagem (o blur da GPU arredonda)
 static int assMainTexCap, assMainEnviado;
 static int assMainCorChave = -2, assMainFmt = -1, assMainCache = -1;
 static int assCaminhoNovoAntes = -1;
@@ -1470,11 +1471,15 @@ static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedid
  * no cache do assgpublur e o fio GL nao para 20-75 ms de uma vez (24/10). */
 static void ass_gpu_adiantar_locked(void) {
   int q, i;
-  double gasto = 0, orcamento = (double)assperf_gpu_adiante();   // ms de GPU por quadro de UI
+  /* 25/10: o orcamento e o TEMPO MEDIDO neste fio (o custo por tamanho vinha
+   * da GPU, que na S95C nunca respondeu: um quadro gastou 126 ms aqui). */
+  double gasto = 0, orcamento = (double)assperf_gpu_adiante();
+  struct timespec ini0, agoraT;
   AssperfGpu g;
   if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1 || !assperf_get(AP_GPUBLUR) || !assFilaN) return;
   memset(&g, 0, sizeof g);
-  assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));   // com os cronometros: custo por tamanho tambem daqui
+  clock_gettime(CLOCK_MONOTONIC, &ini0);
+  assgpublur_lote_ini(assperf_get(AP_ESTAGIOS));
   for (q = 0; q < assFilaN && gasto < orcamento; q++) {
     const AssCpuFrame *f = &assFila[q];
     for (i = 0; i < f->count && gasto < orcamento; i++) {
@@ -1491,8 +1496,8 @@ static void ass_gpu_adiantar_locked(void) {
       p.soCache = 0;
       assgpublur_obter(&p, assGlQuadro, &k);
       assgpublur_stats(&st);   // conta e zera: o que este pedido fez (reusos nao contam aqui)
-      if (st.blurs) gasto += assgpublur_custo(p.area);
-      else if (st.finais) gasto += 0.3;
+      clock_gettime(CLOCK_MONOTONIC, &agoraT);
+      gasto = ass_ms_entre(&ini0, &agoraT);
       g.blurs += st.blurs; g.finais += st.finais; g.falhas += st.falhas; g.adiantados += st.adiantados;
       g.criadas += st.criadas; g.reaproveitadas += st.reaproveitadas;
       for (z = 0; z < 4; z++) { g.nTam[z] += st.nTam[z]; g.msTam[z] += st.msTam[z]; }
@@ -1507,10 +1512,10 @@ static void ass_gpu_adiantar_locked(void) {
 /* Textura de uma imagem adiada: a GPU borra; se ela nao pode, a receita roda
  * na CPU (o mesmo desenho do libass) e sobe como uma imagem comum. Fio GL. */
 static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsigned long long *gk,
-                              unsigned recicla, size_t *enviados, int *idx) {
+                              unsigned recicla, size_t *enviados, int *idx, int *tw, int *th) {
   GLuint t = 0;
   int ok = __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE);
-  *gk = 0; *idx = -1;
+  *gk = 0; *idx = -1; *tw = im->w; *th = im->h;
   if (ok != 0) {
     if (ok < 0) {
       ok = assgpublur_iniciar();
@@ -1521,7 +1526,7 @@ static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsig
       AgbPedido p;
       ass_gpu_pedido(f, im, &p);
       t = assgpublur_obter(&p, assGlQuadro, gk);
-      if (t) return t;
+      if (t) { assgpublur_ultimo_tam(tw, th); return t; }
     }
   }
   { ASS_NvDefer d;
@@ -1578,6 +1583,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
         if (!ng) return 0;
         assMainGk = ng; }
 #endif
+      { int *a = (int *)realloc(assMainTw, (size_t)assMain.count * sizeof *a);
+        if (!a) return 0;
+        assMainTw = a;
+        a = (int *)realloc(assMainTh, (size_t)assMain.count * sizeof *a);
+        if (!a) return 0;
+        assMainTh = a; }
       assMainTexCap = assMain.count;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -1589,12 +1600,14 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
       int r = 0;
+      assMainTw[i] = im->w; assMainTh[i] = im->h;
 #if ASS_GPU
       assMainGk[i] = 0;
       if (im->gpu) {
         struct timespec g0, g1;
         clock_gettime(CLOCK_MONOTONIC, &g0);
-        assMainTex[i] = alfa ? ass_gpu_textura(&assMain, im, &assMainGk[i], recicla, &enviados, &assMainIdx[i]) : 0;
+        assMainTex[i] = alfa ? ass_gpu_textura(&assMain, im, &assMainGk[i], recicla, &enviados, &assMainIdx[i],
+                                               &assMainTw[i], &assMainTh[i]) : 0;
         clock_gettime(CLOCK_MONOTONIC, &g1);
         assSubGpu += ass_ms_entre(&g0, &g1);
         continue;
@@ -1668,7 +1681,9 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       if (gama != 1.0 || contraste != 1.0) {
         r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
       }
-      gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
+      /* A textura do blur da GPU pode ser maior que a imagem (classe de tamanho,
+       * sobra transparente a direita e embaixo): desenha a textura inteira. */
+      gfx_rect((GfxRect){ dx, dy, (float)assMainTw[i] / esc, (float)assMainTh[i] / esc }, tex, GFX_MARCA,
                0, 0, 0, 0, r, g, b, alpha * op);
     } else {
       gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_TEXTO,
@@ -2635,6 +2650,16 @@ static void ass_bench_talvez(long long agora, unsigned geracao) {
 #endif
 
 
+/* Grade dos quadros (assrender_definir_fps). So o fio GL. */
+static double assFps;
+void assrender_definir_fps(double fps) { assFps = fps > 1.0 && fps < 200.0 ? fps : 0.0; }
+static long long ass_na_grade(long long ms) {
+  /* O meio do quadro que contem `ms`; +0,1 quadro de folga (o PTS arredondado
+   * ao ms pode cair um tico antes de k/fps). */
+  if (assFps <= 0 || ms <= 0) return ms;
+  return llround((floor((double)ms * assFps / 1000.0 + 0.1) + 0.5) * 1000.0 / assFps);
+}
+
 /* assperf (render ahead): estado do fio GL. */
 static double assAdianteEma;          // ms; "Auto"
 static double assUploadEma;           // ms do upload de um quadro novo
@@ -2656,7 +2681,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   clock_gettime(CLOCK_MONOTONIC, &td0);
   memset(&novo, 0, sizeof novo);
   generation = __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE);
-  agora = (long long)llround(posSeg * 1000.0) + (long long)atrasoMs;
+  agora = ass_na_grade((long long)llround(posSeg * 1000.0) + (long long)atrasoMs);
 #if defined(NV_TPK) && defined(ASS_NV_API)
   ass_globais_aplicar();   // fios do blur: na hora, mesmo pausado
   ass_bench_talvez(agora, generation);
@@ -2683,7 +2708,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     assperf_med_adiante((double)adiante);
   }
   segurar = adiante > 0 && assperf_get(AP_SEGURAR);
-  pedido = agora + adiante;
+  pedido = ass_na_grade(agora + adiante);
   if (novoCaminho != assCaminhoNovoAntes) {
     /* Trocou de caminho com a faixa ligada: nada de um serve ao outro. */
     if (assCaminhoNovoAntes >= 0) { ass_main_soltar(); ass_tc_apagar(); }
@@ -2863,6 +2888,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     sb.desenho = subNovo ? assSubDesenho : 0; sb.adiante = subAdiante;
     assperf_sub_somar(&sb); }
 #if ASS_GPU
+  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_aparar(assGlQuadro);
   if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) {
     AgbPassos ps; AssperfGpuPassos gp;
     assgpublur_passos(&ps);
@@ -2977,6 +3003,7 @@ void assrender_definir_texto_estilo(const PlainAssStyle *style) { (void)style; }
 int assrender_carregar(const char *corpo, size_t tamanho, unsigned geracao) { (void)corpo; (void)tamanho; (void)geracao; return 0; }
 int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) { (void)corpo; (void)tamanho; (void)geracao; return 0; }
 void assrender_limpar(void) { assGeracao++; }
+void assrender_definir_fps(double fps) { (void)fps; }
 void assrender_limpar_fontes(void) {}
 void assrender_aliviar(void) {}
 int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanho) {

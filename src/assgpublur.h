@@ -68,6 +68,11 @@ void assgpublur_passos(AgbPassos *out);
 // Custo esperado de um gaussiano novo deste tamanho na GPU (ms, medido).
 double assgpublur_custo(long area);
 void assgpublur_apagar(void);           // solta tudo da GPU (troca de faixa)
+// Tamanho da TEXTURA devolvida pelo ultimo assgpublur_obter (>= a imagem: classe
+// de tamanho, a sobra transparente). Desenhe a textura inteira com este tamanho.
+void assgpublur_ultimo_tam(int *w, int *h);
+// Chamar por quadro: depois de ~5 s sem blur novo solta caches e reserva.
+void assgpublur_aparar(unsigned quadro);
 // So para testes: forca o formato intermediario (0 auto, 1 RGBA8).
 void assgpublur_forcar_rgba8(int on);
 

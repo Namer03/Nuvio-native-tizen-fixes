@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "颜色与玻璃"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "ASS 字幕的颜色、位置和同时出现的台词。"),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "外挂字幕的颜色、位置和同时出现的台词，控制栏隐藏时同样有效。"),
+  T("Correção da legenda", "字幕校正"),
   T("Correção desfeita; o atraso manual continua", "已撤销校正，手动延迟保留"),
   T("Correções", "修复"),
   T("Correções e opções de fontes.", "修正与片源选项。"),

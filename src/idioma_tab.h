@@ -1515,6 +1515,7 @@
   { "Cores e vidro", "Colors and glass" },
   { "Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Colors, positions and simultaneous lines in ASS subtitles." },
   { "Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Colors, positions and simultaneous lines in external subtitles, including when the controls are hidden." },
+  { "Correção da legenda", "Subtitle correction" },
   { "Correção desfeita; o atraso manual continua", "Correction undone; manual delay kept" },
   { "Correções", "Fixes" },
   { "Correções e opções de fontes.", "Fixes and source options." },

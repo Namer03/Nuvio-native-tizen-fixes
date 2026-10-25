@@ -52,8 +52,10 @@
 
 #define AGB_PARES_MAX 8              // pares de leituras do gaussiano (ate sigma ~4,5 no nivel)
 #define AGB_NIVEL_MAX 7
-#define AGB_BLUR_BYTES (32u * 1024u * 1024u)
-#define AGB_FINAL_BYTES (32u * 1024u * 1024u)
+/* 25/10 (owner: memory matters): 24 + 24 MB, and the reserve 16 MB; all of it
+ * is trimmed after a few seconds without blur work (assgpublur_aparar). */
+#define AGB_BLUR_BYTES (24u * 1024u * 1024u)
+#define AGB_FINAL_BYTES (24u * 1024u * 1024u)
 
 // ---- formato intermediario ------------------------------------------------------
 typedef struct { GLint interno; GLenum fmt, tipo; int bpp; const char *nome; } AgbFmt;
@@ -294,6 +296,7 @@ static struct {
   GLint fbo, vp[4], prog, tex0, tex1, ativa, vbo, aSize, aType, aNorm, aStride, aOn, unpack;
   void *aPtr;
   GLboolean blend, tesoura, dither, mascara[4];
+  GLfloat limpa[4];      // glClearColor do app (a passada final limpa a textura)
   int aberto, medir;
   struct timespec t0, tUlt, tIni;
   int trabalho;
@@ -412,7 +415,11 @@ void assgpublur_lote_ini(int medir) {
   memset(&E, 0, sizeof E);
   clock_gettime(CLOCK_MONOTONIC, &E.tIni);
   E.aberto = 1;
-  E.medir = medir && (!timerQuebrado || (++loteAmostra % 16u) == 0);
+  /* 25/10: sem medida na GPU. Na S95C as consultas nunca responderam (64 de 64
+   * pendentes) e o glFinish da alternativa travava o proprio fio GL; os passos
+   * do lote (relogio da CPU, assgpublur_passos) ficam. */
+  (void)medir; (void)loteAmostra;
+  E.medir = 0;
   P.lotes++;
   consultas_colher();
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &E.fbo);
@@ -435,6 +442,7 @@ void assgpublur_lote_ini(int medir) {
   E.tesoura = glIsEnabled(GL_SCISSOR_TEST);
   E.dither = glIsEnabled(GL_DITHER);
   glGetBooleanv(GL_COLOR_WRITEMASK, E.mascara);
+  glGetFloatv(GL_COLOR_CLEAR_VALUE, E.limpa);
   clock_gettime(CLOCK_MONOTONIC, &ts);
   P.salvar += (double)(ts.tv_sec - E.tIni.tv_sec) * 1000.0 + (double)(ts.tv_nsec - E.tIni.tv_nsec) / 1e6;
 }
@@ -479,6 +487,7 @@ void assgpublur_lote_fim(void) {
     if (E.tesoura) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
     if (E.dither) glEnable(GL_DITHER); else glDisable(GL_DITHER);
     glColorMask(E.mascara[0], E.mascara[1], E.mascara[2], E.mascara[3]);
+    glClearColor(E.limpa[0], E.limpa[1], E.limpa[2], E.limpa[3]);
 #ifndef NV_AGB_TESTE
     gfx_estado_externo();   // o cache de programa/textura do gfx nao vale mais
 #endif
@@ -567,9 +576,15 @@ void assgpublur_forcar_rgba8(int on) { forcarRgba8 = on; }
  * passadas). As soltas voltam para esta reserva, por tipo e tamanho exato, e
  * a proxima do mesmo tamanho reaproveita o armazenamento. */
 enum { TX_MEIO, TX_RGBA, TX_LUM };
-#define AGB_RESERVA 64
-#define AGB_RESERVA_BYTES (24u * 1024u * 1024u)
-typedef struct { GLuint tex; int tipo, w, h; unsigned uso; } AgbRes;
+#define AGB_RESERVA 128
+#define AGB_RESERVA_BYTES (16u * 1024u * 1024u)
+/* `liberado` = quadro GL em que voltou para a reserva: so sai de novo dois
+ * quadros depois (a GPU da Mali ainda pode estar lendo; regravar antes faria o
+ * driver esperar ou copiar a textura inteira). */
+typedef struct { GLuint tex; int tipo, w, h; unsigned uso, liberado; } AgbRes;
+static unsigned quadroAgora;   // o `quadro` do pedido em curso (assgpublur_obter)
+static int ultW, ultH;          // tamanho da textura do ultimo assgpublur_obter
+static unsigned ultimoTrabalho; // quadro do ultimo blur/final novo (aparar)
 static AgbRes reserva[AGB_RESERVA];
 static int nRes;
 static size_t bytesRes;
@@ -593,7 +608,10 @@ static GLuint res_pegar(int tipo, int w, int h, int *nova) {
   GLuint t = 0;
   relogio++;
   for (i = 0; i < nRes; i++)
-    if (reserva[i].tipo == tipo && reserva[i].w == w && reserva[i].h == h) {
+    /* So a textura que a CPU regrava (TX_LUM, glTexSubImage2D) espera dois
+     * quadros: as que so a GPU desenha seguem a ordem dos comandos. */
+    if (reserva[i].tipo == tipo && reserva[i].w == w && reserva[i].h == h &&
+        (tipo != TX_LUM || quadroAgora - reserva[i].liberado >= 2)) {
       t = reserva[i].tex;
       bytesRes -= tx_bytes(tipo, w, h);
       reserva[i] = reserva[--nRes];
@@ -626,6 +644,7 @@ static void res_soltar(GLuint t, int tipo, int w, int h) {
   if (b > AGB_RESERVA_BYTES) { glDeleteTextures(1, &t); return; }
   reserva[nRes].tex = t; reserva[nRes].tipo = tipo; reserva[nRes].w = w; reserva[nRes].h = h;
   reserva[nRes].uso = ++relogio;
+  reserva[nRes].liberado = quadroAgora;
   nRes++;
   bytesRes += b;
 }
@@ -658,7 +677,8 @@ typedef struct {
 typedef struct {
   unsigned long long chave;
   GLuint tex;
-  int w, h;
+  int w, h;              // a imagem
+  int tw, th;            // a textura (classe de tamanho: w, h arredondados para cima)
   unsigned uso;
 } AgbFinal;
 static AgbBlur *cb; static int nb, capb; static size_t bytesB;
@@ -690,10 +710,32 @@ static void final_caber(size_t novo, unsigned quadro) {
     for (i = 0; i < nf; i++)
       if (quadro - cf[i].uso >= 2 && (v < 0 || cf[i].uso < cf[v].uso)) v = i;
     if (v < 0) break;
-    res_soltar(cf[v].tex, TX_RGBA, cf[v].w, cf[v].h);
-    bytesF -= (size_t)cf[v].w * (size_t)cf[v].h * 4u;
+    res_soltar(cf[v].tex, TX_RGBA, cf[v].tw, cf[v].th);
+    bytesF -= (size_t)cf[v].tw * (size_t)cf[v].th * 4u;
     cf[v] = cf[--nf];
   }
+}
+
+/* Fim de cena pesada: sem blur novo ha ~5 s (300 quadros GL), solta o que nao
+ * foi desenhado nos ultimos ~2 s e esvazia a reserva (memoria de volta). */
+void assgpublur_aparar(unsigned quadro) {
+  int i;
+  if (pronto != 1 || quadro - ultimoTrabalho < 300u || (!nb && !nf && !nRes)) return;
+  for (i = 0; i < nb; ) {
+    if (quadro - cb[i].uso >= 120u) { glDeleteTextures(1, &cb[i].tex); bytesB -= cb[i].bytes; cb[i] = cb[--nb]; }
+    else i++;
+  }
+  for (i = 0; i < nf; ) {
+    if (quadro - cf[i].uso >= 120u) {
+      glDeleteTextures(1, &cf[i].tex); bytesF -= (size_t)cf[i].tw * (size_t)cf[i].th * 4u; cf[i] = cf[--nf];
+    } else i++;
+  }
+  for (i = 0; i < nRes; i++) glDeleteTextures(1, &reserva[i].tex);
+  nRes = 0; bytesRes = 0;
+  ultimoTrabalho = quadro;   // so de novo depois de outra cena
+#ifndef NV_AGB_TESTE
+  gfx_tex_esquecer(0);
+#endif
 }
 
 void assgpublur_apagar(void) {
@@ -746,6 +788,27 @@ static int pesos(double v2, float *w0, float *w, float *o) {
   }
   *w0 = (float)(g[0] / soma);
   return n;
+}
+
+/* CLASSE DE TAMANHO (25/10): a textura final arredonda w e h para cima (32 px;
+ * 64 acima de 512). No log da S95C 284 de 327 finais criavam textura nova
+ * (tamanho exato raramente se repete com o letreiro rolando) e criar textura
+ * na Mali e o grosso dos 0,85 ms por passada final. A sobra fica transparente
+ * e o desenho usa o tamanho da textura (assgpublur_ultimo_tam). */
+static int classe(int v) { int m = v > 512 ? 64 : 32; return (v + m - 1) / m * m; }
+void assgpublur_ultimo_tam(int *w, int *h) { *w = ultW; *h = ultH; }
+
+static void desenhar_em(GLuint tex, int w, int h);
+/* Final numa textura da classe: limpa a textura inteira (a sobra de quem a usou
+ * antes; no tile da Mali o clear tambem poupa a leitura do conteudo velho) e
+ * desenha so a parte w x h. */
+static void desenhar_em_limpo(GLuint tex, int tw, int th, int w, int h) {
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+  glViewport(0, 0, tw, th);
+  glClearColor(0, 0, 0, 0);
+  glClear(GL_COLOR_BUFFER_BIT);
+  desenhar_em(tex, w, h);
 }
 
 static void desenhar_em(GLuint tex, int w, int h) {
@@ -857,7 +920,8 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   unsigned long long kb, kf;
   AgbBlur *b = NULL;
   GLuint fillTex = 0, out = 0, prog;
-  int i, novoBlur = 0, nova;
+  int i, novoBlur = 0, nova, tw, th;
+  quadroAgora = quadro;
   AgbLocFinal *l;
   *chaveOut = 0;
   if (pronto != 1 || !p->src || p->w <= 0 || p->h <= 0 || p->srcW <= 0 || p->srcH <= 0 ||
@@ -877,6 +941,7 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   for (i = 0; i < nf; i++)
     if (cf[i].chave == kf && cf[i].w == p->w && cf[i].h == p->h) {
       cf[i].uso = quadro; S.reusos++; *chaveOut = kf;
+      ultW = cf[i].tw; ultH = cf[i].th;
       return cf[i].tex;
     }
   if (p->soCache) return 0;
@@ -902,9 +967,10 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   struct timespec tf0;
   clock_gettime(CLOCK_MONOTONIC, &tf0);
   emFinal = 1;
-  final_caber((size_t)p->w * (size_t)p->h * 4u, quadro);
+  tw = classe(p->w); th = classe(p->h);
+  final_caber((size_t)tw * (size_t)th * 4u, quadro);
   glActiveTexture(GL_TEXTURE0);
-  out = res_pegar(TX_RGBA, p->w, p->h, &nova);
+  out = res_pegar(TX_RGBA, tw, th, &nova);
   if (p->fix && p->fill) {
     glActiveTexture(GL_TEXTURE1);
     fillTex = subir_lum(p->fill, p->fillW, p->fillH, GL_NEAREST);
@@ -929,7 +995,7 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   }
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, b->tex);
-  desenhar_em(out, p->w, p->h);
+  desenhar_em_limpo(out, tw, th, p->w, p->h);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
   emFinal = 0;
   P.finais++; P.finalMs += ms_desde(&tf0);
@@ -940,16 +1006,18 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
     res_soltar(fillTex, TX_LUM, p->fillW, p->fillH);
     glActiveTexture(GL_TEXTURE0);
   }
-  if (glGetError() != GL_NO_ERROR) { res_soltar(out, TX_RGBA, p->w, p->h); S.falhas++; return 0; }
+  if (glGetError() != GL_NO_ERROR) { res_soltar(out, TX_RGBA, tw, th); S.falhas++; return 0; }
   if (nf == capf) {
     int nc = capf ? capf * 2 : 64;
     AgbFinal *nv = realloc(cf, (size_t)nc * sizeof *nv);
-    if (!nv) { res_soltar(out, TX_RGBA, p->w, p->h); S.falhas++; return 0; }
+    if (!nv) { res_soltar(out, TX_RGBA, tw, th); S.falhas++; return 0; }
     cf = nv; capf = nc;
   }
   cf[nf].chave = kf; cf[nf].tex = out; cf[nf].w = p->w; cf[nf].h = p->h; cf[nf].uso = quadro;
+  cf[nf].tw = tw; cf[nf].th = th;
   nf++;
-  bytesF += (size_t)p->w * (size_t)p->h * 4u;
+  bytesF += (size_t)tw * (size_t)th * 4u;
+  ultW = tw; ultH = th; ultimoTrabalho = quadro;
   S.finais++;
   if (p->adiantado) S.adiantados++;
   if (E.medir && !usaTimer()) {

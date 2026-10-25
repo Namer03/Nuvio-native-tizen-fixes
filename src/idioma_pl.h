@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Kolory i szkło"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Kolory, pozycje i jednoczesne wiersze w napisach ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Kolory, pozycje i jednoczesne wiersze w napisach zewnętrznych, także gdy sterowanie jest ukryte."),
+  T("Correção da legenda", "Korekta napisów"),
   T("Correção desfeita; o atraso manual continua", "Korekta cofnięta; ręczne opóźnienie zostaje"),
   T("Correções", "Poprawki"),
   T("Correções e opções de fontes.", "Poprawki i opcje źródeł."),

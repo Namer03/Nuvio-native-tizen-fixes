@@ -1515,6 +1515,7 @@
   T("Cores e vidro", "Culori și sticlă"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Culori, poziții și replici simultane în subtitrările ASS."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Culori, poziții și replici simultane în subtitrările externe, inclusiv cu controalele ascunse."),
+  T("Correção da legenda", "Corecție subtitrare"),
   T("Correção desfeita; o atraso manual continua", "Corecție anulată; întârzierea manuală rămâne"),
   T("Correções", "Corecturi"),
   T("Correções e opções de fontes.", "Corecții și opțiuni pentru surse."),

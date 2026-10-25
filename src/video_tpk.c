@@ -156,6 +156,9 @@ static atomic_int posIncerta;          // 1 = seek feito, ainda sem leitura real
 static atomic_uint incertaTick;        // SDL_GetTicks do seek (1,5 s no maximo)
 static atomic_int buscaPedidaMs = -1;  // o alvo do ultimo seek (para o log)
 static struct { unsigned n; double soma, max; int relogioRuim; } amMed;   // sob amTrava
+#define AM_RAJADA 16
+static struct { int ms; double carimbo; } amRaj[AM_RAJADA];   // as ultimas leituras (anel, sob amTrava)
+static unsigned amRajN;
 static double monoAgora(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + ts.tv_nsec / 1e9;
@@ -280,6 +283,7 @@ void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboN
   msAnt = am.valido ? am.ms : -1;
   am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
   amMed.n++; amMed.soma += consultaMs; if (consultaMs > amMed.max) amMed.max = consultaMs;
+  if (motivo == 0) { amRaj[amRajN % AM_RAJADA].ms = ms; amRaj[amRajN % AM_RAJADA].carimbo = c; amRajN++; }
   if (ruim && !amMed.relogioRuim) { amMed.relogioRuim = 1; ruim = 2; }
   pthread_mutex_unlock(&amTrava);
   if (ruim == 2) printf("[relogio] host stamp is not on this clock (%.3f vs %.3f s): using arrival time\n", c, agora);
@@ -2125,11 +2129,41 @@ int video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned 
   *seq = sq;
   return 1;
 }
+/* Frame rate and HDR of the playing MKV (subtitle correction, legimagem.c).
+ * 0 = unknown (not an MKV, or the header has no DefaultDuration). */
+int video_tpk_quadro(double *fps, int *hdr) {
+  int i;
+  *fps = 0; *hdr = 0;
+  for (i = 0; i < mkvN; i++)
+    if (mkvFx[i].tipo == 1) {
+      if (mkvFx[i].quadroNs > 0) *fps = 1e9 / (double)mkvFx[i].quadroNs;
+      *hdr = mkvFx[i].transferencia == 16 || mkvFx[i].transferencia == 18 || mkvFx[i].dvPerfil > 0;
+      break;
+    }
+  return *fps > 1.0;
+}
 int video_pos_incerta(void) {
   if (!atomic_load(&posIncerta)) return 0;
   // Sem leitura em 1,5 s (consulta presa): volta ao de antes em vez de esconder.
   if (SDL_GetTicks() - atomic_load(&incertaTick) > 1500u) { atomic_store(&posIncerta, 0); return 0; }
   return 1;
+}
+/* As ultimas leituras tocando: "dt/dp" em ms desde a primeira (carimbo / posicao).
+ * dp - dt mostra se a posicao da TV anda liso (perto de 0) ou em degraus. */
+void video_tpk_leituras_rajada(char *dst, size_t n) {
+  unsigned i, k, ini;
+  size_t o = 0;
+  if (!n) return;
+  dst[0] = 0;
+  pthread_mutex_lock(&amTrava);
+  k = amRajN < AM_RAJADA ? amRajN : AM_RAJADA;
+  ini = amRajN - k;
+  for (i = 0; i < k && o + 24 < n; i++) {
+    unsigned a = (ini + i) % AM_RAJADA, z = ini % AM_RAJADA;
+    o += (size_t)snprintf(dst + o, n - o, "%s%.1f/%d", i ? " " : "",
+                          (amRaj[a].carimbo - amRaj[z].carimbo) * 1000.0, amRaj[a].ms - amRaj[z].ms);
+  }
+  pthread_mutex_unlock(&amTrava);
 }
 /* Para a linha [relogio] de 10 s: leituras, tempo medio e maximo da consulta. */
 void video_tpk_leituras(unsigned *n, double *media, double *max) {

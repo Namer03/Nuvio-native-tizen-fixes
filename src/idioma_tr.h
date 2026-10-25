@@ -1516,6 +1516,7 @@
   T("Cores e vidro", "Renkler ve cam"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "ASS altyazılarında renkler, konumlar ve eşzamanlı satırlar."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Harici altyazılarda renkler, konumlar ve eşzamanlı satırlar; denetimler gizliyken de."),
+  T("Correção da legenda", "Altyazı düzeltmesi"),
   T("Correção desfeita; o atraso manual continua", "Düzeltme geri alındı; manuel gecikme korunuyor"),
   T("Correções", "Düzeltmeler"),
   T("Correções e opções de fontes.", "Düzeltmeler ve kaynak seçenekleri."),

@@ -1515,6 +1515,7 @@
   T("Cores e vidro", "Farben und Glas"),
   T("Cores, posições e falas ao mesmo tempo nas legendas ASS.", "Farben, Positionen und gleichzeitige Zeilen in ASS-Untertiteln."),
   T("Cores, posições e falas simultâneas nas legendas externas, inclusive com os controles ocultos.", "Farben, Positionen und gleichzeitige Zeilen in externen Untertiteln, auch bei ausgeblendeten Bedienelementen."),
+  T("Correção da legenda", "Untertitelkorrektur"),
   T("Correção desfeita; o atraso manual continua", "Korrektur rückgängig; manuelle Verzögerung bleibt"),
   T("Correções", "Korrekturen"),
   T("Correções e opções de fontes.", "Korrekturen und Quellenoptionen."),
