@@ -616,7 +616,11 @@ static GLuint res_pegar(int tipo, int w, int h, int *nova) {
     /* So a textura que a CPU regrava (TX_LUM, glTexSubImage2D) espera dois
      * quadros: as que so a GPU desenha seguem a ordem dos comandos. */
     if (reserva[i].tipo == tipo && reserva[i].w == w && reserva[i].h == h &&
-        (modoFio ? quadroAgora - reserva[i].liberado >= 3 : tipo != TX_LUM || quadroAgora - reserva[i].liberado >= 2)) {
+        /* modo fio: so a FINAL (a UI desenha com ela em outro contexto) espera 3
+         * quadros da UI; as outras sao so do fio. Esperar todas fazia o fio criar
+         * ~1250 texturas por 10 s (log de 26/10) e a memoria da TV cair. */
+        ((modoFio && tipo == TX_RGBA) ? quadroAgora - reserva[i].liberado >= 3
+                                      : tipo != TX_LUM || quadroAgora - reserva[i].liberado >= 2)) {
       t = reserva[i].tex;
       bytesRes -= tx_bytes(tipo, w, h);
       reserva[i] = reserva[--nRes];

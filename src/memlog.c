@@ -6,6 +6,8 @@
 #endif
 
 static void (*avisoCb)(void);   // memlog_quando_aviso (fio principal)
+static void (*voltaCb)(void);   // memlog_quando_voltar
+static int aliviado;            // o aviso rodou e a memoria ainda nao voltou
 
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
 static int abaixo; // Compartilhado por FPS e player, ambos no fio principal.
@@ -38,8 +40,17 @@ void memlog_amostra(char *sufixo, size_t tamanho) {
   if (disponivel < MEMLOG_PISO_MB * 1024 && !abaixo) {
     printf("[mem] aviso MemAvailable<%dMB mem=%.1f/%.1fMB\n", MEMLOG_PISO_MB, rss / 1024.0, disponivel / 1024.0);
     fflush(stdout);
-    if (avisoCb) avisoCb();   // texturas + mkvass + texto + libass + heap
+    if (avisoCb) { avisoCb(); aliviado = 1; }   // texturas + mkvass + texto + libass + heap
     else memlog_devolver();
+  }
+  /* 26/10: o aviso para a colheita das legendas (mkvass) e ela nao voltava:
+   * depois de um seek a legenda sumia ate desligar e religar. Com 30 MB de
+   * folga acima do piso, quem pediu e avisado. */
+  if (aliviado && disponivel >= (MEMLOG_PISO_MB + 30) * 1024) {
+    aliviado = 0;
+    printf("[mem] memoria de volta mem=%.1f/%.1fMB\n", rss / 1024.0, disponivel / 1024.0);
+    fflush(stdout);
+    if (voltaCb) voltaCb();
   }
   abaixo = disponivel < MEMLOG_PISO_MB * 1024;
 #endif
@@ -96,6 +107,7 @@ void memlog_devolver(void) {
 }
 
 void memlog_quando_aviso(void (*cb)(void)) { avisoCb = cb; }
+void memlog_quando_voltar(void (*cb)(void)) { voltaCb = cb; }
 
 int memlog_pode_reabrir(long (*livre)(void), void (*aliviar)(void)) {
   long mb = livre();

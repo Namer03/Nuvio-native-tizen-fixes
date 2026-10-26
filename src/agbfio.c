@@ -80,6 +80,7 @@ static unsigned quadroUi;
 static AgbStats acSt;
 static AgbPassos acPs;
 static unsigned acEsperas;
+static double ocupadoMs;   // tempo do fio em pedidos desde agbfio_tomar_ocupado (Render resolution Auto)
 static double acEsperaMs;
 static EGLDisplay dpy;
 static EGLContext ctx;
@@ -220,6 +221,7 @@ static void *laco(void *u) {
       AfSync c = NULL;
       AgbStats st; AgbPassos ps;
       AfPronto *e;
+      double tj = agora_ms();
       assgpublur_lote_ini(0);
       tex = assgpublur_obter(&t.p, q, &k);
       if (tex) { assgpublur_ultimo_tam(&tw, &th); c = pFence(AF_SYNC_GPU_COMMANDS_COMPLETE, 0); }
@@ -230,6 +232,7 @@ static void *laco(void *u) {
       ultimoTrab = q;
       pthread_mutex_lock(&trava);
       soma_stats(&st); soma_passos(&ps);
+      ocupadoMs += agora_ms() - tj;
       e = achar(t.chave);
       if (!e) {
         if (nTab == capTab) {
@@ -459,6 +462,15 @@ void agbfio_apagar(void) {
   pthread_mutex_unlock(&trava);
 }
 
+double agbfio_tomar_ocupado(void) {
+  double v;
+  if (estado != 1) return 0;
+  pthread_mutex_lock(&trava);
+  v = ocupadoMs; ocupadoMs = 0;
+  pthread_mutex_unlock(&trava);
+  return v;
+}
+
 void agbfio_colher(AgbStats *st, AgbPassos *ps, unsigned *esperas, double *esperaMs) {
   pthread_mutex_lock(&trava);
   *st = acSt; *ps = acPs; *esperas = acEsperas; *esperaMs = acEsperaMs;
@@ -478,6 +490,7 @@ GLuint agbfio_obter(const AgbPedido *p, unsigned quadro, unsigned long long *cha
 }
 void agbfio_usar(unsigned long long chave, unsigned quadro) { (void)chave; (void)quadro; }
 int  agbfio_pronto(const AgbPedido *p) { (void)p; return 1; }
+double agbfio_tomar_ocupado(void) { return 0; }
 void agbfio_descartar_fila(void) {}
 void agbfio_apagar(void) {}
 void agbfio_colher(AgbStats *st, AgbPassos *ps, unsigned *esperas, double *esperaMs) {

@@ -3288,12 +3288,23 @@ static void recarregarFonteVOD(void) {
 // #415: ao lado das texturas saem tambem os buffers que tex_aliviar nao ve —
 // colheita/legenda do mkvass (parar grava o sidecar parcial e nao bloqueia) e
 // a grade de linhas rasterizadas. O texto se refaz sob demanda no quadro.
+static int mkvassAliviado;   // o aviso parou a colheita das legendas no meio do video
 static void aliviarMemoria(void) {
   tex_aliviar();
+  if (player_aberto() && (mkvass_estado() == MKVASS_COLHENDO || mkvass_estado() == MKVASS_PREPARANDO)) mkvassAliviado = 1;
   mkvass_parar();
   txt_aliviar();
   assrender_aliviar();
   memlog_devolver();
+}
+/* A colheita das legendas volta de onde parou (o documento em tela fica). */
+static void memoriaDeVolta(void) {
+  if (!mkvassAliviado) return;
+  mkvassAliviado = 0;
+  if (!player_aberto()) return;
+  printf("[mem] legendas: retomando a colheita (parada pelo aviso de memoria)\n");
+  fflush(stdout);
+  mkvass_retomar();
 }
 static void abrirFonteManualDireta(const Stream *s) {
   novaGeracaoFonte(); limparFontePendente();
@@ -3642,6 +3653,7 @@ int app_iniciar(const char *dirArte) {
   // #415: MemAvailable abaixo do piso -> despeja texturas, mkvass, texto,
   // libass e heap; sem isto o aviso so rodava malloc_trim.
   memlog_quando_aviso(aliviarMemoria);
+  memlog_quando_voltar(memoriaDeVolta);
   legenda2_vincular_atraso(ajustes_leg2_atraso(), ajustes_leg2_definir_atraso);
   // A faixa de audio escolhida a mao fica gravada por perfil (audiomemoria.h).
   audioesc_definir_memoria(audiomem_ler, audiomem_gravar);

@@ -1017,6 +1017,7 @@ static double ass_ms_entre(const struct timespec *a, const struct timespec *b) {
   return (double)(b->tv_sec - a->tv_sec) * 1000.0 + (double)(b->tv_nsec - a->tv_nsec) / 1e6;
 }
 
+static void ass_pod_devolver_assTrava(void);
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
@@ -1080,6 +1081,7 @@ static void *ass_worker_loop(void *unused) {
 #if ASS_GPU
       ass_adiar_aplicar_locked();
 #endif
+      ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
 #if ASS_GPU
       { ASS_NvDeferStats ds;
@@ -1726,7 +1728,13 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     assperf_med_upload(ass_ms_entre(&t0, &t1), enviados, assMain.count, reusadas, quadroNovo);
     assSubUpload = ass_ms_entre(&t0, &t1) - assSubGpu;
     if (assSubUpload < 0) assSubUpload = 0;
-    if (quadroNovo) assperf_escala_custo_gl(ass_ms_entre(&t0, &t1));   // Render resolution Auto
+    if (quadroNovo) {   // Render resolution Auto: com o fio proprio conta o tempo dele tambem
+      double gl = ass_ms_entre(&t0, &t1);
+#if ASS_GPU
+      if (assFioModo) { double f = agbfio_tomar_ocupado(); gl += f > 200.0 ? 200.0 : f; }
+#endif
+      assperf_escala_custo_gl(gl);
+    }
   } else if (cache) {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem
      * conta quadros GL sem desenho). */
@@ -1846,9 +1854,11 @@ static int *mapa_conta(AssMapa *m, unsigned long long k) {
   return &m->v[j];
 }
 
+static void ass_pod_soltar(void);
 static void ass_inc_esquecer(void) {
   pthread_mutex_lock(&incTrava);
   incPronto = 0; incEvN = 0; incCab = 0;
+  ass_pod_soltar();
   pthread_mutex_unlock(&incTrava);
 }
 
@@ -1886,6 +1896,81 @@ static int ass_inc_ev_por(int n) {
 }
 
 static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int manter, int simples);
+
+/* "Drop past events" + seek para tras (log de 26/10): a poda liberava as
+ * falas e elas so voltariam numa entrega nova do mkvass; com tudo ja colhido
+ * ele nao entrega, e a legenda sumia ate desligar e religar. Agora a poda so
+ * TIRA as falas da faixa do libass (o custo de varrer) e as guarda aqui; um
+ * pedido antes de assPodaLimite (seek para tras) devolve todas (o worker, na
+ * hora do proximo render). Sob incTrava. Faixa nova: soltas. */
+static ASS_Event *assPod;
+static unsigned long long *assPodH;
+static int assPodN, assPodCap;
+static long long assPodaLimite = LLONG_MIN;   // ate onde a poda tirou falas (ms)
+static int assPodaVoltar;                     // desenho -> worker: devolver as falas podadas
+#define ASS_POD_MAX 4000   // ~2-3 MB de texto no pior caso; as mais antigas saem
+static int ass_pod_guardar(const ASS_Event *e, unsigned long long h) {
+  if (assPodN >= ASS_POD_MAX) {
+    free(assPod[0].Name); free(assPod[0].Effect); free(assPod[0].Text); free(assPod[0].render_priv);
+    memmove(assPod, assPod + 1, (size_t)(assPodN - 1) * sizeof *assPod);
+    memmove(assPodH, assPodH + 1, (size_t)(assPodN - 1) * sizeof *assPodH);
+    assPodN--;
+  }
+  if (assPodN == assPodCap) {
+    int nc = assPodCap ? assPodCap * 2 : 1024;
+    ASS_Event *ne = (ASS_Event *)realloc(assPod, (size_t)nc * sizeof *ne);
+    unsigned long long *nh;
+    if (!ne) return 0;
+    assPod = ne;
+    nh = (unsigned long long *)realloc(assPodH, (size_t)nc * sizeof *nh);
+    if (!nh) return 0;
+    assPodH = nh; assPodCap = nc;
+  }
+  assPod[assPodN] = *e; assPodH[assPodN] = h; assPodN++;
+  return 1;
+}
+/* Worker, sob assTrava: devolve as falas podadas a faixa (pedido do desenho).
+ * incTrava vem antes de assTrava no lote: aqui so tenta; ocupada, fica para o
+ * proximo render. */
+static int *mapa_conta(AssMapa *m, unsigned long long k);
+static int ass_inc_ev_por(int n);
+static void ass_pod_devolver_assTrava(void) {
+  int i, devolvidas = 0;
+  if (!__atomic_load_n(&assPodaVoltar, __ATOMIC_ACQUIRE) || !assTrack) return;
+  if (pthread_mutex_trylock(&incTrava)) return;
+  if (incEvN == assTrack->n_events) {
+    for (i = 0; i < assPodN; i++) {
+      int id = ass_alloc_event(assTrack);
+      int *a;
+      if (id < 0 || !ass_inc_ev_por(assTrack->n_events)) { if (id >= 0) assTrack->n_events--; break; }
+      assTrack->events[id] = assPod[i];
+      incEv[incEvN++] = assPodH[i];
+      a = mapa_conta(&incAdd, assPodH[i]);
+      if (a) (*a)++;
+      devolvidas++;
+    }
+    if (devolvidas < assPodN) memmove(assPod, assPod + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPod),
+                              memmove(assPodH, assPodH + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPodH);
+    assPodN -= devolvidas;
+    assEventos = assTrack->n_events;
+    for (i = assTrack->n_events - devolvidas; i < assTrack->n_events; i++)
+      if (assTrack->events[i].Start < assCoberturaIni) assCoberturaIni = assTrack->events[i].Start;
+  }
+  if (!assPodN) __atomic_store_n(&assPodaLimite, LLONG_MIN, __ATOMIC_RELEASE);
+  __atomic_store_n(&assPodaVoltar, 0, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&incTrava);
+  if (devolvidas) {
+    printf("[assperf] seek back before the dropped lines: %d line(s) back in libass (%d events)\n", devolvidas, assTrack->n_events);
+    fflush(stdout);
+  }
+}
+
+static void ass_pod_soltar(void) {   // sob incTrava
+  int i;
+  for (i = 0; i < assPodN; i++) { free(assPod[i].Name); free(assPod[i].Effect); free(assPod[i].Text); free(assPod[i].render_priv); }
+  assPodN = 0;
+  __atomic_store_n(&assPodaLimite, LLONG_MIN, __ATOMIC_RELEASE);
+}
 
 /* Um lote do mkvass. 1 = aplicado; 0 = geracao velha (descartado).
  * Cabecalho diferente ou faixa nao pronta: a carga cheia de sempre. */
@@ -1941,7 +2026,7 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
     incPronto = 0;
     goto fim;
   }
-  if (reconstruir) { ass_flush_events(assTrack); incEvN = 0; }
+  if (reconstruir) { ass_flush_events(assTrack); incEvN = 0; ass_pod_soltar(); }
   if (incEvN != assTrack->n_events) {
     /* Desalinhou (nao deveria): refaz na proxima entrega. */
     pthread_mutex_unlock(&assTrava);
@@ -1972,7 +2057,7 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
         ASS_Event *e = &assTrack->events[k];
         int *a = mapa_conta(&incAdd, incEv[k]), *d = mapa_conta(&incDoc, incEv[k]);
         if (a && d && *a > *d && e->Start + e->Duration < limite) {
-          ass_free_event(assTrack, k);
+          if (!ass_pod_guardar(e, incEv[k])) ass_free_event(assTrack, k);   // sem memoria: some, como antes
           (*a)--; removidos++;
           continue;
         }
@@ -1980,6 +2065,8 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
         w++;
       }
       assTrack->n_events = w; incEvN = w;
+      if (removidos && limite > __atomic_load_n(&assPodaLimite, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&assPodaLimite, limite, __ATOMIC_RELEASE);
     } }
   total = assTrack->n_events;
   assEventos = total;
@@ -2020,6 +2107,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
     size_t cabN = ass_inc_cabecalho(corpo, tamanho);
     pthread_mutex_lock(&incTrava);
     incPronto = 0; incEvN = 0; incGeracao = geracao; incCab = simples ? 0 : ass_hash_bytes(corpo, cabN);
+    ass_pod_soltar();   // as podadas eram da faixa que sai
     pthread_mutex_unlock(&incTrava); }
   pthread_mutex_lock(&assTrava);
   if (geracao != __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE)) {
@@ -2817,6 +2905,12 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     ++assSerial;
     saltou = 1;
   }
+  /* Seek para tras alem da poda: as falas de la voltam pelo mkvass. */
+  { long long lim = __atomic_load_n(&assPodaLimite, __ATOMIC_ACQUIRE);
+    if (lim != LLONG_MIN && agora < lim + 500 && !__atomic_load_n(&assPodaVoltar, __ATOMIC_ACQUIRE)) {
+      __atomic_store_n(&assPodaVoltar, 1, __ATOMIC_RELEASE);
+      assTemUltimoPedido = 0;   // o worker renderiza de novo (ja com as falas de volta)
+    } }
   /* Com "Hold until due" a fila cheia (ou grande demais) para os pedidos ate
    * um quadro sair: sem isso o worker renderizaria sempre mais adiante e o
    * quadro "devido" nunca chegaria. */

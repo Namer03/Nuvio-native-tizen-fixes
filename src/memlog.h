@@ -19,4 +19,6 @@ int memlog_pode_reabrir(long (*livre)(void), void (*aliviar)(void));
 // #415: o aviso de MemAvailable baixo roda `cb` em vez de so malloc_trim —
 // app.c registra aliviarMemoria (texturas + mkvass + texto + libass + heap).
 void memlog_quando_aviso(void (*cb)(void));
+// Depois de um aviso, quando a memoria volta (piso + 30 MB): quem parou algo retoma.
+void memlog_quando_voltar(void (*cb)(void));
 #endif

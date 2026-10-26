@@ -34,6 +34,9 @@ int  agbfio_pronto(const AgbPedido *p);
 // texturas prontas ficam (voltar ao mesmo trecho nao borra de novo).
 void agbfio_descartar_fila(void);
 void agbfio_apagar(void);     // troca de faixa
+// ms que o fio passou borrando desde a ultima chamada (Render resolution Auto
+// conta isto como o custo de GL do quadro novo, como antes na UI).
+double agbfio_tomar_ocupado(void);
 // O que o fio fez desde a ultima chamada (copia e zera).
 void agbfio_colher(AgbStats *st, AgbPassos *ps, unsigned *esperas, double *esperaMs);
 
