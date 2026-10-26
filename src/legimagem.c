@@ -106,10 +106,10 @@ void legimagem_valores(int *leve, int *pesada, int *agoraPesada) {
   *leve = valor_leve(); *pesada = valor_pesado(); *agoraPesada = assperf_pesado();
 }
 
-void legimagem_ajustar(int deltaMs) {
-  char k[12], tp[24]; int i, antes, pesada;
+void legimagem_ajustar(int deltaMs, int pesada) {
+  char k[12], tp[24]; int i, antes;
   ler();
-  pesada = assperf_pesado();   // o valor da cena que esta na tela
+  if (pesada < 0) pesada = assperf_pesado();   // -1: o valor da cena que esta na tela
   if (pesada) chavePesada(k, sizeof k); else chaveAtual(k, sizeof k, NULL, NULL);
   i = achar(k);
   if (i < 0) {
@@ -145,7 +145,7 @@ double legimagem_fps(void) {
 int  legimagem_disponivel(void) { return 0; }
 int  legimagem_ms(void) { return 0; }
 void legimagem_valores(int *leve, int *pesada, int *agoraPesada) { *leve = *pesada = 0; *agoraPesada = 0; }
-void legimagem_ajustar(int deltaMs) { (void)deltaMs; }
+void legimagem_ajustar(int deltaMs, int pesada) { (void)deltaMs; (void)pesada; }
 void legimagem_tipo(char *dst, size_t n) { if (n) dst[0] = 0; }
 double legimagem_fps(void) { return 0.0; }
 #endif

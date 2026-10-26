@@ -339,6 +339,8 @@ static struct {
 } A;
 
 static double agoraS(void);
+static int pesado_locked(double t);
+static struct { double ms[20]; long long id[20]; double ult, leveAcum, leveDesde; int on; } CG;   /* ver carga_* */
 
 static double auto_custo_locked(double t) {
   /* Each side ages on its own: a side with no new frame for 1 s counts 0. */
@@ -372,49 +374,82 @@ double assperf_escala_quadro(void) {
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
   custo = auto_custo_locked(t);
-  if (!A.em75) {
-    int pronto = A.ignora <= 0 && (A.nLib > 0 || A.nGl > 0);
-    if (pronto && (custo > AUTO_FORTE_MS || (custo > AUTO_DESCE_MS && t - A.desde >= AUTO_MIN100_S)))
-      auto_trocar_locked(1, t);
-  } else {
-    double parado = t - A.ultAmostra;
-    if (parado > AUTO_OCIOSO_S || (parado <= 1.0 && custo < AUTO_SOBE_MS && A.ignora <= 0 && (A.nLib > 0 || A.nGl > 0))) {
-      if (!A.leveDesde) A.leveDesde = t;
-      if (t - A.leveDesde >= AUTO_LEVE_S && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t);
-    } else if (parado <= 1.0 && A.ignora <= 0 && custo >= AUTO_SOBE_MS) A.leveDesde = 0;
-    /* else: a pause of 1-8 s, or frames still being ignored: hold */
-  }
+  (void)custo;
+  /* 26/10 (log 12): the cost of ONE frame sent the fingers scene (19:00, one
+   * 42 ms thumb frame) to 75 %. Auto now follows the heavy-scene flag, which
+   * measures subtitle work PER SECOND (carga_*); the timings stay the owner's
+   * (5 s minimum at 75 %, 2 s at 100 %, light = 3 s, idle 8 s). */
+  { int pesado = pesado_locked(t);
+    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
+    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) { A.leveDesde = CG.leveDesde ? CG.leveDesde : t - AUTO_LEVE_S; auto_trocar_locked(0, t); } }
   r = A.em75 ? 0.75 : 1.0;
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
 
-/* CENA PESADA para a correcao da legenda (legimagem.c; dono 26/10: 140-150 ms
- * na cena pesada, 190-210 na leve). O custo de um quadro novo: libass no worker
- * mais o desenho e o fio do blur na GPU (assperf_carga_gl). Liga acima de
- * PES_LIGA_MS, desliga abaixo de PES_DESLIGA_MS depois de 1 s; 1,5 s sem
- * quadro novo = leve (nada novo para chegar atrasado). */
-#define PES_LIGA_MS    25.0
-#define PES_DESLIGA_MS 12.0
-static struct { double ema, ult, abaixoDesde; int on; } PES;
+/* CENA PESADA (correcao da legenda em legimagem.c, Render resolution Auto,
+ * um quadro sim um nao no assrender.c). Dono 26/10, log 12: pelo custo de UM
+ * quadro novo a cena dos dedos (19:00) virava pesada a cada quadro de 40 ms e
+ * a do celular (22:12) voltava a leve no meio. Agora: o TRABALHO das legendas
+ * POR SEGUNDO (libass no worker + desenho + fio do blur), numa janela de 2 s.
+ * Nos logs 9 e 12: dedos 2-66 ms/s, celular 330-624 ms/s.
+ *   - pesada acima de CG_LIGA na janela;
+ *   - leve so depois de CG_LEVE_S segundos de quadros novos abaixo de
+ *     CG_DESLIGA (pausa nao conta como leve: o tempo so anda entre amostras);
+ *   - CG_OCIOSO_S sem nada novo (a cena acabou): leve. */
+#define CG_BALDES   20      /* 100 ms cada: 2 s */
+#define CG_LIGA     300.0   /* ms de trabalho por segundo */
+#define CG_DESLIGA  150.0
+#define CG_LEVE_S   3.0
+#define CG_OCIOSO_S 8.0
+static double carga_locked(double t) {
+  long long b = (long long)floor(t * 10.0);
+  double soma = 0;
+  int i;
+  for (i = 0; i < CG_BALDES; i++) if (CG.id[i] <= b && b - CG.id[i] < CG_BALDES) soma += CG.ms[i];
+  return soma / (CG_BALDES / 10.0);
+}
+static void carga_somar_locked(double t, double ms) {
+  long long b = (long long)floor(t * 10.0);
+  int i = (int)(b % CG_BALDES);
+  double c, dt = CG.ult > 0 ? t - CG.ult : 0;
+  if (CG.id[i] != b) { CG.id[i] = b; CG.ms[i] = 0; }
+  CG.ms[i] += ms > 0 ? ms : 0;
+  c = carga_locked(t);
+  if (!CG.on) {
+    if (c > CG_LIGA) {
+      CG.on = 1; CG.leveAcum = 0; CG.leveDesde = 0;
+      printf("[assperf] subtitles heavy: on (%.0f ms of subtitle work per second)\n", c);
+      fflush(stdout);
+    }
+  } else if (c < CG_DESLIGA) {
+    CG.leveAcum += dt < 0 ? 0 : dt > 0.25 ? 0.25 : dt;   /* so tocando: pausa nao manda tique (assrender) */
+    if (!CG.leveDesde) CG.leveDesde = t;
+    if (CG.leveAcum >= CG_LEVE_S) {
+      CG.on = 0;
+      printf("[assperf] subtitles heavy: off (light for %.0f s, %.0f ms per second)\n", CG.leveAcum, c);
+      fflush(stdout);
+    }
+  } else { CG.leveAcum = 0; CG.leveDesde = 0; }
+  CG.ult = t;
+}
+static int pesado_locked(double t) {
+  if (CG.on && CG.ult > 0 && t - CG.ult > CG_OCIOSO_S) {
+    CG.on = 0;
+    printf("[assperf] subtitles heavy: off (nothing new for %.0f s)\n", CG_OCIOSO_S);
+    fflush(stdout);
+  }
+  return CG.on;
+}
 void assperf_carga_gl(double ms) {
-  double t = agoraS(), lib;
   pthread_mutex_lock(&autoTrava);
-  lib = t - A.ultLib > 1.0 ? 0.0 : A.emaLib;
-  PES.ema = PES.ult > 0 && t - PES.ult < 1.5 ? PES.ema * 0.7 + (ms + lib) * 0.3 : ms + lib;
-  PES.ult = t;
-  if (!PES.on && PES.ema > PES_LIGA_MS) { PES.on = 1; PES.abaixoDesde = 0; }
-  else if (PES.on && PES.ema < PES_DESLIGA_MS) {
-    if (!PES.abaixoDesde) PES.abaixoDesde = t;
-    else if (t - PES.abaixoDesde >= 1.0) PES.on = 0;
-  } else if (PES.on) PES.abaixoDesde = 0;
+  carga_somar_locked(agoraS(), ms);
   pthread_mutex_unlock(&autoTrava);
 }
 int assperf_pesado(void) {
-  double t = agoraS();
   int r;
   pthread_mutex_lock(&autoTrava);
-  r = PES.on && t - PES.ult < 1.5;
+  r = pesado_locked(agoraS());
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
@@ -423,7 +458,8 @@ int assperf_legendas_pesadas(void) {
   double t = agoraS();
   int r;
   pthread_mutex_lock(&autoTrava);
-  r = A.em75 || (t - A.ultAmostra < 2.0 && auto_custo_locked(t) > AUTO_DESCE_MS);
+  r = A.em75 || pesado_locked(t);
+  (void)t;
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
@@ -431,6 +467,7 @@ int assperf_legendas_pesadas(void) {
 void assperf_escala_custo(double libassMs) {
   pthread_mutex_lock(&autoTrava);
   A.ultAmostra = A.ultLib = agoraS();
+  carga_somar_locked(A.ultLib, libassMs);   /* o worker conta na carga por segundo */
   if (A.ignora > 0) A.ignora--;
   else { A.emaLib = A.nLib ? A.emaLib * 0.7 + libassMs * 0.3 : libassMs; A.nLib++; }
   pthread_mutex_unlock(&autoTrava);
@@ -447,6 +484,7 @@ void assperf_escala_reset(void) {
   pthread_mutex_lock(&autoTrava);
   if (A.em75) { A.seg75 += agoraS() - A.marca; A.em75 = 0; }
   A.emaLib = A.emaGl = 0; A.nLib = A.nGl = 0; A.ignora = 0; A.leveDesde = 0; A.desde = agoraS();
+  memset(&CG, 0, sizeof CG);   /* faixa nova: a carga comeca do zero */
   pthread_mutex_unlock(&autoTrava);
 }
 

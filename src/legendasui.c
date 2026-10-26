@@ -185,6 +185,7 @@ void legendasui_definir_sync(const LegendasSyncProvider *p) {
 }
 
 // --- rows --------------------------------------------------------------------------
+static int corrPesada;   // Subtitle correction row: 0 = Left/Right edit the light value, 1 = the heavy one
 typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_PAR, LR_CORR } LuiTipo;
 typedef struct {
   LuiTipo tipo;
@@ -613,7 +614,7 @@ int legendasui_evento(const SDL_Event *e) {
     int d = k == SDLK_RIGHT ? 1 : -1;
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
-    if (l && l->tipo == LR_CORR) { legimagem_ajustar(5 * d); return LEGUI_TRATADO; }
+    if (l && l->tipo == LR_CORR) { legimagem_ajustar(5 * d, corrPesada); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -635,7 +636,7 @@ int legendasui_evento(const SDL_Event *e) {
       case LR_CAND: escolher(l->slot, l->cand >= 0 ? &cand[l->cand] : NULL); break;
       case LR_ALVO: alvo = !alvo; break;
       case LR_ATRASO: break;
-      case LR_CORR: break;
+      case LR_CORR: corrPesada = !corrPesada; break;   // Enter: Left/Right edit the other value
       case LR_SYNC: {
         const char *rot[4];
         int n = nAcoes(l->slot, rot, 4);
@@ -849,15 +850,16 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       *icone = "aj_clock";
       break; }
     case LR_CORR: {
-      // "Automatic · 200 ms · 24 fps": the learned value for this kind of video;
-      // left/right nudge it (5 ms), it stays automatic.
+      // "Automatic · [190] / 140 ms · 140 em uso · 24 fps": light / heavy value
+      // for this kind of video. Brackets = the one Left/Right nudge (5 ms);
+      // Enter switches (owner 26/10). The scene flag picks the one in use.
       char tp[24];
       legimagem_tipo(tp, ts > 24 ? 24 : ts);
       snprintf(nome, tn, "%s", i18n("Correção da legenda"));
       { int lv, ps, ag;   // light / heavy scene value; the one in use now in brackets
         legimagem_valores(&lv, &ps, &ag);
-        if (ag) snprintf(sub, ts, "%s · %d / [%d] ms · %s", i18n("Automático"), lv, ps, tp);
-        else snprintf(sub, ts, "%s · [%d] / %d ms · %s", i18n("Automático"), lv, ps, tp); }
+        if (corrPesada) snprintf(sub, ts, "%s · %d / [%d] ms · %d %s · %s", i18n("Automático"), lv, ps, ag ? ps : lv, i18n("em uso"), tp);
+        else snprintf(sub, ts, "%s · [%d] / %d ms · %d %s · %s", i18n("Automático"), lv, ps, ag ? ps : lv, i18n("em uso"), tp); }
       *icone = "aj_clock";
       break; }
     case LR_CAND:

@@ -13,7 +13,7 @@ int  legimagem_disponivel(void);          // 1 on the .tpk
 int  legimagem_ms(void);                  // correction for the video playing now (ms; heavy scenes have their own)
 // Both values for this kind of video and whether a heavy scene is on screen now.
 void legimagem_valores(int *leve, int *pesada, int *agoraPesada);
-void legimagem_ajustar(int deltaMs);      // nudge (+ = subtitles later), saved for this kind of video and scene (light/heavy)
+void legimagem_ajustar(int deltaMs, int pesada);   // nudge (+ = subtitles later) the light (0) or heavy (1) value of this kind of video; -1 = the scene on screen
 // "24 fps", "24 fps HDR", "video" when unknown.
 void legimagem_tipo(char *dst, size_t n);
 double legimagem_fps(void);               // frame rate of the video playing now (0 = unknown)

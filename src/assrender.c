@@ -2960,6 +2960,9 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
    * 3 vezes seguidas. Ai nao se adianta nada: a pausa mostra o quadro exato. */
   if (agora == assUltimoAgora) { if (assParadoN < 1000) assParadoN++; } else assParadoN = 0;
   assUltimoAgora = agora;
+  /* Cena pesada por segundo (assperf.c): tocando, cada quadro de UI e um tique
+   * de trabalho 0 — uma cena parada que toca conta como leve; pausado, nao. */
+  if (assParadoN < 3) assperf_carga_gl(0.0);
   if (fixo != 0 && assParadoN < 3) {
     if (fixo > 0) adiante = fixo;
     else {
