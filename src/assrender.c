@@ -644,12 +644,21 @@ static void ass_fila_tirar_locked(int i, AssCpuFrame *saida) {
 /* Publica (worker). Teto 1 = substitui, como o assPronto antigo; com mais,
  * a fila cheia perde o mais velho. */
 static void ass_fila_publicar_locked(AssCpuFrame *f) {
-  int teto = assFilaTeto < 1 ? 1 : assFilaTeto > ASS_FILA_MAX ? ASS_FILA_MAX : assFilaTeto;
+  int teto = assFilaTeto < 1 ? 1 : assFilaTeto > ASS_FILA_MAX ? ASS_FILA_MAX : assFilaTeto, i, pos;
+  /* EM ORDEM DE TEMPO (log 13): um lote novo do mkvass faz o worker refazer
+   * quadros que ja estavam na fila; o refeito ia para o fim e o desenho (o
+   * ultimo devido) mostrava o quadro anterior por um quadro de video. O mesmo
+   * instante substitui; o resto entra no lugar dele. */
+  for (i = 0; i < assFilaN; i++)
+    if (assFila[i].ms == f->ms && assFila[i].generation == f->generation) { ass_fila_tirar_locked(i, NULL); break; }
   while (assFilaN >= teto) ass_fila_tirar_locked(0, NULL);
   /* Quadros enormes (letreiro com blur de tela cheia): a fila nao guarda mais
    * que ASS_FILA_BYTES; sai o mais velho. */
   while (assFilaN && ass_fila_bytes_locked() + f->bytes > ASS_FILA_BYTES) ass_fila_tirar_locked(0, NULL);
-  assFila[assFilaN++] = *f;
+  for (pos = assFilaN; pos > 0 && assFila[pos - 1].ms > f->ms; pos--) {}
+  memmove(&assFila[pos + 1], &assFila[pos], (size_t)(assFilaN - pos) * sizeof assFila[0]);
+  assFila[pos] = *f;
+  assFilaN++;
   memset(f, 0, sizeof *f);
 }
 
@@ -1059,12 +1068,15 @@ static void *ass_worker_loop(void *unused) {
     if (assFilaTeto > 1 && ass_fps() > 0 && assAgoraUiGeracao == generation && assAgoraUiMs != LLONG_MIN) {
       long long alvo = (long long)llround(ms), agoraUi = assAgoraUiMs, prox = alvo;
       int continua = assSeqEpoch == epoch && assSeqGeracao == generation && assSeqUltMs != LLONG_MIN;
-      if (!continua || assPedidoForcado) prox = agoraUi;   // salto ou documento novo: o quadro de agora primeiro
+      /* Cena pesada (dono 26/10): como o Render ahead de 100 ms era antes — so o
+       * pedido mais novo, sem os quadros do meio. A leve faz todos. */
+      if (assperf_pesado()) prox = alvo;
+      /* Salto: o quadro de agora primeiro. Documento novo (lote do mkvass): do
+       * PROXIMO quadro, o de agora ja esta na tela. */
+      else if (!continua) prox = agoraUi;
+      else if (assPedidoForcado) prox = ass_grade_seguinte(agoraUi);
       else if (assSeqUltMs < alvo) {
         prox = ass_grade_seguinte(assSeqUltMs);
-        /* Cena pesada (log 9: 12-15 fps na tela com os 24 quadros): um quadro
-         * sim, um nao, por igual. A leve continua com todos. */
-        if (assperf_pesado()) prox = ass_grade_seguinte(prox);
         /* Nada muda ate assValidoAte (Render only on changes): os quadros do
          * meio seriam iguais ao ultimo. */
         if (assValidoEpoch == epoch && assValidoGeracao == generation &&
@@ -1078,13 +1090,6 @@ static void *ass_worker_loop(void *unused) {
         }
       }
       if (prox < alvo) { ms = (double)prox; seq = 1; }
-      else if (prox > alvo && continua && !assPedidoForcado && assperf_pesado()) {
-        /* Pesada e o pedido ainda nao chegou ao proximo quadro par: nada a
-         * fazer agora (o atual fica um quadro a mais). */
-        assPedidoForcado = 0; assPedidoPendente = 0;
-        pthread_mutex_unlock(&assFilaTrava);
-        continue;
-      }
     }
     serial = ++assSerial;   // cada quadro publicado e outro (as texturas sobem de novo)
     assPedidoForcado = 0;
@@ -1158,6 +1163,18 @@ static void *ass_worker_loop(void *unused) {
           if (assTrack->events[i].Start > t && assTrack->events[i].Start < prox) prox = assTrack->events[i].Start;
         __atomic_store_n(&assProxInicio, prox, __ATOMIC_RELAXED); }
 #endif
+      /* CENA PESADA PREVISTA (dono 26/10): o que comeca no proximo segundo ja
+       * esta na faixa (a colheita vai a frente). No .mks do dono: celular
+       * (22:13) 377-1228 falas e 130-440 mil caracteres por segundo; desenhos
+       * de 22:19 1,6 milhao; dedos (19:05) uma rajada de 132 / 176 mil; fala
+       * comum 0-1. Mais o numero de imagens em tela (cena "simples"). */
+      { int i, nIni = 0, nImg = 0; long chars = 0; const ASS_Image *im;
+        for (i = 0; i < assTrack->n_events; i++) {
+          const ASS_Event *ev = &assTrack->events[i];
+          if (ev->Start >= t && ev->Start < t + 1000) { nIni++; if (ev->Text) chars += (long)strlen(ev->Text); }
+        }
+        for (im = images; im; im = im->next) nImg++;
+        assperf_previsao(nIni, chars, nImg); }
       /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
       if (assperf_get(AP_MUDANCA)) {
         int i, anima = 0;
@@ -2979,7 +2996,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   /* Quadros INTEIROS a frente: 100 ms = 2,4 quadros caia na borda e o pedido
    * pulava entre +2 e +3. */
   { double fps = ass_fps();
-    if (fps > 0 && adiante > 0) {
+    if (fps > 0 && adiante > 0 && !assperf_pesado()) {
       long long q = llround((double)adiante * fps / 1000.0);
       if (q < 1) q = 1;
       pedido = ass_na_grade(agora + llround((double)q * 1000.0 / fps));

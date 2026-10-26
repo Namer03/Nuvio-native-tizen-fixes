@@ -116,7 +116,9 @@ void assperf_med_lote(double ms, int novos, int total, int cheio); // carga do d
 void assperf_med_atraso(double ms);                               // quadro mostrado vs. o instante dele
 void assperf_med_adiante(double ms);                              // adiantamento usado
 void assperf_med_relay(int blocos, int usados);                   // mkvfix -> mkvass
-void assperf_med_parque(long bytes);                              // relay blocks kept ahead (mkvass)
+void assperf_med_parque(long bytes);
+// Worker: lines starting in the next second, their text size, and pictures in this frame (heavy-scene forecast).
+void assperf_previsao(int inicios, long chars, int imagens);                              // relay blocks kept ahead (mkvass)
 void assperf_med_poda(int removidos);
 void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
 // Blur na GPU (assrender): um lote do fio GL com trabalho novo, e a conta do

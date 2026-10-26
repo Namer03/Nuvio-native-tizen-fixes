@@ -344,7 +344,7 @@ static struct {
 
 static double agoraS(void);
 static int pesado_locked(double t);
-static struct { double ms[20]; long long id[20]; double ult, leveAcum, leveDesde; int on; } CG;   /* ver carga_* */
+static struct { double ms[20]; long long id[20]; double ult, leveAcum, leveDesde; int on, prevPesada, imagens, inicios; long chars; } CG;   /* ver carga_* */
 
 static double auto_custo_locked(double t) {
   /* Each side ages on its own: a side with no new frame for 1 s counts 0. */
@@ -406,6 +406,11 @@ double assperf_escala_quadro(void) {
 #define CG_DESLIGA  150.0
 #define CG_LEVE_S   3.0
 #define CG_OCIOSO_S 8.0
+/* Previsao (o proximo segundo da faixa, assrender.c): pesada com tantas falas
+ * comecando ou tanto texto. Leve so com a tela simples (poucas imagens). */
+#define CG_PREV_INICIOS 300
+#define CG_PREV_CHARS   400000L
+#define CG_TELA_SIMPLES 20
 static double carga_locked(double t) {
   long long b = (long long)floor(t * 10.0);
   double soma = 0;
@@ -421,12 +426,14 @@ static void carga_somar_locked(double t, double ms) {
   CG.ms[i] += ms > 0 ? ms : 0;
   c = carga_locked(t);
   if (!CG.on) {
-    if (c > CG_LIGA) {
+    if (c > CG_LIGA || CG.prevPesada) {
       CG.on = 1; CG.leveAcum = 0; CG.leveDesde = 0;
-      printf("[assperf] subtitles heavy: on (%.0f ms of subtitle work per second)\n", c);
+      if (CG.prevPesada && c <= CG_LIGA)
+        printf("[assperf] subtitles heavy: on (coming second: %d lines starting, %ldk characters)\n", CG.inicios, CG.chars / 1000);
+      else printf("[assperf] subtitles heavy: on (%.0f ms of subtitle work per second)\n", c);
       fflush(stdout);
     }
-  } else if (c < CG_DESLIGA) {
+  } else if (c < CG_DESLIGA && !CG.prevPesada && CG.imagens < CG_TELA_SIMPLES) {
     CG.leveAcum += dt < 0 ? 0 : dt > 0.25 ? 0.25 : dt;   /* so tocando: pausa nao manda tique (assrender) */
     if (!CG.leveDesde) CG.leveDesde = t;
     if (CG.leveAcum >= CG_LEVE_S) {
@@ -444,6 +451,13 @@ static int pesado_locked(double t) {
     fflush(stdout);
   }
   return CG.on;
+}
+void assperf_previsao(int inicios, long chars, int imagens) {
+  pthread_mutex_lock(&autoTrava);
+  CG.inicios = inicios; CG.chars = chars; CG.imagens = imagens;
+  CG.prevPesada = inicios >= CG_PREV_INICIOS || chars >= CG_PREV_CHARS;
+  carga_somar_locked(agoraS(), 0.0);   /* avalia ja: liga antes do primeiro quadro pesado */
+  pthread_mutex_unlock(&autoTrava);
 }
 void assperf_carga_gl(double ms) {
   pthread_mutex_lock(&autoTrava);
