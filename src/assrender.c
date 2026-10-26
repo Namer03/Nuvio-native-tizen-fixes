@@ -1062,6 +1062,9 @@ static void *ass_worker_loop(void *unused) {
       if (!continua || assPedidoForcado) prox = agoraUi;   // salto ou documento novo: o quadro de agora primeiro
       else if (assSeqUltMs < alvo) {
         prox = ass_grade_seguinte(assSeqUltMs);
+        /* Cena pesada (log 9: 12-15 fps na tela com os 24 quadros): um quadro
+         * sim, um nao, por igual. A leve continua com todos. */
+        if (assperf_pesado()) prox = ass_grade_seguinte(prox);
         /* Nada muda ate assValidoAte (Render only on changes): os quadros do
          * meio seriam iguais ao ultimo. */
         if (assValidoEpoch == epoch && assValidoGeracao == generation &&
@@ -1075,6 +1078,13 @@ static void *ass_worker_loop(void *unused) {
         }
       }
       if (prox < alvo) { ms = (double)prox; seq = 1; }
+      else if (prox > alvo && continua && !assPedidoForcado && assperf_pesado()) {
+        /* Pesada e o pedido ainda nao chegou ao proximo quadro par: nada a
+         * fazer agora (o atual fica um quadro a mais). */
+        assPedidoForcado = 0; assPedidoPendente = 0;
+        pthread_mutex_unlock(&assFilaTrava);
+        continue;
+      }
     }
     serial = ++assSerial;   // cada quadro publicado e outro (as texturas sobem de novo)
     assPedidoForcado = 0;
@@ -2896,11 +2906,12 @@ void assrender_definir_fps(double fps) {
 }
 static double ass_fps(void) { double v; __atomic_load(&assFps, &v, __ATOMIC_RELAXED); return v; }
 static long long ass_na_grade(long long ms) {
-  /* O meio do quadro que contem `ms`; +0,1 quadro de folga (o PTS arredondado
-   * ao ms pode cair um tico antes de k/fps). */
+  /* O meio do quadro que contem `ms`. Folga de 0,02 quadro (<1 ms: o PTS
+   * arredondado ao ms). Era 0,1 (4 ms): o letreiro trocava um tico ANTES do
+   * video (dono 26/10, polegar fantasma acima dos dedos aos 19:00). */
   double fps = ass_fps();
   if (fps <= 0 || ms <= 0) return ms;
-  return llround((floor((double)ms * fps / 1000.0 + 0.1) + 0.5) * 1000.0 / fps);
+  return llround((floor((double)ms * fps / 1000.0 + 0.02) + 0.5) * 1000.0 / fps);
 }
 /* O meio do quadro seguinte ao do meio `t`. */
 static long long ass_grade_seguinte(long long t) {
@@ -2962,7 +2973,14 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     assperf_med_adiante((double)adiante);
   }
   segurar = adiante > 0 && assperf_get(AP_SEGURAR);
-  pedido = ass_na_grade(agora + adiante);
+  /* Quadros INTEIROS a frente: 100 ms = 2,4 quadros caia na borda e o pedido
+   * pulava entre +2 e +3. */
+  { double fps = ass_fps();
+    if (fps > 0 && adiante > 0) {
+      long long q = llround((double)adiante * fps / 1000.0);
+      if (q < 1) q = 1;
+      pedido = ass_na_grade(agora + llround((double)q * 1000.0 / fps));
+    } else pedido = ass_na_grade(agora + adiante); }
   if (novoCaminho != assCaminhoNovoAntes) {
     /* Trocou de caminho com a faixa ligada: nada de um serve ao outro. */
     if (assCaminhoNovoAntes >= 0) { ass_main_soltar(); ass_tc_apagar(); }

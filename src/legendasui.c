@@ -613,7 +613,7 @@ int legendasui_evento(const SDL_Event *e) {
     int d = k == SDLK_RIGHT ? 1 : -1;
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
-    if (l && l->tipo == LR_CORR) { legimagem_ajustar(10 * d); return LEGUI_TRATADO; }
+    if (l && l->tipo == LR_CORR) { legimagem_ajustar(5 * d); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -850,7 +850,7 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       break; }
     case LR_CORR: {
       // "Automatic · 200 ms · 24 fps": the learned value for this kind of video;
-      // left/right nudge it (10 ms), it stays automatic.
+      // left/right nudge it (5 ms), it stays automatic.
       char tp[24];
       legimagem_tipo(tp, ts > 24 ? 24 : ts);
       snprintf(nome, tn, "%s", i18n("Correção da legenda"));
