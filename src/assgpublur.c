@@ -31,8 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <dlfcn.h>
 
 #ifndef GL_RED
 #define GL_RED 0x1903
@@ -61,12 +59,6 @@
 typedef struct { GLint interno; GLenum fmt, tipo; int bpp; const char *nome; } AgbFmt;
 static AgbFmt fmtMeio;
 static int pronto = -1;      // -1 nao tentado, 0 falhou, 1 ok
-/* 1 = roda num fio proprio com contexto GL compartilhado (agbfio.c): nada de
- * gfx_* (o cache do gfx e do fio da UI) e toda textura que volta para a
- * reserva espera 3 quadros da UI antes de ser regravada (a UI ainda pode estar
- * desenhando com ela em outro contexto). */
-static int modoFio;
-static int forcarRgba8;
 static GLint maxTex = 2048;
 
 // ---- programas ------------------------------------------------------------------
@@ -302,131 +294,13 @@ static struct {
   void *aPtr;
   GLboolean blend, tesoura, dither, mascara[4];
   GLfloat limpa[4];      // glClearColor do app (a passada final limpa a textura)
-  int aberto, medir;
-  struct timespec t0, tUlt, tIni;
-  int trabalho;
+  int aberto, trabalho;
 } E;
 
-/* Passos do lote (relogio da CPU) e consultas: assgpublur_passos. */
-static AgbPassos P;
-static unsigned qEmitTotal, qLidasTotal, loteAmostra;
-/* timerQuebrado (acima): 1 = as consultas nunca devolveram nada; glFinish em 1 lote de 16 */
-static int emFinal;         // desenhar_em conta na passada final, nao nas de blur
-
-static double ms_desde(const struct timespec *a) {
-  struct timespec b;
-  clock_gettime(CLOCK_MONOTONIC, &b);
-  return (double)(b.tv_sec - a->tv_sec) * 1000.0 + (double)(b.tv_nsec - a->tv_nsec) / 1e6;
-}
-
-static AgbStats S;
-
-// ---- tempo da GPU sem parar a GPU (GL_EXT_disjoint_timer_query) -------------------
-/* Na S95C (24/10) o glFinish por pedido, usado para medir, travava o fio GL
- * ele mesmo. A Mali tem consultas de tempo: o resultado chega quadros depois,
- * sem esperar. Sem a extensao, os cronometros voltam ao glFinish. */
-#define GL_TIME_ELAPSED_EXT 0x88BF
-#define GL_QUERY_RESULT_EXT 0x8866
-#define GL_QUERY_RESULT_AVAILABLE_EXT 0x8867
-#define GL_GPU_DISJOINT_EXT 0x8FBB
-typedef void (*FnGenQ)(GLsizei, GLuint *);
-typedef void (*FnBeginQ)(GLenum, GLuint);
-typedef void (*FnEndQ)(GLenum);
-typedef void (*FnGetQuiv)(GLuint, GLenum, GLuint *);
-typedef void (*FnGetQui64v)(GLuint, GLenum, unsigned long long *);
-static struct { FnGenQ gen, del; FnBeginQ begin; FnEndQ end; FnGetQuiv getuiv; FnGetQui64v get64; } Q;
-static int temTimer;
-static int timerQuebrado;
-#define usaTimer() (temTimer && !timerQuebrado)
-#define AGB_CONSULTAS 64
-typedef struct { GLuint q; int balde, novo; } AgbConsulta;
-static AgbConsulta consultas[AGB_CONSULTAS];
-static int nConsultas, consultaAberta;
-static GLuint livresQ[AGB_CONSULTAS];
-static int nLivresQ;
-/* custo medido por gaussiano novo, por tamanho (ms): o orcamento do pre-blur */
-static double custoEma[4] = { 0.5, 1.5, 4.0, 10.0 };
-
-static void *proc_gl(const char *nome) {
-  typedef void *(*FnProc)(const char *);
-  static FnProc gp;
-  static int tentou;
-  void *f = NULL;
-  if (!tentou) {
-    void *h = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_NOLOAD);
-    if (!h) h = dlopen("libEGL.so", RTLD_LAZY | RTLD_NOLOAD);
-    if (!h) h = dlopen("libEGL.so.1", RTLD_LAZY);
-    if (h) gp = (FnProc)dlsym(h, "eglGetProcAddress");
-    tentou = 1;
-  }
-  if (gp) f = gp(nome);
-  return f;
-}
-
-static void timer_carregar(const char *ext) {
-  if (!strstr(ext, "GL_EXT_disjoint_timer_query")) return;
-  Q.gen = (FnGenQ)proc_gl("glGenQueriesEXT"); Q.del = (FnGenQ)proc_gl("glDeleteQueriesEXT");
-  Q.begin = (FnBeginQ)proc_gl("glBeginQueryEXT"); Q.end = (FnEndQ)proc_gl("glEndQueryEXT");
-  Q.getuiv = (FnGetQuiv)proc_gl("glGetQueryObjectuivEXT");
-  Q.get64 = (FnGetQui64v)proc_gl("glGetQueryObjectui64vEXT");
-  temTimer = Q.gen && Q.del && Q.begin && Q.end && Q.getuiv && Q.get64;
-}
-
-static int balde(long area) { return area < 16384 ? 0 : area < 65536 ? 1 : area < 262144 ? 2 : 3; }
-
-/* Resultados prontos (nao espera): somam no custo por tamanho. */
-static void consultas_colher(void) {
-  GLint disj = 0;
-  int i = 0;
-  if (!usaTimer() || !nConsultas) return;
-  glGetIntegerv(GL_GPU_DISJOINT_EXT, &disj);   // relogio da GPU pulou: descarta o lote
-  while (i < nConsultas) {
-    GLuint pronto = 0;
-    Q.getuiv(consultas[i].q, GL_QUERY_RESULT_AVAILABLE_EXT, &pronto);
-    if (!pronto) break;   // na ordem: as seguintes tambem nao estao
-    if (disj) P.qDisj++;
-    else {
-      P.qLidas++; qLidasTotal++;
-      unsigned long long ns = 0;
-      double ms;
-      Q.get64(consultas[i].q, GL_QUERY_RESULT_EXT, &ns);
-      ms = (double)ns / 1e6;
-      S.msTam[consultas[i].balde] += ms;
-      S.msGpu += ms; S.nGpu++;
-      if (consultas[i].novo) {
-        S.nTam[consultas[i].balde]++;
-        custoEma[consultas[i].balde] = custoEma[consultas[i].balde] * 0.8 + ms * 0.2;
-      }
-    }
-    if (nLivresQ < AGB_CONSULTAS) livresQ[nLivresQ++] = consultas[i].q; else Q.del(1, &consultas[i].q);
-    i++;
-  }
-  if (i) { memmove(consultas, consultas + i, (size_t)(nConsultas - i) * sizeof consultas[0]); nConsultas -= i; }
-  /* 24/10 na S95C: "GPU time 0 ms in 0 measured jobs" a noite toda. Se 64
-   * consultas sairam e nenhuma voltou com numero, elas nao servem nesta TV. */
-  if (qEmitTotal >= AGB_CONSULTAS && !qLidasTotal && !timerQuebrado) {
-    timerQuebrado = 1;
-    printf("[assperf] gpu timer: %u queries issued, none returned a time (%u dropped as disjoint, %d pending):"
-           " switching to glFinish on 1 batch in 16\n", qEmitTotal, P.qDisj, nConsultas);
-    fflush(stdout);
-  }
-}
-
-double assgpublur_custo(long area) { return custoEma[balde(area)]; }
-
-void assgpublur_lote_ini(int medir) {
-  struct timespec ts;
+void assgpublur_lote_ini(void) {
   if (E.aberto) return;
   memset(&E, 0, sizeof E);
-  clock_gettime(CLOCK_MONOTONIC, &E.tIni);
   E.aberto = 1;
-  /* 25/10: sem medida na GPU. Na S95C as consultas nunca responderam (64 de 64
-   * pendentes) e o glFinish da alternativa travava o proprio fio GL; os passos
-   * do lote (relogio da CPU, assgpublur_passos) ficam. */
-  (void)medir; (void)loteAmostra;
-  E.medir = 0;
-  P.lotes++;
-  consultas_colher();
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &E.fbo);
   glGetIntegerv(GL_VIEWPORT, E.vp);
   glGetIntegerv(GL_CURRENT_PROGRAM, &E.prog);
@@ -448,18 +322,12 @@ void assgpublur_lote_ini(int medir) {
   E.dither = glIsEnabled(GL_DITHER);
   glGetBooleanv(GL_COLOR_WRITEMASK, E.mascara);
   glGetFloatv(GL_COLOR_CLEAR_VALUE, E.limpa);
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  P.salvar += (double)(ts.tv_sec - E.tIni.tv_sec) * 1000.0 + (double)(ts.tv_nsec - E.tIni.tv_nsec) / 1e6;
 }
 
 // Antes do primeiro trabalho do lote: o estado das nossas passadas.
 static void lote_trabalhar(void) {
   if (E.trabalho) return;
   E.trabalho = 1;
-  P.lotesTrab++;
-  if (E.medir && !usaTimer()) glFinish();
-  clock_gettime(CLOCK_MONOTONIC, &E.t0);
-  E.tUlt = E.t0;
   glDisable(GL_BLEND);
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DITHER);
@@ -471,9 +339,7 @@ static void lote_trabalhar(void) {
 }
 
 void assgpublur_lote_fim(void) {
-  struct timespec r0;
   if (!E.aberto) return;
-  clock_gettime(CLOCK_MONOTONIC, &r0);
   if (E.trabalho) {
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)E.fbo);
     glViewport(E.vp[0], E.vp[1], E.vp[2], E.vp[3]);
@@ -494,23 +360,10 @@ void assgpublur_lote_fim(void) {
     glColorMask(E.mascara[0], E.mascara[1], E.mascara[2], E.mascara[3]);
     glClearColor(E.limpa[0], E.limpa[1], E.limpa[2], E.limpa[3]);
 #ifndef NV_AGB_TESTE
-    if (!modoFio) gfx_estado_externo();   // o cache de programa/textura do gfx nao vale mais
+    gfx_estado_externo();   // o cache de programa/textura do gfx nao vale mais
 #endif
-    P.restaurar += ms_desde(&r0);
-    if (E.medir && !usaTimer()) glFinish();
-    S.ms += ms_desde(&E.t0);
-    S.medido = E.medir ? (usaTimer() ? 2 : 1) : 0;
   }
-  { double l = ms_desde(&E.tIni);
-    P.loteMs += l; if (l > P.loteMax) P.loteMax = l; }
   E.aberto = 0;
-}
-
-void assgpublur_passos(AgbPassos *out) {
-  *out = P;
-  out->qPend = (unsigned)nConsultas;
-  out->qModo = timerQuebrado ? 2 : temTimer ? 1 : 0;
-  memset(&P, 0, sizeof P);
 }
 
 // ---- iniciar ---------------------------------------------------------------------
@@ -524,15 +377,6 @@ int assgpublur_iniciar(void) {
   ext = (const char *)glGetString(GL_EXTENSIONS);
   ver = (const char *)glGetString(GL_VERSION);
   if (!ext) ext = "";
-  timer_carregar(ext);
-  { GLint bits = -1;
-    typedef void (*FnGetQiv)(GLenum, GLenum, GLint *);
-    FnGetQiv qiv = temTimer ? (FnGetQiv)proc_gl("glGetQueryivEXT") : NULL;
-    if (qiv) qiv(GL_TIME_ELAPSED_EXT, 0x8864 /* GL_QUERY_COUNTER_BITS_EXT */, &bits);
-    while (glGetError() != GL_NO_ERROR) {}
-    printf("[assperf] gpu timer: GL_EXT_disjoint_timer_query %s, counter bits %d\n",
-           temTimer ? "present" : "absent", (int)bits);
-    if (temTimer && bits == 0) { timerQuebrado = 1; printf("[assperf] gpu timer: 0 bits, using glFinish on 1 batch in 16\n"); } }
   es3 = ver && strstr(ver, "OpenGL ES ") && ver[10] >= '3';
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &vboAnt);
@@ -554,15 +398,15 @@ int assgpublur_iniciar(void) {
     static const AgbFmt H16 = { GL_RGBA, GL_RGBA, GL_HALF_FLOAT_OES, 8, "RGBA16F (OES)" };
     static const AgbFmt R8 = { GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, 4, "RGBA8" };
     int cbHalf = tem_ext(ext, "GL_EXT_color_buffer_half_float") || tem_ext(ext, "GL_EXT_color_buffer_float");
-    if (!forcarRgba8 && es3 && cbHalf && alvo_ok(&R16F)) fmtMeio = R16F;
-    else if (!forcarRgba8 && tem_ext(ext, "GL_OES_texture_half_float") && tem_ext(ext, "GL_OES_texture_half_float_linear") &&
+    if (es3 && cbHalf && alvo_ok(&R16F)) fmtMeio = R16F;
+    else if (tem_ext(ext, "GL_OES_texture_half_float") && tem_ext(ext, "GL_OES_texture_half_float_linear") &&
              tem_ext(ext, "GL_EXT_color_buffer_half_float") && alvo_ok(&H16)) fmtMeio = H16;
     else fmtMeio = R8;
   }
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fboAnt);
   glBindTexture(GL_TEXTURE_2D, (GLuint)texAnt);
 #ifndef NV_AGB_TESTE
-  if (!modoFio) gfx_tex_esquecer(0);
+  gfx_tex_esquecer(0);
 #endif
   pronto = progReduz && prog_final(0) && prog_final(1) && prog_blur(1) && vbo && fbo && alvo_ok(&fmtMeio);
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fboAnt);
@@ -573,8 +417,6 @@ int assgpublur_iniciar(void) {
   return pronto;
 }
 
-const char *assgpublur_formato(void) { return fmtMeio.nome ? fmtMeio.nome : "-"; }
-void assgpublur_forcar_rgba8(int on) { forcarRgba8 = on; }
 
 // ---- reserva de texturas ----------------------------------------------------------
 /* Criar textura na Mali custa (24/10: ~1,75 ms por letreiro entre alocacoes e
@@ -616,17 +458,12 @@ static GLuint res_pegar(int tipo, int w, int h, int *nova) {
     /* So a textura que a CPU regrava (TX_LUM, glTexSubImage2D) espera dois
      * quadros: as que so a GPU desenha seguem a ordem dos comandos. */
     if (reserva[i].tipo == tipo && reserva[i].w == w && reserva[i].h == h &&
-        /* modo fio: so a FINAL (a UI desenha com ela em outro contexto) espera 3
-         * quadros da UI; as outras sao so do fio. Esperar todas fazia o fio criar
-         * ~1250 texturas por 10 s (log de 26/10) e a memoria da TV cair. */
-        ((modoFio && tipo == TX_RGBA) ? quadroAgora - reserva[i].liberado >= 3
-                                      : tipo != TX_LUM || quadroAgora - reserva[i].liberado >= 2)) {
+        (tipo != TX_LUM || quadroAgora - reserva[i].liberado >= 2)) {
       t = reserva[i].tex;
       bytesRes -= tx_bytes(tipo, w, h);
       reserva[i] = reserva[--nRes];
       glBindTexture(GL_TEXTURE_2D, t);
       if (nova) *nova = 0;
-      S.reaproveitadas++;
       return t;
     }
   glGenTextures(1, &t);
@@ -636,7 +473,6 @@ static GLuint res_pegar(int tipo, int w, int h, int *nova) {
   /* TX_LUM: quem pede sobe o conteudo com glTexImage2D */
   tex_param(tipo == TX_LUM ? GL_NEAREST : GL_LINEAR);
   if (nova) *nova = 1;
-  S.criadas++;
   return t;
 }
 
@@ -661,15 +497,12 @@ static void res_soltar(GLuint t, int tipo, int w, int h) {
 /* Sobe um bitmap compacto (GL_LUMINANCE) numa textura da reserva. */
 static GLuint subir_lum(const unsigned char *px, int w, int h, GLint filtro) {
   int nova = 0;
-  struct timespec t0;
   GLuint t;
-  clock_gettime(CLOCK_MONOTONIC, &t0);
   t = res_pegar(TX_LUM, w, h, &nova);
   if (nova) glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
   else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_LUMINANCE, GL_UNSIGNED_BYTE, px);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtro);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtro);
-  P.envios++; P.envio += ms_desde(&t0);
   return t;
 }
 
@@ -714,7 +547,6 @@ static void blur_caber(size_t novo, unsigned quadro) {
   }
 }
 static void final_caber(size_t novo, unsigned quadro) {
-  if (modoFio) return;   // no fio proprio quem solta as finais e o agbfio (a UI pode estar usando)
   while (bytesF + novo > AGB_FINAL_BYTES && nf) {
     int i, v = -1;
     for (i = 0; i < nf; i++)
@@ -735,7 +567,7 @@ void assgpublur_aparar(unsigned quadro) {
     if (quadro - cb[i].uso >= 120u) { glDeleteTextures(1, &cb[i].tex); bytesB -= cb[i].bytes; cb[i] = cb[--nb]; }
     else i++;
   }
-  for (i = 0; i < nf && !modoFio; ) {
+  for (i = 0; i < nf; ) {
     if (quadro - cf[i].uso >= 120u) {
       glDeleteTextures(1, &cf[i].tex); bytesF -= (size_t)cf[i].tw * (size_t)cf[i].th * 4u; cf[i] = cf[--nf];
     } else i++;
@@ -744,7 +576,7 @@ void assgpublur_aparar(unsigned quadro) {
   nRes = 0; bytesRes = 0;
   ultimoTrabalho = quadro;   // so de novo depois de outra cena
 #ifndef NV_AGB_TESTE
-  if (!modoFio) gfx_tex_esquecer(0);
+  gfx_tex_esquecer(0);
 #endif
 }
 
@@ -756,7 +588,7 @@ void assgpublur_apagar(void) {
   free(cb); free(cf); cb = NULL; cf = NULL; nb = nf = capb = capf = 0; bytesB = bytesF = 0;
   nRes = 0; bytesRes = 0;
 #ifndef NV_AGB_TESTE
-  if (!modoFio) gfx_tex_esquecer(0);
+  gfx_tex_esquecer(0);
 #endif
 }
 
@@ -822,13 +654,10 @@ static void desenhar_em_limpo(GLuint tex, int tw, int th, int w, int h) {
 }
 
 static void desenhar_em(GLuint tex, int w, int h) {
-  struct timespec t0;
-  clock_gettime(CLOCK_MONOTONIC, &t0);
   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
   glViewport(0, 0, w, h);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-  if (!emFinal) { P.passadas++; P.passadasMs += ms_desde(&t0); }
 }
 
 static int passo_blur(GLuint de, int w, int h, int eixo, int n, const float *w0, const float *ws, const float *os,
@@ -921,7 +750,6 @@ static AgbBlur *borrar(const AgbPedido *p, unsigned long long chave, unsigned qu
       }
     }
     bytesB += bytes;
-    S.blurs++;
     return e;
   }
 }
@@ -941,81 +769,32 @@ static void chaves(const AgbPedido *p, unsigned long long *kbOut, unsigned long 
   if (!kf) kf = 1;
   *kbOut = kb; *kfOut = kf;
 }
-unsigned long long assgpublur_chave(const AgbPedido *p) { unsigned long long kb, kf; chaves(p, &kb, &kf); return kf; }
-int assgpublur_tem(unsigned long long chave) {
-  int i;
-  for (i = 0; i < nf; i++) if (cf[i].chave == chave) return 1;
-  return 0;
-}
-void assgpublur_modo_fio(int on) { modoFio = on; }
-void assgpublur_soltar_final(unsigned long long chave) {
-  int i;
-  for (i = 0; i < nf; i++)
-    if (cf[i].chave == chave) {
-      res_soltar(cf[i].tex, TX_RGBA, cf[i].tw, cf[i].th);
-      bytesF -= (size_t)cf[i].tw * (size_t)cf[i].th * 4u;
-      cf[i] = cf[--nf];
-      return;
-    }
-}
-void assgpublur_reiniciar(void) {
-  int i;
-  if (pronto == 1) {
-    assgpublur_apagar();
-    for (i = 0; i <= AGB_PARES_MAX; i++) {
-      if (progBlur[i]) glDeleteProgram(progBlur[i]);
-      if (progFinal[i]) glDeleteProgram(progFinal[i]);
-      progBlur[i] = progFinal[i] = 0;
-    }
-    if (progReduz) glDeleteProgram(progReduz);
-    if (vbo) glDeleteBuffers(1, &vbo);
-    if (fbo) glDeleteFramebuffers(1, &fbo);
-    progReduz = 0; vbo = fbo = 0;
-  }
-  pronto = -1;
-}
-
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chaveOut) {
   unsigned long long kb, kf;
   AgbBlur *b = NULL;
   GLuint fillTex = 0, out = 0, prog;
-  int i, novoBlur = 0, nova, tw, th;
+  int i, nova, tw, th;
   quadroAgora = quadro;
   AgbLocFinal *l;
   *chaveOut = 0;
   if (pronto != 1 || !p->src || p->w <= 0 || p->h <= 0 || p->srcW <= 0 || p->srcH <= 0 ||
       p->srcW > maxTex || p->srcH > maxTex || p->w > maxTex || p->h > maxTex ||
-      (p->fix && p->fill && (p->fillW > maxTex || p->fillH > maxTex))) { S.falhas++; return 0; }
+      (p->fix && p->fill && (p->fillW > maxTex || p->fillH > maxTex))) return 0;
   chaves(p, &kb, &kf);
   for (i = 0; i < nf; i++)
     if (cf[i].chave == kf && cf[i].w == p->w && cf[i].h == p->h) {
-      cf[i].uso = quadro; S.reusos++; *chaveOut = kf;
+      cf[i].uso = quadro; *chaveOut = kf;
       ultW = cf[i].tw; ultH = cf[i].th;
       return cf[i].tex;
     }
   if (p->soCache) return 0;
   for (i = 0; i < nb; i++) if (cb[i].chave == kb) { b = &cb[i]; b->uso = quadro; break; }
-  /* tempo deste pedido na GPU (consulta, sem esperar) */
-  if (E.medir && usaTimer() && !consultaAberta && nConsultas < AGB_CONSULTAS) {
-    GLuint q = 0;
-    if (nLivresQ) q = livresQ[--nLivresQ]; else Q.gen(1, &q);
-    if (q) {
-      Q.begin(GL_TIME_ELAPSED_EXT, q);
-      consultas[nConsultas].q = q;
-      consultas[nConsultas].balde = balde(p->area > 0 ? p->area : (long)p->srcW * p->srcH);
-      consultas[nConsultas].novo = !b;
-      consultaAberta = 1;
-    }
-  }
-  if (!b) { b = borrar(p, kb, quadro); novoBlur = 1; }
-  if (!b) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; } S.falhas++; return 0; }
+  if (!b) b = borrar(p, kb, quadro);
+  if (!b) return 0;
   prog = prog_final(b->ny);
-  if (!prog) { if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; } S.falhas++; return 0; }
+  if (!prog) return 0;
   l = &fn[b->ny];
   lote_trabalhar();
-  struct timespec tf0;
-  clock_gettime(CLOCK_MONOTONIC, &tf0);
-  emFinal = 1;
   tw = classe(p->w); th = classe(p->h);
   final_caber((size_t)tw * (size_t)th * 4u, quadro);
   glActiveTexture(GL_TEXTURE0);
@@ -1046,20 +825,17 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   glBindTexture(GL_TEXTURE_2D, b->tex);
   desenhar_em_limpo(out, tw, th, p->w, p->h);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-  emFinal = 0;
-  P.finais++; P.finalMs += ms_desde(&tf0);
-  if (consultaAberta) { Q.end(GL_TIME_ELAPSED_EXT); consultaAberta = 0; nConsultas++; P.qEmit++; qEmitTotal++; }
   if (fillTex) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     res_soltar(fillTex, TX_LUM, p->fillW, p->fillH);
     glActiveTexture(GL_TEXTURE0);
   }
-  if (glGetError() != GL_NO_ERROR) { res_soltar(out, TX_RGBA, tw, th); S.falhas++; return 0; }
+  if (glGetError() != GL_NO_ERROR) { res_soltar(out, TX_RGBA, tw, th); return 0; }
   if (nf == capf) {
     int nc = capf ? capf * 2 : 64;
     AgbFinal *nv = realloc(cf, (size_t)nc * sizeof *nv);
-    if (!nv) { res_soltar(out, TX_RGBA, tw, th); S.falhas++; return 0; }
+    if (!nv) { res_soltar(out, TX_RGBA, tw, th); return 0; }
     cf = nv; capf = nc;
   }
   cf[nf].chave = kf; cf[nf].tex = out; cf[nf].w = p->w; cf[nf].h = p->h; cf[nf].uso = quadro;
@@ -1067,21 +843,6 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   nf++;
   bytesF += (size_t)tw * (size_t)th * 4u;
   ultW = tw; ultH = th; ultimoTrabalho = quadro;
-  S.finais++;
-  if (p->adiantado) S.adiantados++;
-  if (E.medir && !usaTimer()) {
-    /* custo real deste pedido na GPU, por tamanho (sem a extensao de tempo) */
-    struct timespec t;
-    double ms;
-    int k = balde(p->area > 0 ? p->area : (long)p->srcW * p->srcH);
-    glFinish();
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    ms = (double)(t.tv_sec - E.tUlt.tv_sec) * 1000.0 + (double)(t.tv_nsec - E.tUlt.tv_nsec) / 1e6;
-    E.tUlt = t;
-    S.msTam[k] += ms;
-    S.msGpu += ms; S.nGpu++;
-    if (novoBlur) { S.nTam[k]++; custoEma[k] = custoEma[k] * 0.8 + ms * 0.2; }
-  }
   *chaveOut = kf;
   return out;
 }
@@ -1092,31 +853,4 @@ void assgpublur_usar(unsigned long long chave, unsigned quadro) {
   for (i = 0; i < nf; i++) if (cf[i].chave == chave) { cf[i].uso = quadro; return; }
 }
 
-int assgpublur_ler(GLuint tex, int w, int h, unsigned char *alfa) {
-  GLint fboAnt = 0;
-  unsigned char *rgba;
-  int i, ok;
-  if (pronto != 1 || !tex || w <= 0 || h <= 0) return 0;
-  rgba = malloc((size_t)w * (size_t)h * 4u);
-  if (!rgba) return 0;
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fboAnt);
-  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-  ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-  if (ok) {
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    for (i = 0; i < w * h; i++) alfa[i] = rgba[4 * i + 3];
-  }
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-  glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fboAnt);
-  free(rgba);
-  return ok && glGetError() == GL_NO_ERROR;
-}
-
-void assgpublur_stats(AgbStats *out) {
-  *out = S;
-  memset(&S, 0, sizeof S);
-}
 #endif

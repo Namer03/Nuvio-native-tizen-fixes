@@ -1168,10 +1168,6 @@ static int lerAttachments(Fio *f, const unsigned char *p, long n) {
       memcpy(f->fontes[f->nFontes].dados, dados, (size_t)dadosN);
       f->fontes[f->nFontes].tam = dadosN;
       f->nFontes++;
-#ifdef NV_TPK
-      if (assperf_get(AP_LOG) >= 1)
-        printf("[mkvass] fonte %d: %s (%.0f KB)\n", f->nFontes, nome[0] ? nome : "attachment.ttf", dadosN / 1024.0);
-#endif
     }
   }
   return 1;
@@ -3442,8 +3438,7 @@ static long relayBytes;
  * vistos, 3393 usados) e a cena seguinte dependia de Ranges ao CDN, que nao
  * davam conta da cena densa. Agora o bloco longe espera aqui (so o fio de
  * colheita mexe) e entra quando o playhead chega perto — sem rede nenhuma. */
-/* Teto pela folha (assperf "Keep subtitle blocks ahead"): 0 = jogados fora
- * como antes, 6 ou 12 MB. */
+/* Cap (assperf AP_PARQUE): 0 = thrown away as before (other targets), 6 MB on the .tpk. */
 static long relayParqueTeto(void) {
   int v = assperf_get(AP_PARQUE);
   return v <= 0 ? 0 : v == 1 ? (6L << 20) : (12L << 20);
@@ -3615,11 +3610,9 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
       }
       if (!guardado) free(r->b);
     }
-    if (fonte == 1) assperf_med_relay(n, 0);
+    (void)n;
   }
-  if (usados) assperf_med_relay(0, usados);
   (void)estacionados;
-  pthread_mutex_lock(&parqueTrava); assperf_med_parque(relayParqueBytes); pthread_mutex_unlock(&parqueTrava);
   return usados;
 }
 

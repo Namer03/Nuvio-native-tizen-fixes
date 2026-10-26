@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nv <noreply@anthropic.com>
-Date: Fri, 23 Oct 2026 19:47:02 +0200
-Subject: [PATCH 3/3] libass: NEON blur stripe pipeline split across helper
- threads (ass_nv_set_threads)
+Date: Mon, 26 Oct 2026 12:00:00 +0100
+Subject: [PATCH 2/3] libass: NEON blur stripe pipeline split across helper
+ threads
 
 
 diff --git a/libass/arm/neon32.c b/libass/arm/neon32.c
@@ -520,40 +520,3 @@ index 7ffec32..e656db7 100644
      if (mask & ASS_FLAG_LARGE_TILES) {
          engine->tile_order     = 5;
          engine->fill_solid     = ass_fill_solid_tile32_neon32;
-diff --git a/libass/ass.h b/libass/ass.h
-index 20816e2..cce2ad0 100644
---- a/libass/ass.h
-+++ b/libass/ass.h
-@@ -880,6 +880,14 @@ int ass_nv_set_engine(ASS_Renderer *priv, int simd);
- int ass_nv_get_engine(ASS_Renderer *priv);
- int ass_nv_simd_available(void);
- 
-+/**
-+ * \brief Threads for the NEON blur stripe pipeline (process wide, 1..4,
-+ * default 1). Big blurs are split by stripe across helper threads; the
-+ * output is identical. Returns the number now in use.
-+ */
-+int ass_nv_set_threads(int n);
-+int ass_nv_get_threads(void);
-+
- /**
-  * \brief Empty the outline, bitmap and composite caches (cold-cache bench).
-  */
-diff --git a/libass/ass_render_api.c b/libass/ass_render_api.c
-index db1a878..ce75894 100644
---- a/libass/ass_render_api.c
-+++ b/libass/ass_render_api.c
-@@ -327,3 +327,13 @@ int ass_nv_set_engine(ASS_Renderer *priv, int simd)
-     }
-     return ass_nv_get_engine(priv);
- }
-+
-+#if ASS_NV_NEON32
-+int ass_nv32_set_threads(int n);
-+int ass_nv32_get_threads(void);
-+int ass_nv_set_threads(int n) { return ass_nv32_set_threads(n); }
-+int ass_nv_get_threads(void) { return ass_nv32_get_threads(); }
-+#else
-+int ass_nv_set_threads(int n) { (void) n; return 1; }
-+int ass_nv_get_threads(void) { return 1; }
-+#endif

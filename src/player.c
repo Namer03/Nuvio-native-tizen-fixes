@@ -4801,15 +4801,13 @@ void player_atualizar(float dt, Uint32 agora) {
           video_tpk_leituras(&nl, &med, &mx);
           printf(" | TV position readings %u in 10 s, query avg %.0f max %.0f ms%s", nl, med, mx,
                  relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)");
-          { char tp[24], raj[400];
+          { char tp[24];
             legimagem_tipo(tp, sizeof tp);
             { int lv, ps, ag;
               legimagem_valores(&lv, &ps, &ag);
-              printf(" | subtitle correction %d ms (%s, %s scene; light %d, heavy %d)%s", ag ? ps : lv, tp, ag ? "heavy" : "light",
+              printf(" | picture sync %d ms (%s, %s scene; normal %d, busy %d)%s", ag ? ps : lv, tp, ag ? "busy" : "normal",
                      lv, ps, legimagem_fps() > 1.0 ? ", on the frame grid" : ""); }
-            { char lag[240]; telalag_relatorio(lag, sizeof lag); if (lag[0]) printf("%s", lag); }
-            video_tpk_leituras_rajada(raj, sizeof raj);
-            if (raj[0]) printf("\n[relogio] last readings dt/dp ms: %s", raj); } }
+            { char lag[240]; telalag_relatorio(lag, sizeof lag); if (lag[0]) printf("%s", lag); } } }
 #endif
         printf("\n");
       } }
@@ -5431,6 +5429,11 @@ static PlrRect areaVideoLegenda(void) {
  * cresce junto, como o sub-scale do mpv, sem mexer em cor, borda ou lugar. */
 static double escalaFonteAss(void) {
   int pct = legEstilo.tamanho;
+#ifdef NV_TPK
+  /* Styled ASS on the .tpk: its own dialogue size (Subtitles > Style), 100 %
+   * = as authored; libass scales only the dialogue (selective font scale). */
+  if (assperf_get(AP_ESTILO)) return assperf_get(AP_ASSTAM) / 100.0;
+#endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
   if (pct > TXT_LEG_PCT_MAX) pct = TXT_LEG_PCT_MAX;
   return pct / 120.0;
@@ -5590,11 +5593,10 @@ static void desenharLegendaPrincipal(float *topoPilha){
                       legEstilo.opacidade==1?.75f:1.f;
     float alpha = opacidade * entrada;
 #ifdef NV_TPK
-    /* assperf "Subtitle opacity on ASS": o ASS com estilo do autor (mascaras
-     * brancas de typeset) e conteudo do filme; a opacidade da folha de Estilo
-     * deixava o video aparecer por baixo (Kaguya, INBOX). Texto simples segue. */
+    /* Styled ASS: the signs and typesetting (white masks) are part of the
+     * picture; the opacity from Subtitles > Style goes to the dialogue only,
+     * inside libass (assperf AP_ASSOPAC). Plain text follows the sheet. */
     if (assperf_get(AP_ESTILO) && !assrender_texto_simples()) alpha = entrada;
-    if (entrada > 0.999f) assperf_med_alfa(alpha, opacidade);
 #endif
     assrender_pixels_por_unidade(gfx_px_por_unidade());
     assrender_definir_layout(area.x, area.y, area.w, area.h,

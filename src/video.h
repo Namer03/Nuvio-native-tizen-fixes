@@ -197,9 +197,6 @@ int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsi
 int      video_pos_incerta(void);
 // For the 10 s [relogio] line: readings, mean and max query time (ms). Resets.
 void     video_tpk_leituras(unsigned *n, double *media, double *max);
-// The last ~16 readings as "dt/dp" pairs (ms since the first: stamp, position)
-// for the 10 s [relogio] burst line.
-void     video_tpk_leituras_rajada(char *dst, size_t n);
 // Frame rate and HDR of the playing file (MKV header); 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
 #endif

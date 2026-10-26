@@ -1,188 +1,100 @@
-// ASS (libass) PERFORMANCE TEST OPTIONS (dono, 23/10/2026).
+// ASS (libass) SETTINGS FOR THE SAMSUNG .tpk (owner, 23-26/10/2026).
 //
-// O letreiro quadro a quadro de anime (a cena do celular de Kaguya-sama, faixa
-// "Signs & Songs" com 36.944 blocos) deixava a legenda atrasada e aos trancos
-// na S95C: o upload das texturas no fio de desenho custava ~200 ms por quadro,
-// cada lote do mkvass re-lia o documento inteiro com o worker travado, o
-// quadro saia para o instante em que foi PEDIDO (e nao para quando aparece) e
-// as fontes anexadas nao entravam. Diagnostico: claude/libass-perf-DIAGNOSIS.md.
+// The frame-by-frame anime signs (the phone scene of Kaguya-sama, a "Signs &
+// Songs" track with 36,944 blocks) made the subtitles late and jerky on the
+// S95C. Each fix was tested on the TV behind its own option; the winners are
+// now fixed here (the TPK column of assperf.c) and the test panel is gone.
 //
-// Cada correcao tem a sua chave aqui, para o dono testar na TV e mandar o log
-// de cada combinacao. As chaves vivem em assperf.txt (dados), so neste
-// aparelho; a folha fica no player: Legendas > Estilo > "ASS performance".
+// What the person can still change lives in Subtitles > Style on an ASS/SSA
+// track (faixas.c): size and opacity of the dialogue, contrast and gamma to
+// match the TV, render resolution and libass itself (on/off). They are kept in
+// assperf.txt (data), on this TV only.
 //
-// SO O .tpk MUDA. Nos outros alvos assperf_get devolve sempre o valor
-// "Legacy" (o comportamento de antes de 23/10), e a folha nao existe.
+// ONLY THE .tpk CHANGES. assrender.c is shared with webOS, the .wgt and
+// Android: there assperf_get returns 0 for every option, the behaviour from
+// before 23/10.
 //
-// SEGURANCA: enquanto uma faixa ASS desenha com alguma chave fora do Legacy,
-// fica gravada a marca assperf-ativo.txt. Se o app cair com ela gravada, o
-// proximo arranque volta tudo para o Legacy e diz no log.
+// CRASH GUARD: while an ASS track draws with the GPU blur on, the mark
+// assperf-ativo.txt is kept. If the app dies with it there, the next start
+// draws without the GPU blur (that session only) and says so in the log.
 #ifndef NV_ASSPERF_H
 #define NV_ASSPERF_H
 
 #include <stddef.h>
 
 enum {
-  AP_MOTOR,        // libass bitmap engine: 0 plain C (old), 1 NEON (armv7 SIMD, bit-identical)
-  AP_UPLOAD,       // 0 RGBA (old), 1 Alpha 8-bit + tint
-  AP_TEXCACHE,     // 0 off (old), 1 reuse unchanged images
-  AP_TEXANEL,      // texture recycle delay: 0 = 1 frame, 1 = 2 frames, 2 = 3 frames
-  AP_FORATRAVA,    // 0 upload under the queue lock (old), 1 outside
-  AP_INCREMENTAL,  // 0 full reparse per batch (old), 1 new lines only
-  AP_PODA,         // drop past events: 0 off, 1 30 s, 2 2 min, 3 5 min
-  AP_ADIANTE,      // render ahead: 0 off (old), 1 auto, 2 50, 3 100, 4 150, 5 250 ms
-  AP_SEGURAR,      // early frames: 0 show at once, 1 hold until due
-  AP_CACHE,        // libass bitmap cache: 0 32 MB (old), 1 64, 2 128, 3 16
-  AP_GLIFOS,       // libass glyph cache: 0 default (old), 1 1000, 2 4000, 3 10000
-  AP_ESCALA,       // render resolution: 0 100% (old), 1 85%, 2 75%, 3 66%, 4 50%, 5 Auto (100%, 75% while heavy)
-  AP_HINTING,      // 0 light (old), 1 none, 2 normal, 3 native
-  AP_SHAPER,       // 0 complex (old), 1 simple
-  AP_FONTES,       // attached fonts limit: 0 16 MB (old), 1 32, 2 48, 3 64, 4 96
-  AP_CUES,         // app cue copy per batch: 0 every batch (old), 1 every 10 s while libass draws
-  AP_RELAY,        // read subtitle blocks from the local relay stream: 0 off (old), 1 on
-  AP_PRIORIDADE,   // render thread priority: 0 normal (old), 1 higher (try), 2 lower
-  AP_MUDANCA,      // render only when the picture can change: 0 every UI frame (old), 1 on
-  AP_ESTAGIOS,     // libass stage timers in the 10 s log: 0 off, 1 on (measurement, not in presets)
-  AP_BENCH,        // ASS bench: 0 off, 1 run (this engine), 2 run C vs NEON (an action; back to 0 when it starts)
-  AP_ESTILO,       // player subtitle style (colour, border, box, bold, font, opacity) on STYLED ASS:
-                   // 0 applies (old), 1 ignored (drawn as authored, like mpv / NuvioMobile)
-  AP_FIOS,         // NEON blur threads: 0 = 1 (old), 1 = 2, 2 = 3, 3 = 4 (libass splits big blurs; identical output)
-  AP_GPUBLUR,      // blur on the GPU (TPK, libass 0005): 0 off (CPU, exact), 1 on
-  AP_GPUMIN,       // smallest blur sent to the GPU: 0 all, 1 16k px, 2 64k px, 3 256k px
-  AP_LOG,          // subtitle log: 0 off, 1 summary every 10 s, 2 detailed
-  AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
-                   // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
-  AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
-  AP_EXPER,        // GPU blur thread (26/10): 0 off (all on the UI thread), 1 own GL thread (agbfio.c)
-  AP_PARQUE,       // relay blocks beyond the harvest window (26/10): 0 thrown away (before), 1 kept up to 6 MB, 2 up to 12 MB
-  AP_LEVECPU,      // light scenes, GPU blur thread: 0 hold the previous frame up to 80 ms (before), 1 blur late pictures on the CPU now
-  AP_LEVE3,        // light scenes: 0 always 2 frames ahead, 1 3 frames ahead while frames cost > 40 ms
+  // Fixed on the .tpk (0 elsewhere = before 23/10):
+  AP_MOTOR,        // libass bitmap engine: 0 plain C, 1 NEON (armv7 SIMD, bit-identical)
+  AP_UPLOAD,       // 0 RGBA, 1 Alpha 8-bit + tint
+  AP_TEXCACHE,     // 1 = reuse the texture of an unchanged image
+  AP_TEXANEL,      // texture recycle delay: 0 = 1 frame, 1 = 2 frames
+  AP_FORATRAVA,    // 1 = upload outside the queue lock
+  AP_INCREMENTAL,  // 1 = new lines only per batch (0 = full reparse)
+  AP_PODA,         // drop past events: 0 off, 2 = 2 min
+  AP_ADIANTE,      // render ahead: 0 off, 3 = 100 ms
+  AP_SEGURAR,      // 1 = an early frame waits for its moment
+  AP_FONTES,       // attached fonts limit: 0 16 MB, 3 64 MB
+  AP_CUES,         // 1 = the app's own cue copy every 10 s while libass draws
+  AP_RELAY,        // 1 = subtitle blocks from the local relay stream
+  AP_MUDANCA,      // 1 = render only when the picture can change
+  AP_ESTILO,       // 1 = styled ASS drawn as authored (the person's colour, border... do not apply)
+  AP_FIOS,         // NEON blur threads - 1 (2 = 3 threads)
+  AP_GPUBLUR,      // blur on the GPU (libass deferred blur): 1 on; off under the RAM rule / crash guard
+  AP_GPUMIN,       // smallest blur sent to the GPU: 2 = 64k px
+  AP_PARQUE,       // relay blocks beyond the harvest window: 0 thrown away, 1 kept up to 6 MB
+  AP_LEVE3,        // normal scenes: 1 = 3 frames ahead while frames cost > 40 ms
+  // The person's (Subtitles > Style on ASS/SSA, .tpk):
+  AP_ESCALA,       // render resolution: 0 100%, 2 75%, 5 Auto (100%, 75% while busy)
+  AP_GAMA,         // gamma like the TV's slider: 0 off, 1..5 = -1..-5, 6..10 = +5..+1
+  AP_CONTRASTE,    // contrast like the TV's: 0 = 30 (TV default) .. 30 = 0
+  AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
+  AP_ASSTAM,       // dialogue size, %: 50..200 (100)
+  AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
   AP_N
 };
 
-// Valor atual (barato: le um int). Fora do .tpk: sempre o Legacy.
+// Current value (cheap). Outside the .tpk: always 0.
 int  assperf_get(int id);
-// Le assperf.txt (uma vez; chamadas seguintes nao fazem nada) e aplica a
-// guarda de queda. Seguro em qualquer fio.
+// Reads assperf.txt once (later calls do nothing) and runs the crash guard.
 void assperf_iniciar(void);
+// Saves one of the person's options (AP_ESCALA .. AP_ASSOPAC) and logs it.
+void assperf_definir(int id, int v);
+// The person's options back to their defaults.
+void assperf_restaurar(void);
+// Changes with every assperf_definir / GPU blur switch (the worker re-applies).
+unsigned assperf_versao(void);
 
-// Folha: rotulos e valores.
-int         assperf_n_valores(int id);
-const char *assperf_rotulo(int id);
-const char *assperf_valor_rotulo(int id, int v);
-const char *assperf_ajuda(int id);
-void        assperf_definir(int id, int v);   // grava e loga
-// Presets: 0 Recommended, 1 Legacy (all old), 2 Lightest.
-void        assperf_preset(int p);
-const char *assperf_preset_nome(void);        // "Recommended" / "Legacy" / "Lightest" / "Custom"
-// Uma linha "upload=alpha texcache=on ..." para o log e para a folha.
-void        assperf_resumo(char *dst, size_t n);
-// Contador que muda a cada assperf_definir/preset (quem le reaplica).
-unsigned    assperf_versao(void);
-
-// Valores derivados.
+// Derived values.
 size_t assperf_fontes_teto(void);            // bytes
-double assperf_escala(void);                 // 1.0 .. 0.5 (Auto: the scale it is at now)
-// Render resolution Auto (AP_ESCALA = 5, dono 25/10: 75 % only as a fallback
-// when subtitles get heavy). Worker: the scale for the next render; Auto
-// decides here from the cost the worker and the GL thread report.
-double assperf_escala_quadro(void);
-// 1 while the subtitles are heavy (Auto at 75 %, or a new frame costing over
-// the Auto threshold in the last 2 s). For other work to yield to libass
-// (owner 25/10: libass comes before the seek thumbnails).
-int    assperf_legendas_pesadas(void);
-// Cena pesada para a correcao da legenda: o fio GL informa o custo de cada
-// quadro novo (desenho + fio do blur); 1 = pesada agora (com histerese).
-void   assperf_carga_gl(double ms);
-int    assperf_pesado(void);
-void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
-void   assperf_escala_custo_gl(double glMs);    // GL thread: upload + GPU blur of a new frame
-void   assperf_escala_reset(void);              // track change: back to 100 %
-int    assperf_adiante_fixo_ms(void);        // -1 = auto, 0 = off
+int    assperf_fios(void);                   // 1..4
+long   assperf_gpu_min(void);                // pixels (libass ass_nv_set_deferred_min_area)
+int    assperf_adiante_fixo_ms(void);        // 0 = off
 long   assperf_poda_ms(void);                // 0 = off
-// Ajuste de cor da legenda para casar com o video (AP_GAMA, AP_CONTRASTE). O
-// processamento de imagem da TV (contraste, gama) so vale no plano de video.
-double assperf_gama(void);                   // expoente: 1.0 = off
-double assperf_contraste(void);              // ganho: 1.0 (30) .. 0.70 (0)
+double assperf_escala(void);                 // render resolution now (Auto: the one in use)
+// Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
+// processing only touches the video plane.
+double assperf_gama(void);                   // exponent: 1.0 = off
+double assperf_contraste(void);              // gain: 1.0 (30) .. 0.70 (0)
 
-// Marca da guarda de queda (assrender: faixa ASS ligada/desligada).
+// Render resolution Auto and the busy-scene flag (picture sync in legimagem.c).
+double assperf_escala_quadro(void);          // worker: the scale for the next render
+void   assperf_escala_reset(void);           // track change: back to 100 %
+void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
+void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (0 = playing tick)
+// Worker: lines starting in the next second, their text size and the pictures
+// in this frame (busy-scene forecast).
+void   assperf_previsao(int inicios, long chars, int imagens);
+int    assperf_pesado(void);                 // 1 = busy scene now
+int    assperf_legendas_pesadas(void);       // busy or Auto at 75 % (others yield to libass)
+
+// Crash guard mark (assrender: an ASS track starts / stops drawing).
 void assperf_faixa_ativa(int ativa);
+// GPU blur RAM rule: off below 180 MB free, back on after 10 s at 225 MB or
+// more. GL thread, once per drawn frame (reads the free RAM once a second).
+void assperf_ram_tick(void);
 
-// --- medidas (o log "Subtitles" da pagina da rede) --------------------------
-// Tudo barato e seguro em qualquer fio. O relatorio sai a cada 10 s, so com
-// faixa ASS ativa, em uma linha "[assperf] 10s: ...".
-void assperf_med_render(double ms, double esperaMs, int mudou);   // worker
-void assperf_med_upload(double ms, size_t bytes, int imagens, int reusadas, int quadroNovo); // fio GL
-void assperf_med_quadro(double desenhoMs);                        // fio GL, por quadro com ASS
-void assperf_med_lote(double ms, int novos, int total, int cheio); // carga do documento
-void assperf_med_atraso(double ms);                               // quadro mostrado vs. o instante dele
-void assperf_med_adiante(double ms);                              // adiantamento usado
-void assperf_med_relay(int blocos, int usados);                   // mkvfix -> mkvass
-void assperf_med_parque(long bytes);
-// Worker: lines starting in the next second, their text size, and pictures in this frame (heavy-scene forecast).
-void assperf_previsao(int inicios, long chars, int imagens);                              // relay blocks kept ahead (mkvass)
-void assperf_med_poda(int removidos);
-void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
-// Blur na GPU (assrender): um lote do fio GL com trabalho novo, e a conta do
-// libass por quadro (worker).
-typedef struct {
-  unsigned blurs, finais, reusos, falhas, cpu, adiantados, criadas, reaproveitadas;
-  double ms; int medido;
-  unsigned nTam[4]; double msTam[4];   // GPU, so com os cronometros
-  double msGpu; unsigned nGpu;          // tempo de GPU medido, todos os pedidos
-} AssperfGpu;
-// Passos de um lote do blur na GPU, em tempo de CPU do fio GL (assgpublur), e
-// as consultas de tempo da GPU (emitidas, lidas, descartadas pelo "disjoint").
-typedef struct {
-  unsigned lotes, lotesTrab, envios, passadas, finais;
-  double salvar, envio, passadasMs, finalMs, restaurar, loteMs, loteMax;
-  unsigned qEmit, qLidas, qDisj, qPend; int qModo;   // qModo: 0 sem, 1 consultas, 2 glFinish 1 em N
-} AssperfGpuPassos;
-void assperf_med_gpupassos(const AssperfGpuPassos *p);
-void assperf_med_gpublur(const AssperfGpu *g);
-typedef struct {
-  unsigned comBlur, adiados, be, clip, pequenos;
-  unsigned cpuN[4]; double cpuMs[4];  // gaussianos que o libass fez na CPU, por tamanho
-} AssperfAdiado;
-void assperf_med_adiado(const AssperfAdiado *a);
-long assperf_gpu_min(void);                  // pixels (libass ass_nv_set_deferred_min_area)
-int  assperf_gpu_adiante(void);              // ms de GPU por quadro de UI para a fila (pre-blur)
-void assperf_gpublur_formato(const char *s);   // "R16F" etc. (fio GL, uma vez)
-int  assperf_med_tick(void);                                      // fio GL: imprime a cada 10 s (1 = imprimiu)
-// O quadro de UI: o que as legendas custaram no fio GL (assrender soma, o laco
-// principal toma no fim do quadro para a linha [quadro-cpu]). So o fio GL.
-typedef struct { double total, upload, gpu, desenho, adiante; int n; } AssperfSub;
-void assperf_sub_somar(const AssperfSub *s);
-void assperf_sub_tomar(AssperfSub *out);     // copia e zera
 #ifdef NV_ASSPERF_TESTE
-void assperf_teste_definir(int id, int v);   // provas no computador
-void assperf_med_forcar(void);               // imprime a janela agora
+void assperf_teste_definir(int id, int v);   // tests on the computer
 #endif
-// libass por etapa (o libass do .tpk tem cronometros: tools/tpk/libass-nv).
-// O worker manda um por render; sai na linha "[assperf] stages:" da janela.
-typedef struct {
-  int motor;                 // 0 C, 1 NEON, -1 desconhecido
-  double frameMs;            // dentro de ass_render_frame
-  double stageMs[8];         // other, shape, outline, raster, blur, be, compose, clip
-  unsigned frames, events, images;
-  unsigned hit[3], miss[3];  // caches outline, bitmap, composite
-  // divisao do blur entre os fios (libass 0004: ass_nv_par_stats_take)
-  unsigned parJobs, parSplit, parSmall, parBusy, parOne;
-  unsigned long long parLanes, parLanesSplit;
-  int renderers;             // sempre 1 (os renderers em paralelo sairam)
-} AssperfEstagios;
-void assperf_med_estagios(const AssperfEstagios *e);
-extern const char *const assperf_estagio_nome[8];
-// Chave de medida (log, cronometros, bench...): fora dos presets e da guarda.
-int  assperf_e_medida(int id);
-// Chave decidida pelos testes na TV: fora da folha, sempre o valor bom no .tpk.
-int  assperf_fixa(int id);
-int  assperf_fios(void);                     // 1..4
-// Bench: estado para a folha ("Running...") e o resumo do ultimo.
-void assperf_bench_estado(int rodando, const char *resumo);
-int  assperf_bench_rodando(void);
-
-// Linha curta para a folha ("render 4.1/38 ms · upload 0.6/3 ms · late 12 ms").
-void assperf_med_texto(char *dst, size_t n);
 
 #endif

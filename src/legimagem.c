@@ -11,12 +11,11 @@
 #include <string.h>
 
 #define LI_ARQ "legimagem.txt"
-#define LI_PADRAO 190   /* owner 25/10: 170-210 ms on the S95C depending on the scene */
+#define LI_PADRAO 170   /* normal scenes; owner 26/10 (S95C) */
 #define LI_MAX 300
 #define LI_TIPOS 16
-/* Cena pesada (assperf_pesado): o seu proprio valor, chave + "p" (dono 26/10:
- * 140-150 ms na cena pesada, 190-210 na leve). Sem valor ainda: leve - 50. */
-#define LI_PESADA_MENOS 50
+/* Busy scenes (assperf_pesado) have their own value, key + "p". */
+#define LI_PESADA_PADRAO 150
 
 static struct { char chave[12]; int ms; } tipos[LI_TIPOS];
 static int nTipos, lido;
@@ -90,12 +89,10 @@ static int valor_leve(void) {
   return i >= 0 ? tipos[i].ms : LI_PADRAO;
 }
 static int valor_pesado(void) {
-  char k[12]; int i, v;
+  char k[12]; int i;
   chavePesada(k, sizeof k);
   i = achar(k);
-  if (i >= 0) return tipos[i].ms;
-  v = valor_leve() - LI_PESADA_MENOS;
-  return v < 0 ? 0 : v;
+  return i >= 0 ? tipos[i].ms : LI_PESADA_PADRAO;
 }
 int legimagem_ms(void) {
   ler();
@@ -125,8 +122,18 @@ void legimagem_ajustar(int deltaMs, int pesada) {
   if (tipos[i].ms > LI_MAX) tipos[i].ms = LI_MAX;
   gravar();
   legimagem_tipo(tp, sizeof tp);
-  printf("[relogio] subtitle correction for %s%s: %d ms (was %d ms)\n", tp, pesada ? ", heavy scenes" : "", tipos[i].ms, antes);
+  printf("[relogio] picture sync for %s, %s scenes: %d ms (was %d ms)\n", tp, pesada ? "busy" : "normal", tipos[i].ms, antes);
   fflush(stdout);
+}
+
+void legimagem_restaurar(void) {
+  char k[2][12]; int j, i;
+  ler();
+  chaveAtual(k[0], sizeof k[0], NULL, NULL);
+  chavePesada(k[1], sizeof k[1]);
+  for (j = 0; j < 2; j++)
+    if ((i = achar(k[j])) >= 0) { tipos[i] = tipos[--nTipos]; }
+  gravar();
 }
 
 void legimagem_tipo(char *dst, size_t n) {
@@ -146,6 +153,7 @@ int  legimagem_disponivel(void) { return 0; }
 int  legimagem_ms(void) { return 0; }
 void legimagem_valores(int *leve, int *pesada, int *agoraPesada) { *leve = *pesada = 0; *agoraPesada = 0; }
 void legimagem_ajustar(int deltaMs, int pesada) { (void)deltaMs; (void)pesada; }
+void legimagem_restaurar(void) {}
 void legimagem_tipo(char *dst, size_t n) { if (n) dst[0] = 0; }
 double legimagem_fps(void) { return 0.0; }
 #endif

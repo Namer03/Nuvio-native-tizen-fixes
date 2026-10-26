@@ -27,7 +27,6 @@
 #include <ctype.h>
 #include "bidi.h"
 #include "layout.h"
-#include "legimagem.h"
 
 // --- identity -------------------------------------------------------------------
 // FNV-1a 64 over the fields that identify a candidate within one media session.
@@ -185,8 +184,7 @@ void legendasui_definir_sync(const LegendasSyncProvider *p) {
 }
 
 // --- rows --------------------------------------------------------------------------
-static int corrPesada;   // Subtitle correction row: 0 = Left/Right edit the light value, 1 = the heavy one
-typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_PAR, LR_CORR } LuiTipo;
+typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_PAR } LuiTipo;
 typedef struct {
   LuiTipo tipo;
   int slot, cand;
@@ -340,15 +338,12 @@ static void montarLinhas(void) {
     }
     for (slot = 0; slot < 2; slot++)
       if (estadoSync(slot)) linhaFixa(LR_SYNC, slot, slot ? "sync|s" : "sync|p");
-    // Subtitle correction (legimagem.h): the TV picture's own delay while playing.
-    if (legimagem_disponivel() && legendasui_slot_identidade(0)[0]) linhaFixa(LR_CORR, 0, "corr");
     linhaFixa(LR_MAIS, 0, "mais");
   } else {
     // Same full list and per-slot delay controls as before; the language
     // submenu merely filters this list, without introducing another screen.
     linhaFixa(LR_ALVO, alvo, "m|alvo");
     linhaFixa(LR_ATRASO, alvo, "m|atraso");
-    if (legimagem_disponivel() && !alvo) linhaFixa(LR_CORR, 0, "m|corr");
     linhaFixa(LR_NENHUMA, alvo, "m|-");
     // Sem idioma preferido (ou com "mostrar todas") o painel abre direto aqui
     // e a linha do AutoSync, que so existia em Recomendadas, sumia.
@@ -614,7 +609,6 @@ int legendasui_evento(const SDL_Event *e) {
     int d = k == SDLK_RIGHT ? 1 : -1;
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
-    if (l && l->tipo == LR_CORR) { legimagem_ajustar(d, corrPesada); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -636,7 +630,6 @@ int legendasui_evento(const SDL_Event *e) {
       case LR_CAND: escolher(l->slot, l->cand >= 0 ? &cand[l->cand] : NULL); break;
       case LR_ALVO: alvo = !alvo; break;
       case LR_ATRASO: break;
-      case LR_CORR: corrPesada = !corrPesada; break;   // Enter: Left/Right edit the other value
       case LR_SYNC: {
         const char *rot[4];
         int n = nAcoes(l->slot, rot, 4);
@@ -847,19 +840,6 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       snprintf(nome, tn, "%s", i18n("Atraso"));
       if (!v) snprintf(sub, ts, "0 s");
       else { snprintf(sub, ts, "%+.2f s", v / 1000.0f); plrui_decimal(sub); }
-      *icone = "aj_clock";
-      break; }
-    case LR_CORR: {
-      // "Automatic · [190] / 140 ms · 140 em uso · 24 fps": light / heavy value
-      // for this kind of video. Brackets = the one Left/Right nudge (1 ms);
-      // Enter switches (owner 26/10). The scene flag picks the one in use.
-      char tp[24];
-      legimagem_tipo(tp, ts > 24 ? 24 : ts);
-      snprintf(nome, tn, "%s", i18n("Correção da legenda"));
-      { int lv, ps, ag;   // light / heavy scene value; the one in use now in brackets
-        legimagem_valores(&lv, &ps, &ag);
-        if (corrPesada) snprintf(sub, ts, "%s · %d / [%d] ms · %d %s · %s", i18n("Automático"), lv, ps, ag ? ps : lv, i18n("em uso"), tp);
-        else snprintf(sub, ts, "%s · [%d] / %d ms · %d %s · %s", i18n("Automático"), lv, ps, ag ? ps : lv, i18n("em uso"), tp); }
       *icone = "aj_clock";
       break; }
     case LR_CAND:

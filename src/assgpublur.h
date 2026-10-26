@@ -21,68 +21,24 @@ typedef struct {
   int subX, subY, w, h;              // a imagem dentro de src
   int fix, fillDx, fillDy;           // fill em (x + fillDx, y + fillDy) de src
   int shiftX, shiftY;                // 1/64 px, depois do fix
-  long area;                         // pixels do bitmap sem o acolchoamento (custo por tamanho)
   int soCache;                       // 1 = so devolve o que ja esta pronto (nao borra)
-  int adiantado;                     // 1 = feito antes da hora (quadro na fila)
 } AgbPedido;
-
-typedef struct {
-  unsigned blurs;        // gaussianos novos (fontes que nao estavam no cache)
-  unsigned finais;       // texturas finais novas
-  unsigned reusos;       // texturas finais achadas no cache
-  unsigned falhas;       // pedidos que a GPU nao fez (o chamador cai na CPU)
-  double ms;             // tempo dos lotes com trabalho novo
-  int medido;            // 2 = consultas de tempo da GPU; 1 = glFinish; 0 = so o envio
-  unsigned adiantados;   // texturas finais feitas para quadros ainda na fila
-  unsigned criadas, reaproveitadas;   // texturas novas / tiradas da reserva
-  unsigned nTam[4];      // so com glFinish: gaussianos novos por tamanho (<16k, 16-64k, 64-256k, >=256k px)
-  double msTam[4];       // e o tempo de GPU desses pedidos
-  double msGpu;          // tempo de GPU de todos os pedidos medidos (consultas ou glFinish)
-  unsigned nGpu;
-} AgbStats;
 
 // Fio GL. 1 = shaders e alvos prontos (uma vez; depois so devolve o resultado).
 int  assgpublur_iniciar(void);
-const char *assgpublur_formato(void);   // formato intermediario em uso ("R16F", ...)
 // Lote: salva/restaura o estado GL do app em volta dos pedidos de um quadro.
-// medir = glFinish no comeco e no fim (tempo real; so com os cronometros).
-void assgpublur_lote_ini(int medir);
+void assgpublur_lote_ini(void);
 void assgpublur_lote_fim(void);
 // Textura final (RGBA8, w x h, alfa = o valor) do pedido; 0 = falhou.
 // `quadro` = contador de quadros GL (o cache nunca recicla o que esta em uso).
 GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chave);
 // Quadro repetido: mantem viva a textura de `chave`.
 void assgpublur_usar(unsigned long long chave, unsigned quadro);
-// Le o alfa de uma textura final (snapshot). 1 = ok.
-int  assgpublur_ler(GLuint tex, int w, int h, unsigned char *alfa);
-void assgpublur_stats(AgbStats *out);   // copia e zera
-// Para onde vai o tempo de um lote no fio GL (relogio da CPU, nao da GPU) e o
-// estado das consultas de tempo da GPU. Copia e zera.
-typedef struct {
-  unsigned lotes, lotesTrab, envios, passadas, finais;
-  double salvar, envio, passadasMs, finalMs, restaurar, loteMs, loteMax;
-  unsigned qEmit, qLidas, qDisj, qPend;
-  int qModo;             // 0 sem medida, 1 consultas, 2 glFinish em 1 lote de 16 (as consultas nunca responderam)
-} AgbPassos;
-void assgpublur_passos(AgbPassos *out);
-// Custo esperado de um gaussiano novo deste tamanho na GPU (ms, medido).
-double assgpublur_custo(long area);
-void assgpublur_apagar(void);           // solta tudo da GPU (troca de faixa)
+void assgpublur_apagar(void);           // solta tudo da GPU (troca de faixa, regra da RAM)
 // Tamanho da TEXTURA devolvida pelo ultimo assgpublur_obter (>= a imagem: classe
 // de tamanho, a sobra transparente). Desenhe a textura inteira com este tamanho.
 void assgpublur_ultimo_tam(int *w, int *h);
 // Chamar por quadro: depois de ~5 s sem blur novo solta caches e reserva.
 void assgpublur_aparar(unsigned quadro);
-// Fio proprio (agbfio.c): chave do cache final de um pedido (pura, qualquer
-// fio), se ela esta no cache, o modo (sem gfx_*, reserva espera 3 quadros) e
-// soltar TUDO, programas e FBO incluidos (troca de contexto: o proximo
-// assgpublur_iniciar recria no contexto de quem chamar).
-unsigned long long assgpublur_chave(const AgbPedido *p);
-int  assgpublur_tem(unsigned long long chave);
-void assgpublur_modo_fio(int on);
-void assgpublur_soltar_final(unsigned long long chave);   // so no modo fio: quem solta as finais e o agbfio
-void assgpublur_reiniciar(void);
-// So para testes: forca o formato intermediario (0 auto, 1 RGBA8).
-void assgpublur_forcar_rgba8(int on);
 
 #endif

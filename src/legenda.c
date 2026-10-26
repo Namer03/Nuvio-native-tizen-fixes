@@ -21,6 +21,33 @@ static unsigned geracao;
 // exige olhar para tras — e sem saber ate onde, "para tras" e o arquivo
 // inteiro, a cada quadro.
 static double maiorDur;
+static int docAss;   // the current document is ASS/SSA (sob trava)
+
+/* libass off (.tpk, Subtitles > Style): an ASS/SSA track is drawn by the app
+ * as plain text, dialogue only (assDialogoSo). */
+static int libassDesligado(void) {
+#ifdef NV_TPK
+  return !assperf_get(AP_LIBASS);
+#else
+  return 0;
+#endif
+}
+/* A sign / typesetting line: positioned, moving, clipped, rotated around an
+ * origin or a drawing. Without libass they would be text in the wrong place. */
+static int assLetreiro(const char *t) {
+  for (; t && *t; t++) {
+    if (*t != '{') continue;
+    for (t++; *t && *t != '}'; t++) {
+      if (*t != '\\') continue;
+      if (!strncasecmp(t + 1, "pos(", 4) || !strncasecmp(t + 1, "move(", 5) || !strncasecmp(t + 1, "clip(", 5) ||
+          !strncasecmp(t + 1, "iclip(", 6) || !strncasecmp(t + 1, "org(", 4) || !strncasecmp(t + 1, "pbo", 3) ||
+          ((t[1] == 'p' || t[1] == 'P') && t[2] >= '1' && t[2] <= '9'))
+        return 1;
+    }
+    if (!*t) break;
+  }
+  return 0;
+}
 
 static double tempo(const char *s) {
   double h=0,m=0,seg=0,t;
@@ -385,6 +412,7 @@ static int extrairAss(const char *corpo,LegendaCue **saida,int *parcial) {
   int cNome=0,cCor=1,cNeg=2,cIta=3,cAlin=4;   /* colunas de Style: */
   int temFmtEstilo=0;
   int cIni=1,cFim=2,cEstilo=3,cTexto=9;       /* colunas de Dialogue: */
+  int dialogoSo=libassDesligado();
 
   if(parcial)*parcial=0;
   if (saida) *saida=NULL;
@@ -476,6 +504,7 @@ static int extrairAss(const char *corpo,LegendaCue **saida,int *parcial) {
       copiaCampo(campoAss(linha,cEstilo),nomeEst,sizeof nomeEst);
       pt = campoAss(linha,cTexto);
       if (!pt) {if(parcial)*parcial=1;continue;}
+      if (dialogoSo && assLetreiro(pt)) continue;
       a=tempo(trim(ini)); b=tempo(trim(fim));
       if (a<0 || b<=a) continue;   // so o bloco ruim cai (ver extrairSrt)
 
@@ -782,8 +811,8 @@ static void *baixar(void *u) {
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);
   if(p->g==geracao&&ligada){
-    free(cues);cues=v;nCues=n;maiorDur=dur;v=NULL;
-    aceitarAss=ass ? 1 : plain ? 2 : 0;
+    free(cues);cues=v;nCues=n;maiorDur=dur;v=NULL;docAss=ass;
+    aceitarAss=ass ? (libassDesligado() ? 0 : 1) : plain ? 2 : 0;
     assrender_geracao(geracao);
   }
   pthread_mutex_unlock(&trava);
@@ -822,7 +851,7 @@ unsigned legenda_carregar_com(const char *url, LegendaBaixada pronto, void *u) {
     preDescartar("outra escolha");
     p->pre = downloadSessao(url);
   }
-  ligada=1;p->g=++geracao;free(cues);cues=NULL;nCues=0;maiorDur=0;
+  ligada=1;p->g=++geracao;free(cues);cues=NULL;nCues=0;maiorDur=0;docAss=0;
   pthread_mutex_unlock(&trava);
   assrender_geracao(p->g);
   assrender_limpar_fontes();
@@ -850,11 +879,11 @@ static unsigned definirCorpo(const char *corpo, int checar, unsigned dono) {
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);
   if(checar && geracao!=dono){ pthread_mutex_unlock(&trava); free(v); free(plain); return 0; }
-  ligada=1;geracao++;g=geracao;free(cues);cues=v;nCues=n;maiorDur=dur;
+  ligada=1;geracao++;g=geracao;free(cues);cues=v;nCues=n;maiorDur=dur;docAss=ass;
   pthread_mutex_unlock(&trava);
   assrender_geracao(g);
   assrender_limpar();
-  if (ass) {
+  if (ass && !libassDesligado()) {
     assrender_carregar(corpo, strlen(corpo), g);
     fprintf(stderr, "[legenda] %s\n", assrender_diagnostico());
   }
@@ -866,6 +895,12 @@ void legenda_definir_corpo(const char *corpo) { definirCorpo(corpo, 0, 0); }
 
 unsigned legenda_definir_corpo_se(const char *corpo, unsigned dono) {
   return definirCorpo(corpo, 1, dono);
+}
+
+int legenda_ass_ativa(void) {
+  int r;
+  pthread_mutex_lock(&trava); r=ligada&&docAss; pthread_mutex_unlock(&trava);
+  return r;
 }
 
 unsigned legenda_geracao(void) {
@@ -906,9 +941,9 @@ int legenda_atualizar_corpo_se(const char *corpo, unsigned dono) {
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);
   if(!ligada||geracao!=dono){ pthread_mutex_unlock(&trava); free(v); return 0; }
-  free(cues);cues=v;nCues=n;maiorDur=dur;
+  free(cues);cues=v;nCues=n;maiorDur=dur;docAss=ass;
   pthread_mutex_unlock(&trava);
-  if (ass) assrender_atualizar(corpo, strlen(corpo), dono);
+  if (ass && !libassDesligado()) assrender_atualizar(corpo, strlen(corpo), dono);
   return 1;
 }
 
@@ -927,16 +962,16 @@ void legenda_atualizar_corpo(const char *corpo) {
   for(i=0;i<n;i++){ double d=v[i].fim-v[i].inicio; if(d>dur)dur=d; }
   pthread_mutex_lock(&trava);
   ok=ligada;
-  if(ok){ g=geracao; free(cues);cues=v;nCues=n;maiorDur=dur; v=NULL; }
+  if(ok){ g=geracao; free(cues);cues=v;nCues=n;maiorDur=dur; v=NULL; docAss=ass; }
   pthread_mutex_unlock(&trava);
   if(!ok){ free(v); legenda_definir_corpo(corpo); return; }
-  if (ass) assrender_atualizar(corpo, strlen(corpo), g);
+  if (ass && !libassDesligado()) assrender_atualizar(corpo, strlen(corpo), g);
 }
 
 void legenda_desligar(void) {
   pthread_mutex_lock(&trava);
   preDescartar(i18n("legenda desligada"));
-  ligada=0;geracao++;free(cues);cues=NULL;nCues=0;maiorDur=0;
+  ligada=0;geracao++;free(cues);cues=NULL;nCues=0;maiorDur=0;docAss=0;
   pthread_mutex_unlock(&trava);
   assrender_geracao(geracao);
   assrender_limpar_fontes();

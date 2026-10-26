@@ -44,10 +44,6 @@ void tpkborda_quadro(void) {
     }
     return;
   }
-  printf("[assperf] subtitle edges: premult %s\n",
-         quer ? "on (libass is drawing or a line starts within 200 ms)"
-              : "off (no libass image for 1 s, or the libass track / player stopped)");
-  fflush(stdout);
   hPremult(quer);
 }
 #endif
