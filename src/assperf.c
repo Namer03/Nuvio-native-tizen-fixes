@@ -117,6 +117,14 @@ static const ApDef DEF[AP_N] = {
     "Subtitle blocks the TV streams beyond the 12 s harvest window wait in memory until the playhead gets there "
     "(the lines after dense sign scenes arrive in time, no CDN requests). Off: thrown away, as before (less RAM).",
     2, 1, 3, { "Off (before)", "Up to 6 MB", "Up to 12 MB" } },
+  [AP_LEVECPU] = { "levecpu", "Light scenes: late blur on CPU",
+    "With the GPU blur thread: in light scenes a picture the thread has not finished is blurred on the CPU right away, "
+    "so the sign changes on time. Off: the previous frame stays up to 80 ms (before). Heavy scenes always wait.",
+    1, 1, 2, { "Off (hold, before)", "On" } },
+  [AP_LEVE3] = { "leve3", "Light scenes: 3 frames ahead",
+    "In light scenes the renderer works 3 video frames ahead (125 ms) while recent frames cost over 40 ms "
+    "(masked signs), otherwise 2. Off: always 2 (100 ms).",
+    1, 1, 2, { "Off (2 frames)", "On when frames are slow" } },
   [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
     "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
     "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",

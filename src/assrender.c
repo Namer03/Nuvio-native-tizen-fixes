@@ -248,6 +248,9 @@ static long long assAgoraUiMs = LLONG_MIN;     // o quadro em tela agora (desenh
 static unsigned assAgoraUiGeracao;
 static int assPedidoForcado;                   // documento/tela mudou: nada de pular pela validade
 static unsigned assSeqFeitos, assSeqPulados;   // 10 s: quadros do meio feitos / ja vencidos
+static double assRenderPico;                   // ms: pico recente do render (cai 5 % por render), __atomic
+static int assAtualSemEspera;                  // fio GL: o quadro em tela entrou sem as imagens da GPU (cena leve)
+static unsigned assLeveCpu;                    // 10 s: quadros leves que entraram na hora, blur na CPU
 static int assEventos, assFontes, assResolucaoFonte;
 static long long assCoberturaIni, assCoberturaFim;
 static ASS_Library *assLib;
@@ -1216,6 +1219,9 @@ static void *ass_worker_loop(void *unused) {
     { unsigned long long us = (unsigned long long)((b.tv_sec - a.tv_sec) * 1000000ll +
                               (b.tv_nsec - a.tv_nsec) / 1000ll);
       assUltimoRenderPuroMs = ass_ms_entre(&c0, &b);
+      { double pico; __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
+        pico = assUltimoRenderPuroMs > pico ? assUltimoRenderPuroMs : pico * 0.95;
+        __atomic_store(&assRenderPico, &pico, __ATOMIC_RELAXED); }
       assMed.renders++; assMed.renderSomaUs += us;
       if (us > assMed.renderMaxUs) assMed.renderMaxUs = us;
       if (igual) assMed.iguais++;
@@ -1630,7 +1636,7 @@ static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsig
     struct timespec w0, w1;
     ass_gpu_pedido(f, im, &p);
     clock_gettime(CLOCK_MONOTONIC, &w0);
-    t = agbfio_obter(&p, assGlQuadro, gk, tw, th, 150);
+    t = agbfio_obter(&p, assGlQuadro, gk, tw, th, assAtualSemEspera ? 0 : 150);
     clock_gettime(CLOCK_MONOTONIC, &w1);
     if (t) return t;
     *tw = im->w; *th = im->h;
@@ -2999,6 +3005,10 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     if (fps > 0 && adiante > 0 && !assperf_pesado()) {
       long long q = llround((double)adiante * fps / 1000.0);
       if (q < 1) q = 1;
+      /* Cena leve com quadros caros (mascaras do polegar: 50-65 ms no log 15):
+       * 3 quadros a frente, senao dois seguidos chegam um quadro tarde. */
+      { double pico; __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
+        if (assperf_get(AP_LEVE3) && pico > 40.0 && q < 3) q = 3; }
       pedido = ass_na_grade(agora + llround((double)q * 1000.0 / fps));
     } else pedido = ass_na_grade(agora + adiante); }
   if (novoCaminho != assCaminhoNovoAntes) {
@@ -3087,10 +3097,14 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       double agoraMs;
       clock_gettime(CLOCK_MONOTONIC, &tn);
       agoraMs = tn.tv_sec * 1000.0 + tn.tv_nsec / 1e6;
-      if (pronto >= 0) { devido = pronto; assFioDevidoDesde = 0; }
+      if (pronto != devido && assperf_get(AP_LEVECPU) && !assperf_pesado()) {
+        /* Cena leve (dono 26/10, polegar aos 19:04): o quadro devido entra NA
+         * HORA; o que o fio ainda nao borrou vai na CPU (poucos e pequenos). */
+        assFioDevidoDesde = 0; assAtualSemEspera = 1; assLeveCpu++;
+      } else if (pronto >= 0) { devido = pronto; assFioDevidoDesde = 0; assAtualSemEspera = 0; }
       else if (!assFioDevidoDesde) { assFioDevidoDesde = agoraMs; assFioSeguros++; devido = -1; }
       else if (agoraMs - assFioDevidoDesde < ASS_FIO_ESPERA_MS) { assFioSeguros++; devido = -1; }
-      else { assFioDevidoDesde = 0; assFioAtrasados++; }
+      else { assFioDevidoDesde = 0; assFioAtrasados++; assAtualSemEspera = 0; }
     }
 #else
     (void)pronto;
@@ -3245,7 +3259,8 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
              " frames drawn before ready (after %.0f ms) %u | the UI thread waited %u times, %.0f ms in all"
              " (the gpu blur steps above are the blur thread's)\n",
              assFioSeguros, ASS_FIO_ESPERA_MS, assFioAtrasados, assFioEsperas, assFioEsperaMs);
-      assFioEsperas = 0; assFioEsperaMs = 0; assFioSeguros = assFioAtrasados = 0;
+      if (assLeveCpu) printf("[assperf] light scenes: %u subtitle frame(s) went in on time with the late blur done on the CPU\n", assLeveCpu);
+      assFioEsperas = 0; assFioEsperaMs = 0; assFioSeguros = assFioAtrasados = 0; assLeveCpu = 0;
     } else if (assperf_get(AP_GPUBLUR)) printf("[assperf] gpu blur thread: off (everything on the UI thread)\n");
 #endif
     { unsigned feitos, pulados;

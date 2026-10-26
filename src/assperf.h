@@ -55,6 +55,8 @@ enum {
   AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
   AP_EXPER,        // GPU blur thread (26/10): 0 off (all on the UI thread), 1 own GL thread (agbfio.c)
   AP_PARQUE,       // relay blocks beyond the harvest window (26/10): 0 thrown away (before), 1 kept up to 6 MB, 2 up to 12 MB
+  AP_LEVECPU,      // light scenes, GPU blur thread: 0 hold the previous frame up to 80 ms (before), 1 blur late pictures on the CPU now
+  AP_LEVE3,        // light scenes: 0 always 2 frames ahead, 1 3 frames ahead while frames cost > 40 ms
   AP_N
 };
 
