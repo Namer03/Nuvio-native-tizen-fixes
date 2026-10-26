@@ -113,6 +113,10 @@ static const ApDef DEF[AP_N] = {
     "On (26/10): the GPU blur work runs on a separate thread with its own GL context; the UI thread only draws finished pictures "
     "and never waits for them. Off: everything on the UI thread, as before (for comparison).",
     1, 1, 2, { "Off (previous build)", "Own GPU thread" } },
+  [AP_PARQUE] = { "parque", "Keep subtitle blocks ahead",
+    "Subtitle blocks the TV streams beyond the 12 s harvest window wait in memory until the playhead gets there "
+    "(the lines after dense sign scenes arrive in time, no CDN requests). Off: thrown away, as before (less RAM).",
+    2, 1, 3, { "Off (before)", "Up to 6 MB", "Up to 12 MB" } },
   [AP_CONTRASTE] = { "contraste", "Subtitle contrast (match TV)",
     "Set the same number as the TV's Contrast (it only changes the video). 30 is where subtitle white matches video "
     "white; lower values dim subtitles the way the TV dims the video (Samsung's gain, (c + 70) / 100).",
@@ -542,7 +546,7 @@ void assperf_faixa_ativa(int ativa) {
 static pthread_mutex_t medTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct {
   long renders, mudou, quadros, novos, uploads, imagens, reusadas, lotes, linhasNovas, cheios, atrasos;
-  long relayBlocos, relayUsados, podados;
+  long relayBlocos, relayUsados, podados, parqueMax;
   double renderSoma, renderMax, esperaMax, upSoma, upMax, desMax, loteSoma, loteMax;
   double atrasoSoma, atrasoMax, atrasoMin, adianteSoma; long adianteN;
   size_t upBytes;
@@ -638,6 +642,11 @@ void assperf_med_atraso(double ms) {
 void assperf_med_adiante(double ms) {
   pthread_mutex_lock(&medTrava);
   M.adianteSoma += ms; M.adianteN++;
+  pthread_mutex_unlock(&medTrava);
+}
+void assperf_med_parque(long bytes) {
+  pthread_mutex_lock(&medTrava);
+  if (bytes > M.parqueMax) M.parqueMax = bytes;
   pthread_mutex_unlock(&medTrava);
 }
 void assperf_med_relay(int blocos, int usados) {
@@ -750,12 +759,12 @@ int assperf_med_tick(void) {
              " | upload avg=%.2f max=%.1f ms %.2f MB imgs=%ld reused=%ld | draw max=%.1f ms"
              " | shown late avg=%+.0f min=%+.0f max=%+.0f ms (n=%ld) ahead avg=%.0f ms"
              " | batches=%ld full=%ld lines+=%ld events=%d load avg=%.1f max=%.1f ms"
-             " | relay blocks=%ld used=%ld | pruned=%ld\n",
+             " | relay blocks=%ld used=%ld kept ahead max %.1f MB | pruned=%ld\n",
              assperf_preset_nome(), M.quadros, M.novos, M.renders, M.mudou, rAvg, M.renderMax, M.esperaMax,
              uAvg, M.upMax, M.upBytes / 1048576.0, M.imagens, M.reusadas, M.desMax,
              aAvg, M.atrasoMin, M.atrasoMax, M.atrasos, adAvg,
              M.lotes, M.cheios, M.linhasNovas, M.total, M.lotes ? M.loteSoma / M.lotes : 0, M.loteMax,
-             M.relayBlocos, M.relayUsados, M.podados);
+             M.relayBlocos, M.relayUsados, M.parqueMax / 1048576.0, M.podados);
       imprimiu = 1;
       { int v = assperf_get(AP_ESCALA);
         double s75;

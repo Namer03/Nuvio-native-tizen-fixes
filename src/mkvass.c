@@ -3442,7 +3442,12 @@ static long relayBytes;
  * vistos, 3393 usados) e a cena seguinte dependia de Ranges ao CDN, que nao
  * davam conta da cena densa. Agora o bloco longe espera aqui (so o fio de
  * colheita mexe) e entra quando o playhead chega perto — sem rede nenhuma. */
-#define RELAY_PARQUE_BYTES (12L << 20)
+/* Teto pela folha (assperf "Keep subtitle blocks ahead"): 0 = jogados fora
+ * como antes, 6 ou 12 MB. */
+static long relayParqueTeto(void) {
+  int v = assperf_get(AP_PARQUE);
+  return v <= 0 ? 0 : v == 1 ? (6L << 20) : (12L << 20);
+}
 static pthread_mutex_t parqueTrava = PTHREAD_MUTEX_INITIALIZER;   // depois de relayTrava, nunca antes
 static RelayBloco *relayParque;
 static int relayParqueN, relayParqueCap;
@@ -3584,7 +3589,7 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
           if (f->janela && t < pos - MKVASS_ATRAS_SEG) break;
           if (f->janela && t > pos + alcanceFrente(f)) {
             pthread_mutex_lock(&parqueTrava);
-            if (relayParqueBytes + r->n <= RELAY_PARQUE_BYTES) {
+            if (relayParqueBytes + r->n <= relayParqueTeto()) {
               if (relayParqueN == relayParqueCap) {
                 int nc = relayParqueCap ? relayParqueCap * 2 : 1024;
                 RelayBloco *nv = (RelayBloco *)realloc(relayParque, (size_t)nc * sizeof *nv);
@@ -3614,6 +3619,7 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
   }
   if (usados) assperf_med_relay(0, usados);
   (void)estacionados;
+  pthread_mutex_lock(&parqueTrava); assperf_med_parque(relayParqueBytes); pthread_mutex_unlock(&parqueTrava);
   return usados;
 }
 

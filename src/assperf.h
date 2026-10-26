@@ -54,6 +54,7 @@ enum {
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
   AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
   AP_EXPER,        // GPU blur thread (26/10): 0 off (all on the UI thread), 1 own GL thread (agbfio.c)
+  AP_PARQUE,       // relay blocks beyond the harvest window (26/10): 0 thrown away (before), 1 kept up to 6 MB, 2 up to 12 MB
   AP_N
 };
 
@@ -115,6 +116,7 @@ void assperf_med_lote(double ms, int novos, int total, int cheio); // carga do d
 void assperf_med_atraso(double ms);                               // quadro mostrado vs. o instante dele
 void assperf_med_adiante(double ms);                              // adiantamento usado
 void assperf_med_relay(int blocos, int usados);                   // mkvfix -> mkvass
+void assperf_med_parque(long bytes);                              // relay blocks kept ahead (mkvass)
 void assperf_med_poda(int removidos);
 void assperf_med_alfa(float alfa, float opacidadeUsuario);         // fio GL: alfa do desenho do libass
 // Blur na GPU (assrender): um lote do fio GL com trabalho novo, e a conta do
