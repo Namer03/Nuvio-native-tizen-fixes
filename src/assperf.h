@@ -53,7 +53,7 @@ enum {
   AP_GAMA,         // subtitle gamma = the TV's video gamma slider (gamma / BT.1886), which never reaches the
                    // app's layer: 0 off, 1..5 = -1..-5, 6..10 = +5..+1 (same numbers as the TV)
   AP_CONTRASTE,    // subtitle contrast = the TV's Contrast (video only): 0 = 30 (TV default, no change) .. 30 = 0
-  AP_EXPER,        // TEST 26/10: 0 off, 1 GPU blur on its own GL thread (agbfio.c), 2 balance CPU/GPU by the GL thread's load
+  AP_EXPER,        // GPU blur thread (26/10): 0 off (all on the UI thread), 1 own GL thread (agbfio.c)
   AP_N
 };
 

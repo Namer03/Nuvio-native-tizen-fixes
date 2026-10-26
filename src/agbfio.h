@@ -27,6 +27,12 @@ void agbfio_pedir(const AgbPedido *p);
 // tempo (quem chama cai na CPU). *tw, *th = tamanho da textura.
 GLuint agbfio_obter(const AgbPedido *p, unsigned quadro, unsigned long long *chave, int *tw, int *th, int esperaMs);
 void agbfio_usar(unsigned long long chave, unsigned quadro);
+// Sem esperar: 1 = a textura deste pedido ja esta pronta (ou falhou; quem
+// chama cai na CPU). Fora do modo fio, sempre 1.
+int  agbfio_pronto(const AgbPedido *p);
+// Seek: o trabalho na fila (quadros que nao vao mais aparecer) sai; as
+// texturas prontas ficam (voltar ao mesmo trecho nao borra de novo).
+void agbfio_descartar_fila(void);
 void agbfio_apagar(void);     // troca de faixa
 // O que o fio fez desde a ultima chamada (copia e zera).
 void agbfio_colher(AgbStats *st, AgbPassos *ps, unsigned *esperas, double *esperaMs);

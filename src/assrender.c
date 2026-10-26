@@ -981,6 +981,10 @@ static int assGpuOk = -1;
 static int assFioModo;
 static unsigned assFioEsperas;
 static double assFioEsperaMs;
+#define ASS_FIO_ESPERA_MS 80.0
+static double assFioDevidoDesde;     // quando o quadro devido mais antigo ficou sem imagens prontas
+static unsigned assFioSeguros, assFioAtrasados;   // quadros de UI que seguraram o anterior / que entraram sem estar prontos
+static int assTcManterGpu;           // seek: ass_tc_apagar solta so a fila do fio, nao as texturas prontas
 
 /* Worker, sob assTrava, antes de cada render: o libass adia o blur quando a
  * folha pede e a GPU nao falhou. */
@@ -1313,7 +1317,7 @@ static void ass_tc_apagar(void) {
   free(assSlot); assSlot = NULL; assSlotCap = 0;
   assMainEnviado = 0;
 #if ASS_GPU
-  if (assFioModo) agbfio_apagar();
+  if (assFioModo) { if (assTcManterGpu) agbfio_descartar_fila(); else agbfio_apagar(); }
   else if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_apagar();
 #endif
 }
@@ -1470,6 +1474,18 @@ static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedid
   p->fix = g != NULL; p->fillDx = im->g.fillDx; p->fillDy = im->g.fillDy;
   p->shiftX = im->g.shiftX; p->shiftY = im->g.shiftY;
   p->area = (long)im->g.coreW * (long)im->g.coreH;
+}
+
+/* Fio proprio: todas as imagens de GPU do quadro ja estao prontas? (fio GL) */
+static int ass_fio_quadro_pronto(const AssCpuFrame *f) {
+  int i;
+  for (i = 0; i < f->count; i++)
+    if (f->images[i].gpu) {
+      AgbPedido p;
+      ass_gpu_pedido(f, &f->images[i], &p);
+      if (!agbfio_pronto(&p)) { agbfio_pedir(&p); return 0; }
+    }
+  return 1;
 }
 
 /* PRE-BLUR (fio GL, sob assFilaTrava): os quadros que ja estao na fila
@@ -2827,11 +2843,37 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   }
   /* O quadro da fila que entra: o mais novo ja devido (os anteriores a ele
    * saem). Sem hold, qualquer um esta devido — o de sempre. */
-  { int devido = -1;
+  { int devido = -1, pronto = -1;
     for (i = 0; i < assFilaN; i++) {
       if (assFila[i].generation != generation) { ass_fila_tirar_locked(i, NULL); i--; continue; }
-      if (!segurar || assFila[i].ms <= agora + 8) devido = i;
+      if (!segurar || assFila[i].ms <= agora + 8) {
+        devido = i;
+#if ASS_GPU
+        if (!assFioModo || ass_fio_quadro_pronto(&assFila[i])) pronto = i;
+#else
+        pronto = i;
+#endif
+      }
     }
+#if ASS_GPU
+    /* FIO PROPRIO (26/10): a UI nunca espera pelo fio do blur. Entra o mais
+     * novo quadro devido cujas imagens ja estao prontas; sem nenhum pronto, o
+     * de agora fica na tela ate ASS_FIO_ESPERA_MS (dai entra assim mesmo e o
+     * desenho espera, como antes). No log de 26/10 a UI esperava ate 150 ms
+     * por letreiro novo na cena pesada a 100 %. */
+    if (assFioModo && devido >= 0) {
+      struct timespec tn;
+      double agoraMs;
+      clock_gettime(CLOCK_MONOTONIC, &tn);
+      agoraMs = tn.tv_sec * 1000.0 + tn.tv_nsec / 1e6;
+      if (pronto >= 0) { devido = pronto; assFioDevidoDesde = 0; }
+      else if (!assFioDevidoDesde) { assFioDevidoDesde = agoraMs; assFioSeguros++; devido = -1; }
+      else if (agoraMs - assFioDevidoDesde < ASS_FIO_ESPERA_MS) { assFioSeguros++; devido = -1; }
+      else { assFioDevidoDesde = 0; assFioAtrasados++; }
+    }
+#else
+    (void)pronto;
+#endif
     if (devido >= 0) {
       for (i = 0; i < devido; i++) ass_fila_tirar_locked(0, NULL);
       ass_fila_tirar_locked(0, &novo);
@@ -2899,7 +2941,18 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       /* "Upload outside lock" desligado: a trava fica do pedido ate o fim do
        * desenho, como no caminho antigo. */
     } else pthread_mutex_unlock(&assFilaTrava);
-    if (reset || saltou || assMainResetar) { ass_main_soltar(); ass_tc_apagar(); assMainResetar = 0; }
+    if (reset || saltou || assMainResetar) {
+      ass_main_soltar();
+#if ASS_GPU
+      assTcManterGpu = saltou && !reset && !assMainResetar;   // so seek: as texturas do fio ficam
+      assFioDevidoDesde = 0;
+#endif
+      ass_tc_apagar();
+#if ASS_GPU
+      assTcManterGpu = 0;
+#endif
+      assMainResetar = 0;
+    }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
     if (quadroNovo) {
       ass_frame_liberar(&assMain);
@@ -2966,14 +3019,13 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
 #endif
   if (assperf_med_tick()) {
 #if ASS_GPU
-    if (assFioModo || assperf_get(AP_EXPER)) {
-      printf("[assperf] gpu blur experiment: %s", assperf_valor_rotulo(AP_EXPER, assperf_get(AP_EXPER)));
-      if (assFioModo) printf(" | the UI thread waited for the blur thread %u times, %.0f ms in all (the gpu blur steps above are the blur thread's)",
-                             assFioEsperas, assFioEsperaMs);
-      if (assperf_get(AP_EXPER) == 2) printf(" | GPU blur from %ld px right now", assperf_gpu_min());
-      printf("\n");
-      assFioEsperas = 0; assFioEsperaMs = 0;
-    }
+    if (assFioModo) {
+      printf("[assperf] gpu blur thread: on | UI frames that kept the previous subtitle frame while the next one was blurring %u,"
+             " frames drawn before ready (after %.0f ms) %u | the UI thread waited %u times, %.0f ms in all"
+             " (the gpu blur steps above are the blur thread's)\n",
+             assFioSeguros, ASS_FIO_ESPERA_MS, assFioAtrasados, assFioEsperas, assFioEsperaMs);
+      assFioEsperas = 0; assFioEsperaMs = 0; assFioSeguros = assFioAtrasados = 0;
+    } else if (assperf_get(AP_GPUBLUR)) printf("[assperf] gpu blur thread: off (everything on the UI thread)\n");
 #endif
     assfios_relatorio();
   }

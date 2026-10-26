@@ -26,6 +26,7 @@ static void *proc(const char *n) { return (void *)eglGetProcAddress(n); }
 #else
 #include "tpk_egl.h"
 #include "assfios.h"
+#include "memlog.h"
 static void *proc(const char *n) { return tpkEgl.GetProcAddress ? tpkEgl.GetProcAddress(n) : NULL; }
 #define nomear(n) assfios_nomear(n)
 #endif
@@ -65,6 +66,12 @@ static int iniciou;            // fio: 1 ok, -1 falhou (resposta para agbfio_lig
 static int parar, querApagar;
 static AfTrab fila[AF_FILA];
 static int nFila;
+static size_t bytesFila;       // copias esperando o fio
+#define AF_FILA_BYTES (24u * 1024u * 1024u)   // so os adiantados param aqui (o que a UI espera sempre entra)
+static size_t trab_bytes(const AfTrab *t) {
+  return (size_t)t->p.srcW * (size_t)t->p.srcH + (t->fill ? (size_t)t->p.fillW * (size_t)t->p.fillH : 0u);
+}
+static void trab_soltar(AfTrab *t) { bytesFila -= trab_bytes(t); free(t->src); free(t->fill); }
 static unsigned long long emCurso;
 static AfPronto *tab;
 static int nTab, capTab;
@@ -178,10 +185,25 @@ static void *laco(void *u) {
       t = fila[0];
       memmove(fila, fila + 1, (size_t)(nFila - 1) * sizeof fila[0]);
       nFila--;
+      bytesFila -= trab_bytes(&t);
       emCurso = t.chave;
       temT = 1;
     }
-    ns = escolher_soltar(soltar, 64, q, temT ? 0u : (q - ultimoTrab >= 300u ? 120u : 0u));
+    {
+      unsigned idade = temT ? 0u : (q - ultimoTrab >= 300u ? 120u : 0u);
+#ifndef NV_AGB_TESTE
+      /* memoria da TV quase no piso do app (150 MB): solta o que a UI nao usa
+       * ha ~1 s (60 quadros); a reserva e o que esta em tela ficam */
+      static double ultChecagem;
+      double tm = agora_ms();
+      if (tm - ultChecagem >= 2000.0) {
+        long livre = memlog_livre_mb();
+        ultChecagem = tm;
+        if (livre >= 0 && livre < 150) { idade = 60u; printf("[assperf] GPU blur thread: TV memory low (%ld MB free): releasing pictures not used for ~1 s\n", livre); }
+      }
+#endif
+      ns = escolher_soltar(soltar, 64, q, idade);
+    }
     pthread_mutex_unlock(&trava);
     for (i = 0; i < ns; i++) assgpublur_soltar_final(soltar[i]);
     if (!temT) {
@@ -232,8 +254,8 @@ static void *laco(void *u) {
   pthread_mutex_lock(&trava);
   for (int i = 0; i < nTab; i++) if (tab[i].cerca) pDel(tab[i].cerca);
   nTab = 0; bytesTab = 0;
-  for (int i = 0; i < nFila; i++) { free(fila[i].src); free(fila[i].fill); }
-  nFila = 0;
+  for (int i = 0; i < nFila; i++) trab_soltar(&fila[i]);
+  nFila = 0; bytesFila = 0;
   pthread_mutex_unlock(&trava);
   assgpublur_reiniciar();
   assgpublur_modo_fio(0);
@@ -328,9 +350,10 @@ void agbfio_quadro(unsigned quadro) { __atomic_store_n(&quadroUi, quadro, __ATOM
 /* Sob a trava. frente = 1: a UI esta esperando por este. */
 static int enfileirar_locked(const AgbPedido *p, unsigned long long k, int frente) {
   AfTrab t;
+  if (!frente && bytesFila + (size_t)p->srcW * (size_t)p->srcH > AF_FILA_BYTES) return 0;
   if (nFila >= AF_FILA) {
     if (!frente) return 0;
-    free(fila[nFila - 1].src); free(fila[nFila - 1].fill);
+    trab_soltar(&fila[nFila - 1]);
     nFila--;   // o ultimo adiantado cede o lugar
   }
   memset(&t, 0, sizeof t);
@@ -349,6 +372,7 @@ static int enfileirar_locked(const AgbPedido *p, unsigned long long k, int frent
   if (frente) { memmove(fila + 1, fila, (size_t)nFila * sizeof fila[0]); fila[0] = t; }
   else fila[nFila] = t;
   nFila++;
+  bytesFila += trab_bytes(&t);
   pthread_cond_signal(&temTrab);
   return 1;
 }
@@ -398,6 +422,25 @@ GLuint agbfio_obter(const AgbPedido *p, unsigned quadro, unsigned long long *cha
   return t;
 }
 
+int agbfio_pronto(const AgbPedido *p) {
+  unsigned long long k;
+  int r;
+  if (estado != 1 || !p->src) return 1;
+  k = assgpublur_chave(p);
+  pthread_mutex_lock(&trava);
+  r = achar(k) != NULL;
+  pthread_mutex_unlock(&trava);
+  return r;
+}
+
+void agbfio_descartar_fila(void) {
+  if (estado != 1) return;
+  pthread_mutex_lock(&trava);
+  while (nFila) { nFila--; trab_soltar(&fila[nFila]); }
+  bytesFila = 0;
+  pthread_mutex_unlock(&trava);
+}
+
 void agbfio_usar(unsigned long long chave, unsigned quadro) {
   AfPronto *e;
   if (estado != 1 || !chave) return;
@@ -410,7 +453,7 @@ void agbfio_usar(unsigned long long chave, unsigned quadro) {
 void agbfio_apagar(void) {
   if (estado != 1) return;
   pthread_mutex_lock(&trava);
-  while (nFila) { nFila--; free(fila[nFila].src); free(fila[nFila].fill); }
+  while (nFila) { nFila--; trab_soltar(&fila[nFila]); }
   querApagar = 1;
   pthread_cond_signal(&temTrab);
   pthread_mutex_unlock(&trava);
@@ -434,6 +477,8 @@ GLuint agbfio_obter(const AgbPedido *p, unsigned quadro, unsigned long long *cha
   (void)p; (void)quadro; (void)tw; (void)th; (void)esperaMs; *chave = 0; return 0;
 }
 void agbfio_usar(unsigned long long chave, unsigned quadro) { (void)chave; (void)quadro; }
+int  agbfio_pronto(const AgbPedido *p) { (void)p; return 1; }
+void agbfio_descartar_fila(void) {}
 void agbfio_apagar(void) {}
 void agbfio_colher(AgbStats *st, AgbPassos *ps, unsigned *esperas, double *esperaMs) {
   memset(st, 0, sizeof *st); memset(ps, 0, sizeof *ps); *esperas = 0; *esperaMs = 0;
