@@ -854,7 +854,10 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       char tp[24];
       legimagem_tipo(tp, ts > 24 ? 24 : ts);
       snprintf(nome, tn, "%s", i18n("Correção da legenda"));
-      snprintf(sub, ts, "%s · %d ms · %s", i18n("Automático"), legimagem_ms(), tp);
+      { int lv, ps, ag;   // light / heavy scene value; the one in use now in brackets
+        legimagem_valores(&lv, &ps, &ag);
+        if (ag) snprintf(sub, ts, "%s · %d / [%d] ms · %s", i18n("Automático"), lv, ps, tp);
+        else snprintf(sub, ts, "%s · [%d] / %d ms · %s", i18n("Automático"), lv, ps, tp); }
       *icone = "aj_clock";
       break; }
     case LR_CAND:

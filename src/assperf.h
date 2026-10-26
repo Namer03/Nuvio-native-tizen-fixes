@@ -88,6 +88,10 @@ double assperf_escala_quadro(void);
 // the Auto threshold in the last 2 s). For other work to yield to libass
 // (owner 25/10: libass comes before the seek thumbnails).
 int    assperf_legendas_pesadas(void);
+// Cena pesada para a correcao da legenda: o fio GL informa o custo de cada
+// quadro novo (desenho + fio do blur); 1 = pesada agora (com histerese).
+void   assperf_carga_gl(double ms);
+int    assperf_pesado(void);
 void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
 void   assperf_escala_custo_gl(double glMs);    // GL thread: upload + GPU blur of a new frame
 void   assperf_escala_reset(void);              // track change: back to 100 %

@@ -1728,12 +1728,13 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     assperf_med_upload(ass_ms_entre(&t0, &t1), enviados, assMain.count, reusadas, quadroNovo);
     assSubUpload = ass_ms_entre(&t0, &t1) - assSubGpu;
     if (assSubUpload < 0) assSubUpload = 0;
-    if (quadroNovo) {   // Render resolution Auto: com o fio proprio conta o tempo dele tambem
-      double gl = ass_ms_entre(&t0, &t1);
+    if (quadroNovo) {
+      double gl = ass_ms_entre(&t0, &t1), fio = 0;
 #if ASS_GPU
-      if (assFioModo) { double f = agbfio_tomar_ocupado(); gl += f > 200.0 ? 200.0 : f; }
+      if (assFioModo) { fio = agbfio_tomar_ocupado(); if (fio > 200.0) fio = 200.0; }
 #endif
-      assperf_escala_custo_gl(gl);
+      assperf_escala_custo_gl(gl);       // Render resolution Auto: so o fio da UI, como antes (dono 26/10)
+      assperf_carga_gl(gl + fio);        // cena pesada (correcao da legenda): o fio do blur conta
     }
   } else if (cache) {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem

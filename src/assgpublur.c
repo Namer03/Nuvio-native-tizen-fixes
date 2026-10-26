@@ -54,8 +54,8 @@
 #define AGB_NIVEL_MAX 7
 /* 25/10 (owner: memory matters): 24 + 24 MB, and the reserve 16 MB; all of it
  * is trimmed after a few seconds without blur work (assgpublur_aparar). */
-#define AGB_BLUR_BYTES (24u * 1024u * 1024u)
-#define AGB_FINAL_BYTES (24u * 1024u * 1024u)
+#define AGB_BLUR_BYTES (16u * 1024u * 1024u)    // 26/10: 24 -> 16 (memory; the free RAM still dips to 175-190 MB)
+#define AGB_FINAL_BYTES (16u * 1024u * 1024u)
 
 // ---- formato intermediario ------------------------------------------------------
 typedef struct { GLint interno; GLenum fmt, tipo; int bpp; const char *nome; } AgbFmt;
@@ -582,7 +582,7 @@ void assgpublur_forcar_rgba8(int on) { forcarRgba8 = on; }
  * a proxima do mesmo tamanho reaproveita o armazenamento. */
 enum { TX_MEIO, TX_RGBA, TX_LUM };
 #define AGB_RESERVA 128
-#define AGB_RESERVA_BYTES (16u * 1024u * 1024u)
+#define AGB_RESERVA_BYTES (12u * 1024u * 1024u)
 /* `liberado` = quadro GL em que voltou para a reserva: so sai de novo dois
  * quadros depois (a GPU da Mali ainda pode estar lendo; regravar antes faria o
  * driver esperar ou copiar a textura inteira). */

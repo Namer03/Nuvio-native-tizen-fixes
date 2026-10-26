@@ -4803,8 +4803,10 @@ void player_atualizar(float dt, Uint32 agora) {
                  relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)");
           { char tp[24], raj[400];
             legimagem_tipo(tp, sizeof tp);
-            printf(" | subtitle correction %d ms (%s)%s", legimagem_ms(), tp,
-                   legimagem_fps() > 1.0 ? ", on the frame grid" : "");
+            { int lv, ps, ag;
+              legimagem_valores(&lv, &ps, &ag);
+              printf(" | subtitle correction %d ms (%s, %s scene; light %d, heavy %d)%s", ag ? ps : lv, tp, ag ? "heavy" : "light",
+                     lv, ps, legimagem_fps() > 1.0 ? ", on the frame grid" : ""); }
             { char lag[240]; telalag_relatorio(lag, sizeof lag); if (lag[0]) printf("%s", lag); }
             video_tpk_leituras_rajada(raj, sizeof raj);
             if (raj[0]) printf("\n[relogio] last readings dt/dp ms: %s", raj); } }

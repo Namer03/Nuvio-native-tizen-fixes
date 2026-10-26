@@ -42,7 +42,7 @@ static FnWaitSync pWaitSync;
 static FnDel pDel;
 
 #define AF_FILA 128
-#define AF_FINAL_BYTES (24u * 1024u * 1024u)   // as finais, como no assgpublur
+#define AF_FINAL_BYTES (16u * 1024u * 1024u)   // as finais, como no assgpublur
 
 typedef struct {
   unsigned long long chave;
@@ -67,7 +67,7 @@ static int parar, querApagar;
 static AfTrab fila[AF_FILA];
 static int nFila;
 static size_t bytesFila;       // copias esperando o fio
-#define AF_FILA_BYTES (24u * 1024u * 1024u)   // so os adiantados param aqui (o que a UI espera sempre entra)
+#define AF_FILA_BYTES (16u * 1024u * 1024u)   // so os adiantados param aqui (o que a UI espera sempre entra)
 static size_t trab_bytes(const AfTrab *t) {
   return (size_t)t->p.srcW * (size_t)t->p.srcH + (t->fill ? (size_t)t->p.fillW * (size_t)t->p.fillH : 0u);
 }

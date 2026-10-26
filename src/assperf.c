@@ -323,11 +323,11 @@ size_t assperf_fontes_teto(void) {
 #define AUTO_DESCE_MS  28.0
 #define AUTO_FORTE_MS  45.0   // this heavy goes down even right after coming back up
 #define AUTO_SOBE_MS   12.0
-#define AUTO_LEVE_S     1.5   // 26/10 (owner: snap back to 100 % quickly; with the GPU blur thread the UI cost no longer pushes it down)
-#define AUTO_MIN75_S    2.0
+#define AUTO_LEVE_S     3.0   // 26/10: back to the rule the owner preferred (1.5 s was tried)
+#define AUTO_MIN75_S    5.0
 #define AUTO_MIN100_S   2.0
 #define AUTO_IGNORA       3
-#define AUTO_OCIOSO_S   4.0
+#define AUTO_OCIOSO_S   8.0
 static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct {
   int em75;                  // 1 = rendering at 75 % now
@@ -385,6 +385,36 @@ double assperf_escala_quadro(void) {
     /* else: a pause of 1-8 s, or frames still being ignored: hold */
   }
   r = A.em75 ? 0.75 : 1.0;
+  pthread_mutex_unlock(&autoTrava);
+  return r;
+}
+
+/* CENA PESADA para a correcao da legenda (legimagem.c; dono 26/10: 140-150 ms
+ * na cena pesada, 190-210 na leve). O custo de um quadro novo: libass no worker
+ * mais o desenho e o fio do blur na GPU (assperf_carga_gl). Liga acima de
+ * PES_LIGA_MS, desliga abaixo de PES_DESLIGA_MS depois de 1 s; 1,5 s sem
+ * quadro novo = leve (nada novo para chegar atrasado). */
+#define PES_LIGA_MS    25.0
+#define PES_DESLIGA_MS 12.0
+static struct { double ema, ult, abaixoDesde; int on; } PES;
+void assperf_carga_gl(double ms) {
+  double t = agoraS(), lib;
+  pthread_mutex_lock(&autoTrava);
+  lib = t - A.ultLib > 1.0 ? 0.0 : A.emaLib;
+  PES.ema = PES.ult > 0 && t - PES.ult < 1.5 ? PES.ema * 0.7 + (ms + lib) * 0.3 : ms + lib;
+  PES.ult = t;
+  if (!PES.on && PES.ema > PES_LIGA_MS) { PES.on = 1; PES.abaixoDesde = 0; }
+  else if (PES.on && PES.ema < PES_DESLIGA_MS) {
+    if (!PES.abaixoDesde) PES.abaixoDesde = t;
+    else if (t - PES.abaixoDesde >= 1.0) PES.on = 0;
+  } else if (PES.on) PES.abaixoDesde = 0;
+  pthread_mutex_unlock(&autoTrava);
+}
+int assperf_pesado(void) {
+  double t = agoraS();
+  int r;
+  pthread_mutex_lock(&autoTrava);
+  r = PES.on && t - PES.ult < 1.5;
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
