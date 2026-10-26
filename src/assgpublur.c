@@ -777,6 +777,8 @@ GLuint assgpublur_obter(const AgbPedido *p, unsigned quadro, unsigned long long 
   quadroAgora = quadro;
   AgbLocFinal *l;
   *chaveOut = 0;
+  /* Never touch GL state outside a batch: nothing would put the app's back. */
+  if (!E.aberto) return 0;
   if (pronto != 1 || !p->src || p->w <= 0 || p->h <= 0 || p->srcW <= 0 || p->srcH <= 0 ||
       p->srcW > maxTex || p->srcH > maxTex || p->w > maxTex || p->h > maxTex ||
       (p->fix && p->fill && (p->fillW > maxTex || p->fillH > maxTex))) return 0;

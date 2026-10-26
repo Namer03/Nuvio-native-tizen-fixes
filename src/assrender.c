@@ -1562,7 +1562,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
 #if ASS_GPU
     { int temGpu = 0;
       for (i = 0; i < assMain.count && !temGpu; i++) temGpu = assMain.images[i].gpu;
-      if (temGpu && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_lote_ini(); }
+      /* Save the app's GL state BEFORE any GPU blur work, the first frame
+       * too (assgpublur_iniciar runs inside the loop below). Saving it only
+       * once the blur was ready left blending off and the blur's framebuffer
+       * bound after the first frame, and every later batch "restored" that
+       * (26/10: white screen, judder in the fingers and phone scenes). */
+      if (temGpu && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 0) assgpublur_lote_ini(); }
 #endif
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
