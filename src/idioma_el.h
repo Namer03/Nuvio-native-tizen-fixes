@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Θόλωμα των μη προβλημένων"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Η θόλωση του επόμενου επεισοδίου λειτουργεί μόνο με αυτή την επιλογή."),
   T("Desfocar próximo episódio", "Θόλωμα επόμενου επεισοδίου"),
+  T("Desfoque", "Θόλωση"),
   T("Desfoque da barra moderna", "Θόλωμα μοντέρνας πλαϊνής μπάρας"),
   T("Desligada", "Ανενεργό"),
   T("Desligado", "Ανενεργό"),

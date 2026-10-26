@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "模糊未看內容"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "只有開啟此項，模糊下一集才會生效。"),
   T("Desfocar próximo episódio", "模糊下一集"),
+  T("Desfoque", "模糊"),
   T("Desfoque da barra moderna", "現代側邊欄模糊"),
   T("Desligada", "關閉"),
   T("Desligado", "關閉"),

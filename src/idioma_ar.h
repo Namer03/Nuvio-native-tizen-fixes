@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "تمويه غير المشاهَد"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "تمويه الحلقة التالية يعمل فقط مع تفعيل هذا الخيار."),
   T("Desfocar próximo episódio", "تمويه الحلقة التالية"),
+  T("Desfoque", "التمويه"),
   T("Desfoque da barra moderna", "تمويه الشريط الجانبي الحديث"),
   T("Desligada", "متوقف"),
   T("Desligado", "متوقف"),

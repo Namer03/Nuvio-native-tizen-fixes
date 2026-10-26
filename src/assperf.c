@@ -25,11 +25,12 @@ static const int TPK[AP_N] = {
   [AP_CUES] = 1, [AP_RELAY] = 1, [AP_MUDANCA] = 1, [AP_ESTILO] = 1, [AP_FIOS] = 2,
   [AP_GPUBLUR] = 1, [AP_GPUMIN] = 2, [AP_PARQUE] = 1, [AP_LEVE3] = 1,
   [AP_ESCALA] = 5, [AP_GAMA] = 0, [AP_CONTRASTE] = 0, [AP_LIBASS] = 1, [AP_ASSTAM] = 100, [AP_ASSOPAC] = 100,
+  [AP_BLUR] = 1,
 };
 #define AP_PRIMEIRA_DA_PESSOA AP_ESCALA
 static const struct { const char *chave; int min, max; } PESSOA[AP_N - AP_PRIMEIRA_DA_PESSOA] = {
   { "escala", 0, 5 }, { "gama", 0, 10 }, { "contraste", 0, 30 }, { "libass", 0, 1 },
-  { "asstam", 50, 200 }, { "assopac", 20, 100 },
+  { "asstam", 50, 200 }, { "assopac", 20, 100 }, { "blur", 0, 2 },
 };
 
 static int val[AP_N] __attribute__((unused));
@@ -89,8 +90,9 @@ void assperf_iniciar(void) {
         printf("[assperf] the previous session crashed while ASS subtitles were drawing: GPU blur off for this session\n");
       }
     }
-    printf("[assperf] subtitles: libass %s, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
-           val[AP_LIBASS] ? "on" : "off", val[AP_ASSTAM], val[AP_ASSOPAC],
+    printf("[assperf] subtitles: libass %s, blur %s, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
+           val[AP_LIBASS] ? "on" : "off", val[AP_BLUR] == 0 ? "CPU" : val[AP_BLUR] == 2 ? "GPU" : "Auto",
+           val[AP_ASSTAM], val[AP_ASSOPAC],
            val[AP_ESCALA] == 5 ? "Auto" : val[AP_ESCALA] == 2 ? "75%" : "100%", 30 - val[AP_CONTRASTE],
            val[AP_GAMA] <= 5 ? -val[AP_GAMA] : 11 - val[AP_GAMA]);
     fflush(stdout);
@@ -113,9 +115,13 @@ int assperf_get(int id) {
   return id >= 0 && id < AP_N ? __atomic_load_n(&val[id], __ATOMIC_RELAXED) : 0;
 #elif defined(NV_TPK)
   if (id < 0 || id >= AP_N) return 0;
-  if (id == AP_GPUBLUR) return !__atomic_load_n(&gpuQueda, __ATOMIC_RELAXED) && !__atomic_load_n(&gpuRam, __ATOMIC_RELAXED);
-  if (id < AP_PRIMEIRA_DA_PESSOA) return TPK[id];
+  if (id < AP_PRIMEIRA_DA_PESSOA && id != AP_GPUBLUR) return TPK[id];
   assperf_iniciar();
+  if (id == AP_GPUBLUR) {
+    int m = __atomic_load_n(&val[AP_BLUR], __ATOMIC_RELAXED);
+    if (!m || __atomic_load_n(&gpuQueda, __ATOMIC_RELAXED) || __atomic_load_n(&gpuRam, __ATOMIC_RELAXED)) return 0;
+    return m == 2 || assperf_pesado();
+  }
   return __atomic_load_n(&val[id], __ATOMIC_RELAXED);
 #else
   (void)id;
@@ -357,7 +363,9 @@ int assperf_legendas_pesadas(void) {
 void assperf_faixa_ativa(int ativa) {
 #ifdef NV_TPK
   static int marcada;
-  if (ativa && assperf_get(AP_GPUBLUR)) { if (!__atomic_exchange_n(&marcada, 1, __ATOMIC_ACQ_REL)) dados_gravar(AP_MARCA, "1\n"); }
+  /* The mark is about the GPU blur being possible this session (Auto turns it
+   * on later, in a busy scene). */
+  if (ativa && assperf_get(AP_BLUR) && !__atomic_load_n(&gpuQueda, __ATOMIC_RELAXED)) { if (!__atomic_exchange_n(&marcada, 1, __ATOMIC_ACQ_REL)) dados_gravar(AP_MARCA, "1\n"); }
   else if (__atomic_exchange_n(&marcada, 0, __ATOMIC_ACQ_REL)) dados_apagar(AP_MARCA);
 #else
   (void)ativa;

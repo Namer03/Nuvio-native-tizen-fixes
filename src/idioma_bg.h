@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Размажи негледаните"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Замъгляването на следващия епизод работи само с тази опция."),
   T("Desfocar próximo episódio", "Размажи следващия епизод"),
+  T("Desfoque", "Размазване"),
   T("Desfoque da barra moderna", "Размазване на модерната странична лента"),
   T("Desligada", "Изключено"),
   T("Desligado", "Изключено"),

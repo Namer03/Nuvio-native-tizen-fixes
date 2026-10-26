@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Rozmyj nieobejrzane"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Rozmycie następnego odcinka działa tylko z tą opcją włączoną."),
   T("Desfocar próximo episódio", "Rozmyj następny odcinek"),
+  T("Desfoque", "Rozmycie"),
   T("Desfoque da barra moderna", "Rozmycie nowoczesnego paska bocznego"),
   T("Desligada", "Wył."),
   T("Desligado", "Wył."),

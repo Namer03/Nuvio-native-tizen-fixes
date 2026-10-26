@@ -1636,6 +1636,7 @@
   { "Desfocar não assistidos", "Blur unwatched" },
   { "Desfocar o próximo episódio só funciona com esta opção ligada.", "Blurring the next episode only works with this option on." },
   { "Desfocar próximo episódio", "Blur next episode" },
+  { "Desfoque", "Blur" },
   { "Desfoque da barra moderna", "Modern sidebar blur" },
   { "Desligada", "Off" },
   { "Desligado", "Off" },

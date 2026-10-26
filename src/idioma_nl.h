@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Ongeziene vervagen"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "De volgende aflevering vervagen werkt alleen met deze optie aan."),
   T("Desfocar próximo episódio", "Volgende aflevering vervagen"),
+  T("Desfoque", "Vervaging"),
   T("Desfoque da barra moderna", "Vervaging moderne zijbalk"),
   T("Desligada", "Uit"),
   T("Desligado", "Uit"),

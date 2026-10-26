@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "İzlenmeyenleri bulanıklaştır"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Sonraki bölümü bulanıklaştırma yalnızca bu seçenek açıkken çalışır."),
   T("Desfocar próximo episódio", "Sonraki bölümü bulanıklaştır"),
+  T("Desfoque", "Bulanıklık"),
   T("Desfoque da barra moderna", "Modern kenar çubuğu bulanıklığı"),
   T("Desligada", "Kapalı"),
   T("Desligado", "Kapalı"),

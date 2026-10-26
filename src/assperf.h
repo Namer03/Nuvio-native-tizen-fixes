@@ -39,7 +39,7 @@ enum {
   AP_MUDANCA,      // 1 = render only when the picture can change
   AP_ESTILO,       // 1 = styled ASS drawn as authored (the person's colour, border... do not apply)
   AP_FIOS,         // NEON blur threads - 1 (2 = 3 threads)
-  AP_GPUBLUR,      // blur on the GPU (libass deferred blur): 1 on; off under the RAM rule / crash guard
+  AP_GPUBLUR,      // blur on the GPU NOW (libass deferred blur): from AP_BLUR; off under the RAM rule / crash guard
   AP_GPUMIN,       // smallest blur sent to the GPU: 2 = 64k px
   AP_PARQUE,       // relay blocks beyond the harvest window: 0 thrown away, 1 kept up to 6 MB
   AP_LEVE3,        // normal scenes: 1 = 3 frames ahead while frames cost > 40 ms
@@ -50,6 +50,7 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
+  AP_BLUR,         // blur: 0 CPU, 1 Auto (GPU while subtitles are busy), 2 GPU (every blur of 64k px or more)
   AP_N
 };
 
@@ -57,7 +58,7 @@ enum {
 int  assperf_get(int id);
 // Reads assperf.txt once (later calls do nothing) and runs the crash guard.
 void assperf_iniciar(void);
-// Saves one of the person's options (AP_ESCALA .. AP_ASSOPAC) and logs it.
+// Saves one of the person's options (AP_ESCALA .. AP_BLUR) and logs it.
 void assperf_definir(int id, int v);
 // The person's options back to their defaults.
 void assperf_restaurar(void);

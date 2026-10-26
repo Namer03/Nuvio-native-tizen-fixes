@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Rozmazat nezhlédnuté"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Rozmazání další epizody funguje jen se zapnutou touto volbou."),
   T("Desfocar próximo episódio", "Rozmazat další epizodu"),
+  T("Desfoque", "Rozostření"),
   T("Desfoque da barra moderna", "Rozmazání moderního postranního panelu"),
   T("Desligada", "Vypnuto"),
   T("Desligado", "Vypnuto"),

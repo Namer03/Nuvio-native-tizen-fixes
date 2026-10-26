@@ -1636,6 +1636,7 @@
   T("Desfocar não assistidos", "Estompează neurmăritele"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Estomparea episodului următor merge doar cu această opțiune pornită."),
   T("Desfocar próximo episódio", "Estompează episodul următor"),
+  T("Desfoque", "Estompare"),
   T("Desfoque da barra moderna", "Estomparea barei moderne"),
   T("Desligada", "Dezactivată"),
   T("Desligado", "Dezactivat"),

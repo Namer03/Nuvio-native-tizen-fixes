@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Gjør usette uskarpe"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Uskarping av neste episode virker bare med dette på."),
   T("Desfocar próximo episódio", "Gjør neste episode uskarp"),
+  T("Desfoque", "Uskarphet"),
   T("Desfoque da barra moderna", "Uskarphet i det moderne sidefeltet"),
   T("Desligada", "Av"),
   T("Desligado", "Av"),

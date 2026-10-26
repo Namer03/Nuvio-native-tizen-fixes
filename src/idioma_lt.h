@@ -1637,6 +1637,7 @@
   T("Desfocar não assistidos", "Sulieti neperžiūrėtus"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Kitos serijos suliejimas veikia tik įjungus šią parinktį."),
   T("Desfocar próximo episódio", "Sulieti kitą epizodą"),
+  T("Desfoque", "Suliejimas"),
   T("Desfoque da barra moderna", "Modernios šoninės juostos suliejimas"),
   T("Desligada", "Išjungta"),
   T("Desligado", "Išjungta"),
