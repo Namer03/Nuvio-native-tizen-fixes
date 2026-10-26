@@ -316,6 +316,12 @@ namespace NuvioTpk
         // sessao. Mantem a amostra real (estimar esconderia o watchdog do C).
         public void Tique()
         {
+            // The 40 ms clock thread is alive: it is the only reader. Here the
+            // flag was taken BEFORE Task.Run, and while the queued task waited for
+            // a pool thread the clock thread found the flag busy: log 8 (26/10)
+            // had 4 readings a second instead of 25 (subtitles froze up to 250 ms
+            // after each resume).
+            if (Stopwatch.GetTimestamp() - Volatile.Read(ref relogioVivo) < Stopwatch.Frequency / 2) return;
             var f = Volatile.Read(ref fio);
             if (f == null || Interlocked.Exchange(ref f.consulta, 1) != 0) return;
             int minha = Volatile.Read(ref sessao);
@@ -328,10 +334,13 @@ namespace NuvioTpk
         // on the main thread fell to 32 readings in 10 s on heavy signs (log 4,
         // 25/10) against ~260 on light ones; the thread pool can starve as well.
         // Same one-query-in-flight flag as Tique and LerPosicao.
+        long relogioVivo;   // Stopwatch ticks of the clock thread's last turn
         public void IniciaRelogio(Func<bool> parar)
         {
             new Thread(() => {
+                Log("[video] position read: the clock thread reads the TV every 40 ms");
                 while (!parar()) {
+                    Volatile.Write(ref relogioVivo, Stopwatch.GetTimestamp());
                     try {
                         var f = Volatile.Read(ref fio);
                         if (f != null && Interlocked.Exchange(ref f.consulta, 1) == 0)

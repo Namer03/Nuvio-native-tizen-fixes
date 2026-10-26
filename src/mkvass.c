@@ -3429,13 +3429,31 @@ static void despejar(Fio *f, double pos) {
 // indice que bate (Cluster + CueRelativePosition + tempo) vira colhido SEM
 // Range nenhum ao CDN — a fala chega antes e o TorBox recebe menos pedidos.
 // Bloco sem ponto que bata e descartado (nunca vira fala "solta").
-typedef struct { long long clPos, blkPos; int clHdr, temTs; unsigned long clTs; unsigned char *b; long n; } RelayBloco;
-#define RELAY_MAX 4096
+typedef struct { long long clPos, blkPos; int clHdr, temTs; unsigned long clTs; unsigned char *b; long n; double t; } RelayBloco;
+#define RELAY_MAX 8192
 #define RELAY_BYTES (8L << 20)
 static pthread_mutex_t relayTrava = PTHREAD_MUTEX_INITIALIZER;
 static RelayBloco relayFila[RELAY_MAX];
 static int relayIni, relayN;
 static long relayBytes;
+/* ESTACIONADOS (dono 26/10: as falas depois da cena do celular, 22:20,
+ * chegavam 0,4-2,5 s tarde). O player da TV le bem mais que 12 s a frente; em
+ * janela o colhedor jogava fora o que passava do alcance (log 8: 8226 blocos
+ * vistos, 3393 usados) e a cena seguinte dependia de Ranges ao CDN, que nao
+ * davam conta da cena densa. Agora o bloco longe espera aqui (so o fio de
+ * colheita mexe) e entra quando o playhead chega perto — sem rede nenhuma. */
+#define RELAY_PARQUE_BYTES (12L << 20)
+static pthread_mutex_t parqueTrava = PTHREAD_MUTEX_INITIALIZER;   // depois de relayTrava, nunca antes
+static RelayBloco *relayParque;
+static int relayParqueN, relayParqueCap;
+static long relayParqueBytes;
+static void relayParqueLimpar(void) {
+  int i;
+  pthread_mutex_lock(&parqueTrava);
+  for (i = 0; i < relayParqueN; i++) free(relayParque[i].b);
+  relayParqueN = 0; relayParqueBytes = 0;
+  pthread_mutex_unlock(&parqueTrava);
+}
 static int relayFaixa;          // faixa do fio que colhe agora (0 = nenhum); atomico
 static MkvassPreparo *relayDono;
 
@@ -3449,11 +3467,9 @@ void mkvass_relay_bloco(long long clPos, int clHdr, unsigned long clTs, int temT
   RelayBloco *r; int vazia; MkvassPreparo *dono = NULL;
   if (!b || n <= 0 || n > (1L << 20)) return;
   pthread_mutex_lock(&relayTrava);
-  while (relayN >= RELAY_MAX || (relayN && relayBytes + n > RELAY_BYTES)) {
-    RelayBloco *v = &relayFila[relayIni];
-    relayBytes -= v->n; free(v->b); v->b = NULL;
-    relayIni = (relayIni + 1) % RELAY_MAX; relayN--;
-  }
+  /* Cheia: fica o que ja esta (o mais perto do playhead), sai o que chega —
+   * antes saia o mais velho, justo o que a tela ia pedir primeiro. */
+  if (relayN >= RELAY_MAX || (relayN && relayBytes + n > RELAY_BYTES)) { pthread_mutex_unlock(&relayTrava); return; }
   r = &relayFila[(relayIni + relayN) % RELAY_MAX];
   r->b = malloc((size_t)n);
   if (!r->b) { pthread_mutex_unlock(&relayTrava); return; }
@@ -3474,6 +3490,7 @@ static void relayLimpar(void) {
   pthread_mutex_lock(&relayTrava);
   while (relayN) { free(relayFila[relayIni].b); relayFila[relayIni].b = NULL; relayIni = (relayIni + 1) % RELAY_MAX; relayN--; }
   relayBytes = 0;
+  relayParqueLimpar();   // so o fio de colheita (relayLigar / relayDrenar) chega aqui
   pthread_mutex_unlock(&relayTrava);
 }
 
@@ -3486,6 +3503,7 @@ static void relayLigar(Fio *f, int ligar) {
   } else if (relayDono == estadoDoFio(f)) {
     soltarEstado(relayDono); relayDono = NULL;
     __atomic_store_n(&relayFaixa, 0, __ATOMIC_RELEASE);
+    relayParqueLimpar();   // a colheita parou (troca, aviso de memoria): os estacionados saem
   }
   pthread_mutex_unlock(&relayTrava);
   if (ligar) relayLimpar();
@@ -3515,25 +3533,41 @@ static int relayTempoRel(const unsigned char *b, long n, long *trk, int *rel) {
 // *urgente = 1 se algum e da cena de agora (entregar ja).
 static int relayDrenar(Fio *f, double pos, int *urgente) {
   RelayBloco loc[256];
-  int n = 0, i, usados = 0;
+  int n = 0, i, usados = 0, estacionados = 0, fonte;
   *urgente = 0;
   if (!f->pontos || f->varredura || f->imagem || f->faixa != __atomic_load_n(&relayFaixa, __ATOMIC_ACQUIRE)) {
     if (f->varredura || f->imagem) relayLimpar();
     return 0;
   }
+  /* fonte 0: os estacionados que o playhead alcancou; 1: a fila do mkvfix. */
+  for (fonte = 0; fonte < 2; fonte++)
   for (;;) {
-    pthread_mutex_lock(&relayTrava);
     n = 0;
-    while (relayN && n < 256) {
-      loc[n++] = relayFila[relayIni];
-      relayBytes -= relayFila[relayIni].n; relayFila[relayIni].b = NULL;
-      relayIni = (relayIni + 1) % RELAY_MAX; relayN--;
+    if (fonte == 0) {
+      int w = 0; double ate = pos + alcanceFrente(f);
+      if (!f->janela) break;
+      pthread_mutex_lock(&parqueTrava);
+      for (i = 0; i < relayParqueN; i++) {
+        RelayBloco *r = &relayParque[i];
+        if (n < 256 && r->t <= ate) { relayParqueBytes -= r->n; loc[n++] = *r; continue; }
+        relayParque[w++] = *r;
+      }
+      relayParqueN = w;
+      pthread_mutex_unlock(&parqueTrava);
+      if (!n) break;
+    } else {
+      pthread_mutex_lock(&relayTrava);
+      while (relayN && n < 256) {
+        loc[n++] = relayFila[relayIni];
+        relayBytes -= relayFila[relayIni].n; relayFila[relayIni].b = NULL;
+        relayIni = (relayIni + 1) % RELAY_MAX; relayN--;
+      }
+      pthread_mutex_unlock(&relayTrava);
+      if (!n) break;
     }
-    pthread_mutex_unlock(&relayTrava);
-    if (!n) break;
     for (i = 0; i < n; i++) {
       RelayBloco *r = &loc[i];
-      long trk = -1; int rel = 0, lo = 0, hi = f->nPontos, k;
+      long trk = -1; int rel = 0, lo = 0, hi = f->nPontos, k, guardado = 0;
       unsigned long tempo;
       long long relPos = r->blkPos - (r->clPos + r->clHdr);
       if (!r->temTs || !relayTempoRel(r->b, r->n, &trk, &rel) || trk != f->faixa ||
@@ -3545,8 +3579,25 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
         Ponto *pt = &f->pontos[k];
         if (pt->cluster != r->clPos || (pt->rel != relPos && pt->rel != -1) || pt->colhido) continue;
         { double t = segundosDe(f, tempo);
-          // Em janela (#384) so o que o despejo manteria: o resto seria jogado fora.
-          if (f->janela && (t < pos - MKVASS_ATRAS_SEG || t > pos + alcanceFrente(f))) break; }
+          // Em janela (#384) so o que o despejo manteria: atras sai; longe a
+          // frente ESPERA no estacionamento (era jogado fora).
+          if (f->janela && t < pos - MKVASS_ATRAS_SEG) break;
+          if (f->janela && t > pos + alcanceFrente(f)) {
+            pthread_mutex_lock(&parqueTrava);
+            if (relayParqueBytes + r->n <= RELAY_PARQUE_BYTES) {
+              if (relayParqueN == relayParqueCap) {
+                int nc = relayParqueCap ? relayParqueCap * 2 : 1024;
+                RelayBloco *nv = (RelayBloco *)realloc(relayParque, (size_t)nc * sizeof *nv);
+                if (nv) { relayParque = nv; relayParqueCap = nc; }
+              }
+              if (relayParqueN < relayParqueCap) {
+                r->t = t;
+                relayParque[relayParqueN++] = *r; relayParqueBytes += r->n; guardado = 1; estacionados++;
+              }
+            }
+            pthread_mutex_unlock(&parqueTrava);
+            break;
+          } }
         { ClCache cl; long lido;
           memset(&cl, 0, sizeof cl);
           cl.pos = r->clPos; cl.hdr = r->clHdr; cl.ts = r->clTs; cl.temTs = 1;
@@ -3557,11 +3608,12 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
           } }
         break;
       }
-      free(r->b);
+      if (!guardado) free(r->b);
     }
-    assperf_med_relay(n, 0);
+    if (fonte == 1) assperf_med_relay(n, 0);
   }
   if (usados) assperf_med_relay(0, usados);
+  (void)estacionados;
   return usados;
 }
 

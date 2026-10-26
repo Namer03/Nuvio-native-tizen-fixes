@@ -235,6 +235,19 @@ static unsigned assValidoEpoch, assValidoGeracao;
 static double assUltimoPedidoMs;
 static unsigned assUltimoPedidoGeracao;
 static int assTemUltimoPedido;
+/* QUADRO A QUADRO (dono 26/10, letreiros que seguem o dedo dela aos 19:00).
+ * O worker renderizava so o ULTIMO pedido: com um render de mais de um quadro
+ * de video (42 ms a 24 fps) o pedido ja tinha andado e o quadro do meio nunca
+ * existia — o letreiro do quadro anterior ficava 1-3 quadros na tela (no
+ * chapeu / em cima dos dedos). Agora, com a fila do Render ahead, o worker faz
+ * TODO quadro da grade, do ultimo que fez ate o pedido; pula so os que ja
+ * passaram da tela. Sob assFilaTrava. */
+static long long assSeqUltMs = LLONG_MIN;      // o ultimo quadro que o worker fez
+static unsigned assSeqEpoch, assSeqGeracao;
+static long long assAgoraUiMs = LLONG_MIN;     // o quadro em tela agora (desenho)
+static unsigned assAgoraUiGeracao;
+static int assPedidoForcado;                   // documento/tela mudou: nada de pular pela validade
+static unsigned assSeqFeitos, assSeqPulados;   // 10 s: quadros do meio feitos / ja vencidos
 static int assEventos, assFontes, assResolucaoFonte;
 static long long assCoberturaIni, assCoberturaFim;
 static ASS_Library *assLib;
@@ -1018,6 +1031,9 @@ static double ass_ms_entre(const struct timespec *a, const struct timespec *b) {
 }
 
 static void ass_pod_devolver_assTrava(void);
+static double ass_fps(void);
+static long long ass_grade_seguinte(long long t);
+static long long ass_grade_desde(long long ms);
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
@@ -1030,7 +1046,7 @@ static void *ass_worker_loop(void *unused) {
     PlainAssStyle plain;
     struct timespec a, b, c0;
     ASS_Image *images = NULL;
-    int changed = 0, pronto = 0, igual = 0;
+    int changed = 0, pronto = 0, igual = 0, seq = 0;
     long long validoDe = LLONG_MAX, validoAte = LLONG_MAX;
     memset(&frame, 0, sizeof frame);
     pthread_mutex_lock(&assFilaTrava);
@@ -1038,6 +1054,30 @@ static void *ass_worker_loop(void *unused) {
       pthread_cond_wait(&assFilaCond, &assFilaTrava);
     if (assWorkerParar) { pthread_mutex_unlock(&assFilaTrava); break; }
     generation = assPedidoGeracao; serial = assPedidoSerial; epoch = assEpoch; ms = assPedidoMs;
+    /* Quadro a quadro (ver assSeqUltMs): o proximo da grade depois do ultimo
+     * feito, nunca um que ja saiu da tela, ate o pedido. */
+    if (assFilaTeto > 1 && ass_fps() > 0 && assAgoraUiGeracao == generation && assAgoraUiMs != LLONG_MIN) {
+      long long alvo = (long long)llround(ms), agoraUi = assAgoraUiMs, prox = alvo;
+      int continua = assSeqEpoch == epoch && assSeqGeracao == generation && assSeqUltMs != LLONG_MIN;
+      if (!continua || assPedidoForcado) prox = agoraUi;   // salto ou documento novo: o quadro de agora primeiro
+      else if (assSeqUltMs < alvo) {
+        prox = ass_grade_seguinte(assSeqUltMs);
+        /* Nada muda ate assValidoAte (Render only on changes): os quadros do
+         * meio seriam iguais ao ultimo. */
+        if (assValidoEpoch == epoch && assValidoGeracao == generation &&
+            assValidoDe == assSeqUltMs && assValidoAte > prox && assValidoAte != LLONG_MAX)
+          prox = assValidoAte >= alvo ? alvo : ass_grade_desde(assValidoAte);
+        if (prox < agoraUi) {
+          /* Quadros que ja passaram da tela sem existir (o worker atrasou).
+           * Mais de 2 s e uma volta depois de parado, nao atraso. */
+          if (agoraUi - prox < 2000) assSeqPulados += (unsigned)llround((double)(agoraUi - prox) * ass_fps() / 1000.0);
+          prox = agoraUi;
+        }
+      }
+      if (prox < alvo) { ms = (double)prox; seq = 1; }
+    }
+    serial = ++assSerial;   // cada quadro publicado e outro (as texturas sobem de novo)
+    assPedidoForcado = 0;
     ox = layPedX; oy = layPedY; lw = layPedW; lh = layPedH; k = layPedK;
     /* assperf: resolucao do render. O quadro sai `resol` do tamanho do alvo e
      * o desenho amplia (esc = k x resol pixels por unidade). 1 = como antes. */
@@ -1171,6 +1211,15 @@ static void *ass_worker_loop(void *unused) {
       assValidoEpoch = epoch; assValidoGeracao = generation;
     } else if (!igual && !pronto) {
       assValidoDe = LLONG_MAX; assValidoAte = LLONG_MIN;
+    }
+    if (epoch == assEpoch) {
+      assSeqUltMs = (long long)llround(ms); assSeqEpoch = epoch; assSeqGeracao = generation;
+      if (seq) assSeqFeitos++;
+      /* Ainda falta ate o pedido: o proximo quadro ja, sem esperar o desenho
+       * (com a fila cheia espera: o desenho pede de novo quando um sair). */
+      if (seq && !assWorkerParar && !assPedidoPendente && generation == assPedidoGeracao &&
+          assSeqUltMs < (long long)llround(assPedidoMs) && assFilaN < assFilaTeto)
+        assPedidoPendente = 1;
     }
     ass_frame_liberar(&frame);
     pthread_mutex_unlock(&assFilaTrava);
@@ -1811,6 +1860,7 @@ static unsigned long long incCab;
 static unsigned long long *incEv;
 static int incEvN, incEvCap;
 static AssMapa incAdd, incDoc;
+static int assLeituraSeq;   // ReadOrder das falas da carga incremental (sob assTrava)
 
 static unsigned long long ass_hash_bytes(const char *p, size_t n) {
   unsigned long long h = 0xCBF29CE484222325ULL ^ (unsigned long long)n;
@@ -1936,32 +1986,49 @@ static int ass_pod_guardar(const ASS_Event *e, unsigned long long h) {
 static int *mapa_conta(AssMapa *m, unsigned long long k);
 static int ass_inc_ev_por(int n);
 static void ass_pod_devolver_assTrava(void) {
-  int i, devolvidas = 0;
+  int i, devolvidas = 0, repetidas = 0;
   if (!__atomic_load_n(&assPodaVoltar, __ATOMIC_ACQUIRE) || !assTrack) return;
   if (pthread_mutex_trylock(&incTrava)) return;
   if (incEvN == assTrack->n_events) {
+    /* Quantas copias de cada fala a faixa deve ter: as do documento atual ou
+     * as que a poda tirou, o que for maior. Se a colheita ja devolveu a fala
+     * (seek para tras com a janela nova entregue antes deste render), a copia
+     * guardada sairia DOBRADA — e a de cima e empurrada pela colisao. */
+    AssMapa podC; memset(&podC, 0, sizeof podC);
+    for (i = 0; i < assPodN; i++) { int *c = mapa_conta(&podC, assPodH[i]); if (c) (*c)++; }
     for (i = 0; i < assPodN; i++) {
-      int id = ass_alloc_event(assTrack);
-      int *a;
+      int id, *a = mapa_conta(&incAdd, assPodH[i]), *d = mapa_conta(&incDoc, assPodH[i]), *c = mapa_conta(&podC, assPodH[i]);
+      int quer = d && c ? (*d > *c ? *d : *c) : 1;
+      if (a && *a >= quer) {
+        free(assPod[i].Name); free(assPod[i].Effect); free(assPod[i].Text); free(assPod[i].render_priv);
+        repetidas++; devolvidas++;
+        continue;
+      }
+      id = ass_alloc_event(assTrack);
       if (id < 0 || !ass_inc_ev_por(assTrack->n_events)) { if (id >= 0) assTrack->n_events--; break; }
+      /* ReadOrder e a ordem de chegada (ver ass_inc_lote): volta para o lugar
+       * de antes na ordem do libass (camada, ReadOrder), nao para o fim. */
       assTrack->events[id] = assPod[i];
       incEv[incEvN++] = assPodH[i];
-      a = mapa_conta(&incAdd, assPodH[i]);
       if (a) (*a)++;
       devolvidas++;
     }
+    free(podC.k); free(podC.v); free(podC.g);
     if (devolvidas < assPodN) memmove(assPod, assPod + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPod),
                               memmove(assPodH, assPodH + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPodH);
     assPodN -= devolvidas;
     assEventos = assTrack->n_events;
-    for (i = assTrack->n_events - devolvidas; i < assTrack->n_events; i++)
+    for (i = assTrack->n_events - (devolvidas - repetidas); i < assTrack->n_events; i++)
       if (assTrack->events[i].Start < assCoberturaIni) assCoberturaIni = assTrack->events[i].Start;
   }
   if (!assPodN) __atomic_store_n(&assPodaLimite, LLONG_MIN, __ATOMIC_RELEASE);
   __atomic_store_n(&assPodaVoltar, 0, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&incTrava);
   if (devolvidas) {
-    printf("[assperf] seek back before the dropped lines: %d line(s) back in libass (%d events)\n", devolvidas, assTrack->n_events);
+    if (devolvidas > repetidas)
+      printf("[assperf] seek back before the dropped lines: %d line(s) back in libass (%d events)\n",
+             devolvidas - repetidas, assTrack->n_events);
+    if (repetidas) printf("[assperf] seek back: %d dropped line(s) were already back from the harvester (not doubled)\n", repetidas);
     fflush(stdout);
   }
 }
@@ -2039,7 +2106,10 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
       int n0 = assTrack->n_events;
       ass_process_data(assTrack, (char *)(corpo + novasO[k]), novasN[k]);
       if (assTrack->n_events > n0 && ass_inc_ev_por(assTrack->n_events)) {
-        while (incEvN < assTrack->n_events) incEv[incEvN++] = novasH[k];
+        /* ReadOrder = ordem de chegada. Antes ficava 0 em todas e o libass
+         * empatava pela posicao no vetor: igual, mas uma fala devolvida pela
+         * poda ia para o fim e mudava quem sobe na colisao. */
+        while (incEvN < assTrack->n_events) { assTrack->events[incEvN].ReadOrder = ++assLeituraSeq; incEv[incEvN++] = novasH[k]; }
         aceitas++;
       } else if (assTrack->n_events != incEvN) {
         /* Sem memoria para o hash: perde o alinhamento, refaz depois. */
@@ -2819,13 +2889,29 @@ static void ass_bench_talvez(long long agora, unsigned geracao) {
 
 
 /* Grade dos quadros (assrender_definir_fps). So o fio GL. */
-static double assFps;
-void assrender_definir_fps(double fps) { assFps = fps > 1.0 && fps < 200.0 ? fps : 0.0; }
+static double assFps;   /* GL escreve, o worker le: __atomic */
+void assrender_definir_fps(double fps) {
+  double v = fps > 1.0 && fps < 200.0 ? fps : 0.0;
+  __atomic_store(&assFps, &v, __ATOMIC_RELAXED);
+}
+static double ass_fps(void) { double v; __atomic_load(&assFps, &v, __ATOMIC_RELAXED); return v; }
 static long long ass_na_grade(long long ms) {
   /* O meio do quadro que contem `ms`; +0,1 quadro de folga (o PTS arredondado
    * ao ms pode cair um tico antes de k/fps). */
-  if (assFps <= 0 || ms <= 0) return ms;
-  return llround((floor((double)ms * assFps / 1000.0 + 0.1) + 0.5) * 1000.0 / assFps);
+  double fps = ass_fps();
+  if (fps <= 0 || ms <= 0) return ms;
+  return llround((floor((double)ms * fps / 1000.0 + 0.1) + 0.5) * 1000.0 / fps);
+}
+/* O meio do quadro seguinte ao do meio `t`. */
+static long long ass_grade_seguinte(long long t) {
+  double fps = ass_fps();
+  if (fps <= 0) return t + 1;
+  return ass_na_grade(t + (long long)llround(1000.0 / fps));
+}
+/* O primeiro meio de quadro >= ms (onde uma mudanca em `ms` ja aparece). */
+static long long ass_grade_desde(long long ms) {
+  long long g = ass_na_grade(ms);
+  return g < ms ? ass_grade_seguinte(g) : g;
 }
 
 /* assperf (render ahead): estado do fio GL. */
@@ -2889,6 +2975,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   pthread_mutex_lock(&assFilaTrava);
   if (!assWorkerCriado) { pthread_mutex_unlock(&assFilaTrava); return 0; }
   assFilaTeto = segurar ? ASS_FILA_MAX : 1;
+  assAgoraUiMs = agora; assAgoraUiGeracao = generation;
   /* SALTO de verdade (seek): o quadro velho mostra outra cena e sai. ERA 200
    * ms — e o currentTime da C9 anda 197..247 ms por evento, 77 % acima de 200
    * (log de 23/09): a legenda era apagada a cada evento e piscava 2-4 vezes
@@ -2923,6 +3010,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   if (!vale && (!assTemUltimoPedido || assUltimoPedidoGeracao != generation ||
        fabs((double)pedido - assUltimoPedidoMs) >= 5.0) &&
       (!segurar || (assFilaN < ASS_FILA_MAX && ass_fila_bytes_locked() < ASS_FILA_BYTES))) {
+    if (!assTemUltimoPedido || assUltimoPedidoGeracao != generation) assPedidoForcado = 1;
     assUltimoPedidoMs = (double)pedido;
     assUltimoPedidoGeracao = generation;
     assTemUltimoPedido = 1;
@@ -3122,6 +3210,13 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       assFioEsperas = 0; assFioEsperaMs = 0; assFioSeguros = assFioAtrasados = 0;
     } else if (assperf_get(AP_GPUBLUR)) printf("[assperf] gpu blur thread: off (everything on the UI thread)\n");
 #endif
+    { unsigned feitos, pulados;
+      pthread_mutex_lock(&assFilaTrava);
+      feitos = assSeqFeitos; pulados = assSeqPulados; assSeqFeitos = assSeqPulados = 0;
+      pthread_mutex_unlock(&assFilaTrava);
+      if (feitos || pulados)
+        printf("[assperf] frame by frame: %u in-between video frames rendered in order (before: only the newest request),"
+               " %u skipped because they were already due on screen\n", feitos, pulados); }
     assfios_relatorio();
   }
   return n;
