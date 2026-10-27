@@ -151,6 +151,16 @@ static int qdTem(const char *s, const char *sub) {
 }
 // Codigo gerenciado: a falha e da ART (checagem implicita), nao uma queda.
 static int qdGerenciado(const char *cam) {
+#ifdef NV_TPK
+  /* .tpk: the process is .NET's (CoreCLR), with no libsigchain, so this
+   * handler runs FIRST for every SIGSEGV, including the ones CoreCLR turns
+   * into a NullReferenceException in JIT code (anonymous memory or the
+   * double-mapped JIT region) or in its own helpers. Those are not crashes:
+   * no report, straight on to CoreCLR. */
+  if (!cam[0] || cam[0] == '[' || qdTem(cam, "doublemapper") || qdTem(cam, "libcoreclr") ||
+      qdTem(cam, "libclrjit") || qdTem(cam, ".dll") || qdTem(cam, ".ni."))
+    return 1;
+#endif
   return qdTem(cam, ".oat") || qdTem(cam, ".odex") || qdTem(cam, ".vdex") || qdTem(cam, ".art") ||
          qdTem(cam, "jit-") || qdTem(cam, "dalvik");
 }
@@ -291,7 +301,10 @@ static void qdTratarE(int sig, siginfo_t *si, void *ctx) {
   // Um relato so: o primeiro fio a cair grava; os outros (e a repeticao da
   // falha depois do debuggerd) so seguem a cadeia.
   if (!__atomic_exchange_n(&qdGravou, 1, __ATOMIC_ACQ_REL)) {
-    if (qdGravarE(qdArq, sig, si, ctx) && qdAntes) qdAntes();
+    /* Managed code (not written): free the slot again, or a NullReference
+     * caught by C# would hide the real crash that comes later (.tpk). */
+    if (!qdGravarE(qdArq, sig, si, ctx)) __atomic_store_n(&qdGravou, 0, __ATOMIC_RELEASE);
+    else if (qdAntes) qdAntes();
   }
   qdEncadear(sig, si, ctx);
 }

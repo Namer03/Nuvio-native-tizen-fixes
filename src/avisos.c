@@ -802,6 +802,13 @@ void avisos_iniciar(void) {
       arranque_espelhar_queda();   // o relato continua tambem em /tmp (#317)
 #endif
     } }
+#elif defined(NV_TPK)
+  /* .tpk (owner 27/10): the same report, CHAINED to CoreCLR's handler (the
+   * process is .NET's; queda.h). A crash used to leave only "DotNET onSigsegv
+   * called" in the log, with no idea where. The next start puts the report
+   * ("[queda] ...", module + offset) in the log. */
+  { char qd[700];
+    if (dados_caminho(qd, sizeof qd, "queda.txt")) { queda_relatar(qd); queda_armar_encadeado(qd, NULL); } }
 #endif
   vistosLer();
   m = dados_ler(AV_MARCA_ARQ);
