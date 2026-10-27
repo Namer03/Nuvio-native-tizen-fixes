@@ -48,8 +48,6 @@ void memlog_amostra(char *sufixo, size_t tamanho) {
    * folga acima do piso, quem pediu e avisado. */
   if (aliviado && disponivel >= (MEMLOG_PISO_MB + 30) * 1024) {
     aliviado = 0;
-    printf("[mem] memoria de volta mem=%.1f/%.1fMB\n", rss / 1024.0, disponivel / 1024.0);
-    fflush(stdout);
     if (voltaCb) voltaCb();
   }
   abaixo = disponivel < MEMLOG_PISO_MB * 1024;

@@ -818,14 +818,11 @@ static void ass_aplicar_assperf_locked(void) {
       /* The blur helper threads are born inside libass and inherit the
        * caller's name: "nv-assblur" tells them apart from the UI. */
       char nomeAnt[16];
-      int got, f = assperf_fios();
       feito = 1;
-      if (!ass_nv_set_engine(assRenderer, 1)) printf("[assperf] NEON not available in this libass build: plain C engine\n");
+      ass_nv_set_engine(assRenderer, 1);
       assfios_nome_trocar("nv-assblur", nomeAnt);
-      got = ass_nv_set_threads(f);
+      ass_nv_set_threads(assperf_fios());
       assfios_nome_voltar(nomeAnt);
-      if (got != f) printf("[assperf] blur threads: %d of %d could be started\n", got, f);
-      fflush(stdout);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
    * \clip, \org or a drawing; the signs keep the author's alpha. */
@@ -1592,10 +1589,6 @@ static void ass_pod_devolver_assTrava(void) {
   if (!assPodN) __atomic_store_n(&assPodaLimite, LLONG_MIN, __ATOMIC_RELEASE);
   __atomic_store_n(&assPodaVoltar, 0, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&incTrava);
-  if (devolvidas > repetidas) {
-    printf("[assperf] seek back before the dropped lines: %d line(s) back in libass\n", devolvidas - repetidas);
-    fflush(stdout);
-  }
 }
 
 static void ass_pod_soltar(void) {   // sob incTrava
@@ -1816,8 +1809,6 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
 
 int assrender_carregar(const char *corpo, size_t tamanho, unsigned geracao) {
   pthread_mutex_lock(&assTrava);
-  if (assGlifoMsgs > 6)
-    fprintf(stderr, "[libass] %d more missing-glyph messages hidden on the previous track\n", assGlifoMsgs - 6);
   assGlifoMsgs = 0;
   pthread_mutex_unlock(&assTrava);
   return ass_carregar(corpo, tamanho, geracao, 0, 0);

@@ -79,12 +79,6 @@ void assperf_iniciar(void) {
       free(t);
     }
     { char *marca = dados_ler(AP_MARCA); if (marca) { free(marca); dados_apagar(AP_MARCA); } }
-    printf("[assperf] subtitles: libass %s, blur CPU x%d, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
-           val[AP_LIBASS] ? "on" : "off", TPK[AP_FIOS] + 1,
-           val[AP_ASSTAM], val[AP_ASSOPAC],
-           val[AP_ESCALA] == 5 ? "Auto" : val[AP_ESCALA] == 2 ? "75%" : "100%", 30 - val[AP_CONTRASTE],
-           val[AP_GAMA] <= 5 ? -val[AP_GAMA] : 11 - val[AP_GAMA]);
-    fflush(stdout);
   }
 #endif
   __atomic_store_n(&iniciado, 1, __ATOMIC_RELEASE);
@@ -124,8 +118,6 @@ void assperf_definir(int id, int v) {
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
-  printf("[assperf] %s = %d\n", PESSOA[id - AP_PRIMEIRA_DA_PESSOA].chave, v);
-  fflush(stdout);
 #else
   (void)id; (void)v;
 #endif
@@ -140,8 +132,6 @@ void assperf_restaurar(void) {
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
-  printf("[assperf] subtitle style back to the defaults\n");
-  fflush(stdout);
 #endif
 }
 
@@ -212,7 +202,7 @@ static double agoraS(void) {
 #define CG_PREV_CHARS   400000L
 #define CG_TELA_SIMPLES 20
 static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
-static struct { double ms[CG_BALDES]; long long id[CG_BALDES]; double ult, leveAcum, leveDesde; int on, prevPesada, prevCedo, imagens, inicios; long chars; } CG;
+static struct { double ms[CG_BALDES]; long long id[CG_BALDES]; double ult, leveAcum; int on, prevPesada, prevCedo, imagens; } CG;
 
 static double carga_locked(double t) {
   long long b = (long long)floor(t * 10.0);
@@ -230,34 +220,21 @@ static void carga_somar_locked(double t, double ms) {
   c = carga_locked(t);
   if (!CG.on) {
     if (c > CG_LIGA || CG.prevPesada) {
-      CG.on = 1; CG.leveAcum = 0; CG.leveDesde = 0;
-      if (CG.prevPesada && c <= CG_LIGA)
-        printf("[assperf] subtitles busy: on (coming second: %d lines starting, %ldk characters)\n", CG.inicios, CG.chars / 1000);
-      else printf("[assperf] subtitles busy: on (%.0f ms of subtitle work per second)\n", c);
-      fflush(stdout);
+      CG.on = 1; CG.leveAcum = 0;
     }
   } else if (c < CG_DESLIGA && !CG.prevPesada && CG.imagens < CG_TELA_SIMPLES) {
     CG.leveAcum += dt < 0 ? 0 : dt > 0.25 ? 0.25 : dt;   /* only while playing: a pause sends no tick (assrender) */
-    if (!CG.leveDesde) CG.leveDesde = t;
-    if (CG.leveAcum >= CG_LEVE_S) {
-      CG.on = 0;
-      printf("[assperf] subtitles busy: off (normal for %.0f s, %.0f ms per second)\n", CG.leveAcum, c);
-      fflush(stdout);
-    }
-  } else { CG.leveAcum = 0; CG.leveDesde = 0; }
+    if (CG.leveAcum >= CG_LEVE_S) CG.on = 0;
+  } else CG.leveAcum = 0;
   CG.ult = t;
 }
 static int pesado_locked(double t) {
-  if (CG.on && CG.ult > 0 && t - CG.ult > CG_OCIOSO_S) {
-    CG.on = 0;
-    printf("[assperf] subtitles busy: off (nothing new for %.0f s)\n", CG_OCIOSO_S);
-    fflush(stdout);
-  }
+  if (CG.on && CG.ult > 0 && t - CG.ult > CG_OCIOSO_S) CG.on = 0;   /* nothing new: the scene is over */
   return CG.on;
 }
 void assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo) {
   pthread_mutex_lock(&autoTrava);
-  CG.inicios = inicios; CG.chars = chars; CG.imagens = imagens;
+  CG.imagens = imagens;
   CG.prevPesada = inicios >= CG_PREV_INICIOS || chars >= CG_PREV_CHARS;
   /* The same thresholds, 0.5 s further on: only Auto looks at it, so the
    * busy flag (picture sync) still switches with the scene itself. */
@@ -291,12 +268,7 @@ int assperf_pesado(void) {
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
 
-static void auto_trocar_locked(int em75, double t, int antes) {
-  if (em75) printf("[assperf] render resolution Auto: 75 %% (%s)\n", antes ? "busy scene in 0.5 s" : "subtitles busy");
-  else printf("[assperf] render resolution Auto: back to 100 %% (%.0f s at 75 %%)\n", t - A.desde);
-  fflush(stdout);
-  A.em75 = em75; A.desde = t;
-}
+static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
 double assperf_escala_quadro(void) {
   static const double e[5] = { 1.0, 0.85, 0.75, 0.66, 0.5 };
@@ -311,8 +283,8 @@ double assperf_escala_quadro(void) {
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
   { int pesado = pesado_locked(t) || CG.prevCedo;
-    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t, !CG.on);
-    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t, 0); }
+    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
+    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
   r = A.em75 ? 0.75 : 1.0;
   pthread_mutex_unlock(&autoTrava);
   return r;

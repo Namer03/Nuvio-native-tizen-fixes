@@ -98,7 +98,6 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 #include "mkvass.h"
 #include "relogio.h"
 #include "legimagem.h"
-#include "telalag.h"
 #include "intro.h"
 #include "proximo.h"
 #include "creditosauto.h"
@@ -4793,23 +4792,9 @@ void player_atualizar(float dt, Uint32 agora) {
       double m = monoSeg();
       if (tocando && m - ultRel >= 10.0) {
         ultRel = m;
-        printf("[relogio] pipeline=%.3f legenda=%.3f (%+.0f ms; amostra de %.0f ms atras)",
+        printf("[relogio] pipeline=%.3f legenda=%.3f (%+.0f ms; amostra de %.0f ms atras)\n",
                video_pos(), relogio_ler(&relLeg, m), (relogio_ler(&relLeg, m) - video_pos()) * 1000.0,
                (m - relLeg.ultAgora) * 1000.0);
-#ifdef NV_TPK
-        { unsigned nl; double med, mx;
-          video_tpk_leituras(&nl, &med, &mx);
-          printf(" | TV position readings %u in 10 s, query avg %.0f max %.0f ms%s", nl, med, mx,
-                 relLeg.carimbo ? ", stamped mid-query" : ", stamped on arrival (old host)");
-          { char tp[24];
-            legimagem_tipo(tp, sizeof tp);
-            { int lv, ps, ag;
-              legimagem_valores(&lv, &ps, &ag);
-              printf(" | picture sync %d ms (%s, %s scene; normal %d, busy %d)%s", ag ? ps : lv, tp, ag ? "busy" : "normal",
-                     lv, ps, legimagem_fps() > 1.0 ? ", on the frame grid" : ""); }
-            { char lag[240]; telalag_relatorio(lag, sizeof lag); if (lag[0]) printf("%s", lag); } } }
-#endif
-        printf("\n");
       } }
   } else if (!comVideo && tocando && !esperandoFonte && !erroFonte) {
     posSeg += dt;

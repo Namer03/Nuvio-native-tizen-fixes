@@ -195,8 +195,6 @@ int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsi
 // 1 from a seek until the first real reading of where the TV landed (the TV
 // seeks to a keyframe, seconds before the target). Subtitles hide meanwhile.
 int      video_pos_incerta(void);
-// For the 10 s [relogio] line: readings, mean and max query time (ms). Resets.
-void     video_tpk_leituras(unsigned *n, double *media, double *max);
 // Frame rate and HDR of the playing file (MKV header); 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
 #endif

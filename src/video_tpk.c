@@ -154,8 +154,6 @@ static pthread_mutex_t amTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct { unsigned seq; int valido, ms; double carimbo, incerteza; } am;
 static atomic_int posIncerta;          // 1 = seek feito, ainda sem leitura real
 static atomic_uint incertaTick;        // SDL_GetTicks do seek (1,5 s no maximo)
-static atomic_int buscaPedidaMs = -1;  // o alvo do ultimo seek (para o log)
-static struct { unsigned n; double soma, max; int relogioRuim; } amMed;   // sob amTrava
 static double monoAgora(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + ts.tv_nsec / 1e9;
@@ -273,28 +271,12 @@ void nv_tpk_video_registrar_aspecto(FnAspecto janela) { hAspecto = janela; }
 __attribute__((visibility("default")))
 void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboNs) {
   double agora = monoAgora(), c = (double)carimboNs / 1e9, inc = consultaMs > 0 ? consultaMs / 2000.0 : 0.0;
-  int msAnt, ruim = 0;
   if (!ativo || ms < 0) return;
-  if (c > agora + 0.05 || c < agora - 10.0) { c = agora - inc; ruim = 1; }   // relogio diferente: o fim menos meia consulta
+  if (c > agora + 0.05 || c < agora - 10.0) c = agora - inc;   // relogio diferente: o fim menos meia consulta
   pthread_mutex_lock(&amTrava);
-  msAnt = am.valido ? am.ms : -1;
   am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
-  amMed.n++; amMed.soma += consultaMs; if (consultaMs > amMed.max) amMed.max = consultaMs;
-  if (ruim && !amMed.relogioRuim) { amMed.relogioRuim = 1; ruim = 2; }
   pthread_mutex_unlock(&amTrava);
-  if (ruim == 2) printf("[relogio] host stamp is not on this clock (%.3f vs %.3f s): using arrival time\n", c, agora);
-  if (motivo == 1 || (motivo == 0 && atomic_load(&posIncerta))) {
-    int alvo = atomic_load(&buscaPedidaMs);
-    if (atomic_exchange(&posIncerta, 0) && alvo >= 0)
-      printf("[relogio] seek: asked %.2f s, the TV landed at %.2f s (%+.2f s), read in %d ms\n",
-             alvo / 1000.0, ms / 1000.0, (ms - alvo) / 1000.0, consultaMs);
-  } else if (motivo == 2 && msAnt >= 0) {
-    printf("[relogio] pause: subtitles were at the last reading %.3f s, the TV paused at %.3f s (%+.0f ms), read in %d ms\n",
-           msAnt / 1000.0, ms / 1000.0, (double)(ms - msAnt), consultaMs);
-  } else if (motivo == 3 && msAnt >= 0 && abs(ms - msAnt) >= 20) {
-    printf("[relogio] pause settled at %.3f s (%+d ms after the first reading)\n", ms / 1000.0, ms - msAnt);
-  }
-  if (motivo) fflush(stdout);
+  if (motivo <= 1) atomic_store(&posIncerta, 0);   // a TV ja disse onde caiu depois do seek
 }
 
 void video_escolher_audio(int i);
@@ -490,7 +472,6 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
     case EV_BUSCOU:
       { int alvo = a; atomic_compare_exchange_strong(&buscaAlvoMs, &alvo, -1); }
       // O host so sabe o ALVO aqui; onde a TV caiu chega pela proxima leitura.
-      atomic_store(&buscaPedidaMs, a);
       atomic_store(&incertaTick, SDL_GetTicks() | 1u);
       atomic_store(&posIncerta, 1);
       break;
@@ -830,7 +811,7 @@ static void abrirSessao(void) {
   atomic_store(&temErroDetalhe, 0);
   vigiaAtiva = 0; buscaAlvoMs = -1;
   pthread_mutex_lock(&amTrava); am.valido = 0; pthread_mutex_unlock(&amTrava);   // seq continua: o player compara
-  atomic_store(&posIncerta, 0); atomic_store(&buscaPedidaMs, -1);
+  atomic_store(&posIncerta, 0);
   atomic_store(&vigiaReiniciar, 1);
   ativo = 1; pronto = falhou = terminou = tocando = 0;
   largura = altura = durMs = 0; bufferando = 1; bufferDesde = SDL_GetTicks(); bufPct = 0;
@@ -2143,13 +2124,6 @@ int video_pos_incerta(void) {
   // Sem leitura em 1,5 s (consulta presa): volta ao de antes em vez de esconder.
   if (SDL_GetTicks() - atomic_load(&incertaTick) > 1500u) { atomic_store(&posIncerta, 0); return 0; }
   return 1;
-}
-/* Para a linha [relogio] de 10 s: leituras, tempo medio e maximo da consulta. */
-void video_tpk_leituras(unsigned *n, double *media, double *max) {
-  pthread_mutex_lock(&amTrava);
-  *n = amMed.n; *media = amMed.n ? amMed.soma / amMed.n : 0.0; *max = amMed.max;
-  amMed.n = 0; amMed.soma = 0; amMed.max = 0;
-  pthread_mutex_unlock(&amTrava);
 }
 double video_pos(void) {
   if (terminou && video_duracao() > 0) return video_duracao();

@@ -54,7 +54,7 @@ enum {
 int  assperf_get(int id);
 // Reads assperf.txt once (later calls do nothing).
 void assperf_iniciar(void);
-// Saves one of the person's options (AP_ESCALA .. AP_ASSOPAC) and logs it.
+// Saves one of the person's options (AP_ESCALA .. AP_ASSOPAC).
 void assperf_definir(int id, int v);
 // The person's options back to their defaults.
 void assperf_restaurar(void);

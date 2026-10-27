@@ -32,18 +32,10 @@ void nv_tpk_premult_registrar(TbFnInt premult) {
 
 // Fio do app, todo quadro (app.c).
 void tpkborda_quadro(void) {
-  static int estado, avisado;
+  static int estado;
   int quer = player_aberto() && assrender_borda_quer();
   if (quer == estado && !__atomic_exchange_n(&reenviar, 0, __ATOMIC_ACQ_REL)) return;
   estado = quer;
-  if (!hPremult) {
-    if (quer && !avisado) {
-      avisado = 1;
-      printf("[assperf] subtitle edges: this host package cannot switch premult (no GLView or older host)\n");
-      fflush(stdout);
-    }
-    return;
-  }
-  hPremult(quer);
+  if (hPremult) hPremult(quer);
 }
 #endif

@@ -104,7 +104,7 @@ void legimagem_valores(int *leve, int *pesada, int *agoraPesada) {
 }
 
 void legimagem_ajustar(int deltaMs, int pesada) {
-  char k[12], tp[24]; int i, antes;
+  char k[12]; int i;
   ler();
   if (pesada < 0) pesada = assperf_pesado();   // -1: o valor da cena que esta na tela
   if (pesada) chavePesada(k, sizeof k); else chaveAtual(k, sizeof k, NULL, NULL);
@@ -116,14 +116,10 @@ void legimagem_ajustar(int deltaMs, int pesada) {
     snprintf(tipos[i].chave, sizeof tipos[i].chave, "%s", k);
     tipos[i].ms = base;
   }
-  antes = tipos[i].ms;
   tipos[i].ms += deltaMs;
   if (tipos[i].ms < 0) tipos[i].ms = 0;
   if (tipos[i].ms > LI_MAX) tipos[i].ms = LI_MAX;
   gravar();
-  legimagem_tipo(tp, sizeof tp);
-  printf("[relogio] picture sync for %s, %s scenes: %d ms (was %d ms)\n", tp, pesada ? "busy" : "normal", tipos[i].ms, antes);
-  fflush(stdout);
 }
 
 void legimagem_restaurar(void) {

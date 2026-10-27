@@ -1151,9 +1151,6 @@ static int lerAttachments(Fio *f, const unsigned char *p, long n) {
     }
     if (!dados || dadosN <= 0 || !extensaoFonte(nome, mime)) continue;
     if (f->nFontes >= MKVASS_FONTES_MAX) {
-#ifdef NV_TPK
-      printf("[mkvass] fonte ignorada (teto de %d arquivos): %s\n", MKVASS_FONTES_MAX, nome);
-#endif
       continue;
     }
     {
@@ -1927,13 +1924,9 @@ static int avancarFontes(Fio *f, int esperar) {
     ai = larguraDe(p[0]);
     an = ai > 0 && ai < n ? lerTam(p + ai, n - ai, &at) : -1;
     /* assperf "Attached fonts limit": o teto era MKVASS_CORPO_MAX (16 MB, o do
-     * corpo ASS), e as fontes CJK de um fansub passam disso — o log de 23/10
-     * dizia so "indisponiveis (HTTP 0, curl 0)". Agora o tamanho vai ao log. */
+     * corpo ASS), e as fontes CJK de um fansub passam disso. */
     { long teto = (long)assperf_fontes_teto();
       if (teto < MKVASS_CORPO_MAX) teto = MKVASS_CORPO_MAX;
-      if (an > 0)
-        printf("[mkvass] fontes anexadas: bloco Attachments de %.1f MB (limite %.0f MB)%s\n",
-               an / 1048576.0, teto / 1048576.0, an > teto ? ": grande demais, ficam as fontes do app" : "");
       if (an <= 0 || an > teto) { free(p); f->fontesPasso = 3; goto falhou; } }
     if (ai + at + an <= n) {
       int ok = lerAttachments(f, p + ai + at, an);

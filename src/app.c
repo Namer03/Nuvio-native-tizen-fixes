@@ -3302,8 +3302,6 @@ static void memoriaDeVolta(void) {
   if (!mkvassAliviado) return;
   mkvassAliviado = 0;
   if (!player_aberto()) return;
-  printf("[mem] legendas: retomando a colheita (parada pelo aviso de memoria)\n");
-  fflush(stdout);
   mkvass_retomar();
 }
 static void abrirFonteManualDireta(const Stream *s) {

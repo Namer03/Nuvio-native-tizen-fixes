@@ -628,7 +628,6 @@ typedef struct {
   int espiou;               // bloco: a faixa ja foi conferida
   int hdrN;                 // bytes de cabecalho no inicio de buf
   unsigned char *buf; long bufN, bufCap, bufTam;
-  long blocos;
 } MfTap;
 
 static void mtProcurar(MfTap *t) { t->estado = MT_PROCURA; t->janela = 0; t->cabN = 0; t->temTs = 0; }
@@ -762,7 +761,6 @@ static void mtAlimentar(MfTap *t, int64_t pos, const unsigned char *b, size_t n)
         t->clTs = v; t->temTs = 1; t->precisaTs = 0;
       } else {
         mkvass_relay_bloco(t->clPos, t->clHdr, t->clTs, t->temTs, t->elPos, t->buf, t->bufN);
-        t->blocos++;
       }
       t->bufN = 0; t->estado = MT_CAB;
       break; }
@@ -951,7 +949,6 @@ static void *atender(void *u) {
     fflush(stdout); }
 sai:
 #ifdef NV_TPK
-  if (e.tap.blocos) { printf("[mkvfix] #%u relay: %ld subtitle block(s) handed to the harvester\n", e.nr, e.tap.blocos); fflush(stdout); }
   free(e.tap.buf);
 #endif
   shutdown(sock, SHUT_RDWR);

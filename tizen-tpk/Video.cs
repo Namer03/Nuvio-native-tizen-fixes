@@ -338,7 +338,6 @@ namespace NuvioTpk
         public void IniciaRelogio(Func<bool> parar)
         {
             new Thread(() => {
-                Log("[video] position read: the clock thread reads the TV every 40 ms");
                 while (!parar()) {
                     Volatile.Write(ref relogioVivo, Stopwatch.GetTimestamp());
                     try {
@@ -415,7 +414,7 @@ namespace NuvioTpk
                     lock (trocaTrava) {
                         if (minha == sessao && player == p && ger == posGer) { posMs = ms; Informar(ms, motivo, inicio, fim); }
                     }
-                } catch (Exception e) { Log("[video] position read (" + motivo + "): " + e.GetType().Name); }
+                } catch { }
                 finally { Volatile.Write(ref f.consulta, 0); }
             });
         }
