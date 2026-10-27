@@ -169,6 +169,7 @@ static void avisarCascaAberto(int v) { (void)v; tex_pressao_reproducao(v); }
 #include "salto.h"
 #include "seekgesto.h"    // .tpk: seek gesture (owner-tuned values, SEEKG_PADRAO)
 #include "video_seekretry.h"
+#include "queda.h"
 // Sem tecla por este tempo, o avanco termina: manda a posicao ao pipeline e
 // retoma. 420 ms e maior que o intervalo de repeticao do controle (que na C9
 // fica perto de 100 ms) e menor que o tempo de reacao de quem soltou de
@@ -2786,7 +2787,13 @@ static void fecharSessao(int manter) {
     if (!manter) { legenda_desligar(); memlog_devolver(); }
     printf("[player] saida: video %s %u ms, resto %u ms\n", manter ? "retido" : "parar",
            (unsigned)(tv - t0), (unsigned)(SDL_GetTicks() - tv));
-    fflush(stdout); }
+    fflush(stdout);
+#ifdef NV_TPK
+    // The crash after Back came with no report (27/10): check here, the risky
+    // moment, that nothing replaced the reporter's SIGSEGV handler.
+    queda_conferir("player closed");
+#endif
+  }
   if (!manter) comVideo = 0;
   retido = manter; if (!manter) retidoVoo = 0;
   prepararRetencao = 0; saidaIlhaDesde = 0;

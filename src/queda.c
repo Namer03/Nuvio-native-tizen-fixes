@@ -10,6 +10,7 @@ void queda_armar_encadeado(const char *arquivo, void (*antes)(void)) { (void)arq
 int  queda_relatar(const char *arquivo) { (void)arquivo; return 0; }
 void queda_espelho(const char *arquivo) { (void)arquivo; }
 int  queda_relatar_em(const char *arquivo, FILE *saida) { (void)arquivo; (void)saida; return 0; }
+int  queda_conferir(const char *quando) { (void)quando; return 1; }
 #else
 #include <signal.h>
 #include <unistd.h>
@@ -100,6 +101,7 @@ static const int qdSinaisE[QD_E_SINAIS] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SI
 static struct sigaction qdVelho[QD_E_SINAIS];
 static void (*qdAntes)(void);
 static volatile int qdGravou;
+static int qdEncadeado;   // queda_armar_encadeado ja rodou (queda_conferir)
 static uintptr_t qdPilhaE[QD_E_PILHA], qdQuadros[QD_E_QUADROS];
 static int qdNPilha, qdNQuadros;
 static char qdBuf[4096], qdLinha[512], qdBase[512];
@@ -325,6 +327,23 @@ void queda_armar_encadeado(const char *arquivo, void (*antes)(void)) {
     memset(&qdVelho[i], 0, sizeof qdVelho[i]);
     sigaction(qdSinaisE[i], &sa, &qdVelho[i]);
   }
+  qdEncadeado = 1;
+}
+
+int queda_conferir(const char *quando) {
+  static int avisou;
+  struct sigaction atual;
+  if (!qdEncadeado) return 1;
+  memset(&atual, 0, sizeof atual);
+  if (sigaction(SIGSEGV, NULL, &atual) != 0) return 1;
+  if ((atual.sa_flags & SA_SIGINFO) && atual.sa_sigaction == qdTratarE) return 1;
+  if (!avisou) {
+    avisou = 1;
+    printf("[queda] another SIGSEGV handler replaced the crash reporter (%s): a crash from here on leaves no report\n",
+           quando ? quando : "?");
+    fflush(stdout);
+  }
+  return 0;
 }
 
 // --- leitura, na abertura seguinte --------------------------------------------

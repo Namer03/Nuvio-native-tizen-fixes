@@ -322,6 +322,7 @@ __attribute__((visibility("default")))
 void nv_tpk_video_faixa(int tipo, int idx, const char *lingua) {
   VideoFaixa *f;
   const char *l = lingua ? lingua : "";
+  if (!ativo) return;   // lista tardia depois de sair (como nv_tpk_video_evento)
   if (tipo == 0) { if (nNovasA >= MAX_FAIXAS) return; f = &novasA[nNovasA++]; }
   else           { if (nNovasL >= MAX_FAIXAS) return; f = &novasL[nNovasL++]; }
   memset(f, 0, sizeof *f);
@@ -338,6 +339,9 @@ void nv_tpk_video_faixas_fim(int selAudio, int selLeg) {
   // Segunda leitura (o host rele o audio com o video ja tocando, #165): so o
   // audio muda; a legenda que o app ja escolheu fica.
   int releitura = (nAudio || nLeg) && !nNovasL && nLeg;
+  // Depois de sair: a lista e do player que ja fechou; nao repovoa o menu nem
+  // dispara a ordem do audio (video_parar ja zerou tudo).
+  if (!ativo) { nNovasA = nNovasL = 0; return; }
   memcpy(faixaAudio, novasA, sizeof novasA);
   audioAtual = selAudio >= 0 ? selAudio : 0;
   if (!releitura) {
@@ -1342,6 +1346,9 @@ static void avaliarAudioTv(void) {
 // rotulos. Sem mutex, como o resto deste arquivo: o rotulo sai de uma vez so.
 static void sondaMkv(double pos) {
   Uint32 t = SDL_GetTicks();
+  // Player fechado: nada a casar nem a escolher (video_bombear roda em todo
+  // quadro, tambem depois do Voltar). O proximo titulo abre com video_tocar.
+  if (!ativo) return;
   if (mkvEstado == 1 && urlAtual[0] && t - mkvOlhou >= 500) {
     unsigned char *cab = NULL; long cabN = 0;
     mkvOlhou = t;
@@ -1810,6 +1817,14 @@ void video_parar(void) {
   atomic_store(&playerPreso, -2); // aviso de antes da saida nao reabre o video
   if (ativo && hParar) hParar();
   ativo = pronto = tocando = 0;
+  // AS FAIXAS SAEM COM O VIDEO (27/10). O memset do `cv` acima zerava
+  // cv.recusadas e deixava mkvN/faixasLidas/nAudio do episodio fechado: o
+  // proximo video_bombear refazia o casamento e a ordem do audio sobre a lista
+  // velha ("[mkv] contagem" e "audio pela ordem ... fica" depois do Voltar).
+  // A geracao nova faz um fioMkv ainda na rede descartar o que trouxer;
+  // video_tocar zera o mesmo ao abrir o proximo.
+  mkvGeracao++; mkvN = 0; mkvEstado = 0; faixasNovas = 0; faixasLidas = 0;
+  nAudio = nLeg = 0; audioAtual = 0; legAtual = -1; nNovasA = nNovasL = 0;
 }
 void video_pausar(int p) {
   int estavaPausado = pausaPedida;

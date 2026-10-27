@@ -808,7 +808,13 @@ void avisos_iniciar(void) {
    * called" in the log, with no idea where. The next start puts the report
    * ("[queda] ...", module + offset) in the log. */
   { char qd[700];
-    if (dados_caminho(qd, sizeof qd, "queda.txt")) { queda_relatar(qd); queda_armar_encadeado(qd, NULL); } }
+    if (dados_caminho(qd, sizeof qd, "queda.txt")) {
+      queda_relatar(qd); queda_armar_encadeado(qd, NULL);
+      /* One line per start: the reporter is on, and which build this is (the
+       * compile time tells two CI builds of the same version apart). */
+      printf("[queda] crash reporter armed (build %s %s)\n", __DATE__, __TIME__);
+      fflush(stdout);
+    } }
 #endif
   vistosLer();
   m = dados_ler(AV_MARCA_ARQ);
