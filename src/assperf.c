@@ -30,7 +30,7 @@ static const int TPK[AP_N] = {
 #define AP_PRIMEIRA_DA_PESSOA AP_ESCALA
 static const struct { const char *chave; int min, max; } PESSOA[AP_N - AP_PRIMEIRA_DA_PESSOA] = {
   { "escala", 0, 5 }, { "gama", 0, 10 }, { "contraste", 0, 30 }, { "libass", 0, 1 },
-  { "asstam", 50, 200 }, { "assopac", 20, 100 }, { "blur", 0, 2 },
+  { "asstam", 50, 200 }, { "assopac", 20, 100 }, { "blur", 0, 1 },
 };
 
 static int val[AP_N] __attribute__((unused));
@@ -91,7 +91,7 @@ void assperf_iniciar(void) {
       }
     }
     printf("[assperf] subtitles: libass %s, blur %s, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
-           val[AP_LIBASS] ? "on" : "off", val[AP_BLUR] == 0 ? "CPU" : val[AP_BLUR] == 2 ? "GPU" : "Auto",
+           val[AP_LIBASS] ? "on" : "off", val[AP_BLUR] ? "Auto" : "CPU",
            val[AP_ASSTAM], val[AP_ASSOPAC],
            val[AP_ESCALA] == 5 ? "Auto" : val[AP_ESCALA] == 2 ? "75%" : "100%", 30 - val[AP_CONTRASTE],
            val[AP_GAMA] <= 5 ? -val[AP_GAMA] : 11 - val[AP_GAMA]);
@@ -119,8 +119,10 @@ int assperf_get(int id) {
   assperf_iniciar();
   if (id == AP_GPUBLUR) {
     int m = __atomic_load_n(&val[AP_BLUR], __ATOMIC_RELAXED);
-    if (!m || __atomic_load_n(&gpuQueda, __ATOMIC_RELAXED) || __atomic_load_n(&gpuRam, __ATOMIC_RELAXED)) return 0;
-    return m == 2 || assperf_pesado();
+    /* Auto = every blur of 64k px or more on the GPU, in any scene (the
+     * behaviour tested since 24/10). Switching only for busy scenes (27/10)
+     * made the start of the phone scene redraw everything at once. */
+    return m && !__atomic_load_n(&gpuQueda, __ATOMIC_RELAXED) && !__atomic_load_n(&gpuRam, __ATOMIC_RELAXED);
   }
   return __atomic_load_n(&val[id], __ATOMIC_RELAXED);
 #else

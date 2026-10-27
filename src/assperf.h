@@ -50,7 +50,7 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  AP_BLUR,         // blur: 0 CPU, 1 Auto (GPU while subtitles are busy), 2 GPU (every blur of 64k px or more)
+  AP_BLUR,         // blur: 0 CPU, 1 Auto (GPU for every blur of 64k px or more; off when RAM is tight)
   AP_N
 };
 

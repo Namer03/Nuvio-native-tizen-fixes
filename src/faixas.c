@@ -592,10 +592,11 @@ static int nLinhas(int col) {
 // linha restaura o conjunto inteiro sem exigir dezenas de toques no controle.
 enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
 #ifdef NV_TPK
-       /* ASS/SSA tracks on the .tpk (owner 26/10): with libass on, the column
-        * is size and opacity of the dialogue, delay, contrast, gamma, render
-        * resolution, picture sync, restore and libass itself (always last).
-        * With libass off it is the ordinary column plus the libass row. */
+       /* ASS/SSA tracks on the .tpk (owner 26-27/10): with libass on, the
+        * column is size and opacity of the dialogue, delay, contrast, gamma,
+        * render resolution, picture sync, blur, libass itself and Restore
+        * defaults (always the last cell). With libass off it is the ordinary
+        * column plus the libass row, Restore defaults last. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC, EST_BLUR,
 #endif
        EST_TOTAL };
@@ -625,12 +626,14 @@ static void estMapa(void) {
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
       static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-                               EST_RESTAURAR, EST_BLUR, EST_LIBASS };
+                               EST_BLUR, EST_LIBASS, EST_RESTAURAR };
       for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
-    for (i = 0; i <= EST_COR_BORDA; i++) estLinhas[estNLinhas++] = i;
+    /* Restore defaults stays the last cell (owner 27/10), after libass. */
+    for (i = 0; i <= EST_COR_BORDA; i++) if (i != EST_RESTAURAR) estLinhas[estNLinhas++] = i;
     estLinhas[estNLinhas++] = EST_LIBASS;
+    estLinhas[estNLinhas++] = EST_RESTAURAR;
     return;
   }
 #endif
@@ -718,7 +721,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_BLUR: { int v = assperf_get(AP_BLUR);
-      snprintf(dst, tam, "%s", v == 0 ? "CPU" : v == 2 ? "GPU" : i18n("Automático"));
+      snprintf(dst, tam, "%s", v ? i18n("Automático") : "CPU");
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
       snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
@@ -755,8 +758,8 @@ static void ciclarEstilo(int linha) {
       player_leg_estilo_restaurar();
       return;
 #ifdef NV_TPK
-    case EST_BLUR:       // Auto (GPU while busy) -> GPU (by size) -> CPU
-      assperf_definir(AP_BLUR, (assperf_get(AP_BLUR) + 1) % 3);
+    case EST_BLUR:       // Auto (GPU) <-> CPU
+      assperf_definir(AP_BLUR, !assperf_get(AP_BLUR));
       return;
     case EST_ESCALA: {   // Auto -> 100 % -> 75 %
       int v = assperf_get(AP_ESCALA);
