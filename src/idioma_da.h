@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Slør usete"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Sløring af næste afsnit virker kun med denne indstilling slået til."),
   T("Desfocar próximo episódio", "Slør næste afsnit"),
-  T("Desfoque", "Sløring"),
   T("Desfoque da barra moderna", "Sløring af den moderne sidebjælke"),
   T("Desligada", "Fra"),
   T("Desligado", "Fra"),

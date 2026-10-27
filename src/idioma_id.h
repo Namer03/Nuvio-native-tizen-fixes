@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Kaburkan yang belum ditonton"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Mengaburkan episode berikutnya hanya berfungsi bila opsi ini aktif."),
   T("Desfocar próximo episódio", "Kaburkan episode berikutnya"),
-  T("Desfoque", "Blur"),
   T("Desfoque da barra moderna", "Blur bilah samping modern"),
   T("Desligada", "Mati"),
   T("Desligado", "Mati"),

@@ -1927,11 +1927,6 @@ void gfx_tex_esquecer(GLuint tex) {
   if (tex) vidroEsquecerFonte(tex);
 }
 
-void gfx_estado_externo(void) {
-  progAtual = -1;
-  texAtual = 0;
-}
-
 int    gfx_n_rect = 0, gfx_n_prog = 0, gfx_n_bind = 0, gfx_n_outros = 0;
 double gfx_ms_rect = 0.0, gfx_ms_outros = 0.0;
 // PREENCHIMENTO SUBMETIDO no quadro, em telas cheias (1920x1080 = 1,0).

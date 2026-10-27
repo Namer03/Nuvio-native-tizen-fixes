@@ -9,8 +9,7 @@
 #     engine on random input, several seeds.
 #  2. verify.c: real libass renders of samples/*.ass on a time grid, C engine
 #     vs NEON engine (1 and 4 blur threads), every ASS_Image compared byte for
-#     byte, plus the deferred-blur recipes rebuilt on the CPU against the
-#     normal path and the dialogue opacity (alpha only, signs untouched).
+#     byte, plus the dialogue opacity (alpha only, signs untouched).
 #
 # Exits non-zero on any difference, which fails the build.
 set -e

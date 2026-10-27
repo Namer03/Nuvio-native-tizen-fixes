@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Zamuti nepogledano"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Zamućenje sljedeće epizode radi samo kad je ovo uključeno."),
   T("Desfocar próximo episódio", "Zamuti sljedeću epizodu"),
-  T("Desfoque", "Zamućenje"),
   T("Desfoque da barra moderna", "Zamućenje moderne bočne trake"),
   T("Desligada", "Isključeno"),
   T("Desligado", "Isključeno"),

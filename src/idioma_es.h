@@ -1636,7 +1636,6 @@
   T("Desfocar não assistidos", "Desenfocar no vistos"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Desenfocar el siguiente episodio solo funciona con esta opción activada."),
   T("Desfocar próximo episódio", "Desenfocar próximo episodio"),
-  T("Desfoque", "Desenfoque"),
   T("Desfoque da barra moderna", "Desenfoque de la barra moderna"),
   T("Desligada", "Desactivada"),
   T("Desligado", "Desactivado"),

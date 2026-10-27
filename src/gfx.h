@@ -520,10 +520,6 @@ void gfx_encerrar(void);
 // repetidos. Quem binda ou destroi textura POR FORA dele precisa avisar:
 // passe o nome destruido, ou 0 para "esqueca tudo" (apos um upload).
 void gfx_tex_esquecer(GLuint tex);
-// Quem usou o GL por fora com programas proprios (o blur das legendas na GPU,
-// assgpublur.c) e ja devolveu FBO, viewport, mistura e texturas: o gfx
-// esquece o programa e a textura que lembrava.
-void gfx_estado_externo(void);
 
 // Desenha um retangulo. `foco` 0..1 controla especular/sombra; `parx/pary`
 // so deslocam a luz; a arte nunca e cortada nem deslocada (#176); `raio` em fracao do menor lado.

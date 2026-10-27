@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Sudda ut osedda"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Att sudda nästa avsnitt fungerar bara med detta på."),
   T("Desfocar próximo episódio", "Sudda ut nästa avsnitt"),
-  T("Desfoque", "Oskärpa"),
   T("Desfoque da barra moderna", "Oskärpa i det moderna sidofältet"),
   T("Desligada", "Av"),
   T("Desligado", "Av"),

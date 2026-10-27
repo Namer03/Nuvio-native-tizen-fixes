@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Làm mờ mục chưa xem"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Làm mờ tập kế tiếp chỉ hoạt động khi bật tùy chọn này."),
   T("Desfocar próximo episódio", "Làm mờ tập kế tiếp"),
-  T("Desfoque", "Làm mờ"),
   T("Desfoque da barra moderna", "Làm mờ thanh bên hiện đại"),
   T("Desligada", "Tắt"),
   T("Desligado", "Tắt"),

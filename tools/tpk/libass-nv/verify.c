@@ -8,9 +8,8 @@
  * bitmap engine, then again with the NEON engine (ass_nv_set_engine, cold
  * caches both times), and compares every ASS_Image byte for byte: position,
  * size, colour and the w bytes of every row. Exit status 1 on any difference.
- * Also checks the NEON engine with 4 blur threads, that every deferred-blur
- * recipe (0003) rebuilt on the CPU equals the normal path byte for byte, and
- * that the dialogue opacity (ass_nv_set_dialogue_alpha) only changes colours.
+ * Also checks the NEON engine with 4 blur threads, and that the dialogue
+ * opacity (ass_nv_set_dialogue_alpha, 0003) only changes colours.
  */
 /* 64-bit inodes (CI overlay fs): without this, 32-bit readdir() fails with
  * EOVERFLOW and no font gets loaded. */
@@ -73,35 +72,6 @@ static double now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
-}
-
-/* Deferred blur: the same hash, but every deferred image is first rebuilt from its
- * recipe on the CPU (ass_nv_defer_apply_cpu, libass's own blur/fix/shift).
- * It must equal the normal path byte for byte. */
-static unsigned n_deferred, n_defer_fail;
-
-static Frame hash_frame_defer(ASS_Renderer *r, ASS_Image *img)
-{
-    Frame f = { 1469598103934665603ULL, 0 };
-    static unsigned char *buf;
-    static size_t cap;
-    for (; img; img = img->next) {
-        int hdr[5] = { img->w, img->h, img->dst_x, img->dst_y, (int) img->color };
-        ASS_NvDefer d;
-        f.hash = fnv(f.hash, hdr, sizeof(hdr));
-        if (ass_nv_image_defer(img, &d)) {
-            size_t need = (size_t) img->w * img->h;
-            if (need > cap) { free(buf); cap = need; buf = malloc(cap); }
-            if (!buf || !ass_nv_defer_apply_cpu(r, img, buf, img->w)) { n_defer_fail++; continue; }
-            f.hash = fnv(f.hash, buf, need);
-            n_deferred++;
-        } else {
-            for (int y = 0; y < img->h; y++)
-                f.hash = fnv(f.hash, img->bitmap + (size_t) y * img->stride, img->w);
-        }
-        f.imgs++;
-    }
-    return f;
 }
 
 static int n_fonts, n_msgs;
@@ -194,21 +164,6 @@ static int run(ASS_Library *lib, const char *file, int simd, int threads, Frame 
     return 0;
 }
 
-/* Deferred blur renderer (NEON), every frame rebuilt from the recipes. */
-static int run_defer(ASS_Library *lib, const char *file, Frame *out, int frames, int min_area)
-{
-    ASS_Renderer *r = renderer(lib, 1);
-    if (!r || ass_nv_set_deferred_blur(r, 1) != 1) return -1;
-    ass_nv_set_deferred_min_area(r, min_area);
-    ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
-    if (!t) return -1;
-    for (int i = 0; i < frames; i++)
-        out[i] = hash_frame_defer(r, ass_render_frame(r, t, (long long) i * STEP_MS, NULL));
-    ass_free_track(t);
-    ass_renderer_done(r);
-    return 0;
-}
-
 /* Dialogue opacity 127 (half): the bitmaps and positions must be the normal
  * pass's, only alpha bytes change; 255 must be the normal pass. (At 0 libass
  * drops the invisible images altogether.) */
@@ -259,22 +214,6 @@ int main(int argc, char **argv)
         if (na != nb || na != nc) diff++;
         if (!imgs) { printf("  no images rendered\n"); diff++; }
         printf("  %s: %d frames, %d differ\n", diff ? "FAIL" : "identical", na, diff);
-        /* Deferred blur, recipes applied on the CPU = the normal path;
-         * every blur deferred, then only those of 64k pixels or more. */
-        for (int ma = 0; ma <= 65536; ma += 65536) {
-            unsigned d0 = n_deferred, f0 = n_defer_fail;
-            if (run_defer(lib, argv[i], d, na, ma)) { printf("  deferred blur: FAIL to run\n"); bad = 1; break; }
-            int ddiff = 0;
-            for (int k = 0; k < na; k++)
-                if (d[k].hash != b[k].hash || d[k].imgs != b[k].imgs) {
-                    if (ddiff < 5)
-                        printf("  DEFERRED DIFF at %d ms (%u vs %u images)\n", k * STEP_MS, d[k].imgs, b[k].imgs);
-                    ddiff++;
-                }
-            printf("  deferred blur (min area %d), recipes on the CPU: %s, %d differ | %u images from recipes, %u failed\n",
-                   ma, ddiff || n_defer_fail != f0 ? "FAIL" : "identical", ddiff, n_deferred - d0, n_defer_fail - f0);
-            diff += ddiff + (int) (n_defer_fail - f0);
-        }
         /* Dialogue opacity: 255 = untouched; 127 = same bitmaps, alpha only. */
         {
             static Frame e[MAX_FRAMES], g[MAX_FRAMES];
@@ -299,10 +238,9 @@ int main(int argc, char **argv)
         bad |= diff != 0;
     }
     printf("total C %.0f ms, NEON %.0f ms (x%.2f; emulated, not TV speed)\n", tc, tn, tn > 0 ? tc / tn : 0);
-    if (!n_deferred) { printf("no image was deferred: the deferred-blur check tested nothing\n"); bad = 1; }
     if (!faded_total) { printf("no image was faded: the dialogue opacity check tested nothing\n"); bad = 1; }
     printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine (1 and 4 threads) bit-identical to C;"
-                 " deferred-blur recipes rebuild the same pictures; dialogue opacity changes alpha only\n");
+                 " dialogue opacity changes alpha only\n");
     ass_library_done(lib);
     return bad;
 }

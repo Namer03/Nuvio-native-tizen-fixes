@@ -1636,7 +1636,6 @@
   T("Desfocar não assistidos", "Flouter les non vus"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Flouter l’épisode suivant ne marche qu’avec cette option activée."),
   T("Desfocar próximo episódio", "Flouter le prochain épisode"),
-  T("Desfoque", "Flou"),
   T("Desfoque da barra moderna", "Flou de la barre moderne"),
   T("Desligada", "Désactivée"),
   T("Desligado", "Désactivé"),

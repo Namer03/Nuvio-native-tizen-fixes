@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "Nem megnézettek elmosása"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "A következő rész elmosása csak ezzel a beállítással működik."),
   T("Desfocar próximo episódio", "Következő epizód elmosása"),
-  T("Desfoque", "Elmosás"),
   T("Desfoque da barra moderna", "Modern oldalsáv elmosása"),
   T("Desligada", "Ki"),
   T("Desligado", "Ki"),

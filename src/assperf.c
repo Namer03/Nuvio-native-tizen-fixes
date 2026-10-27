@@ -10,35 +10,32 @@
 
 #ifdef NV_TPK
 #include "dados.h"
-#include "avisos.h"
-#include "memlog.h"
 #endif
 
 #define AP_ARQ   "assperf.txt"
-#define AP_MARCA "assperf-ativo.txt"
+#define AP_MARCA "assperf-ativo.txt"   // old crash-guard mark (GPU blur, gone 27/10): deleted at start
 
-/* The .tpk values, decided on the S95C (23-26/10). The person's options
+/* The .tpk values, decided on the S95C (23-27/10). The blur is libass's own,
+ * on the CPU with 3 threads: the GPU blur (24-27/10) was slower and heavier
+ * on the S95C in the phone scene, and was removed. The person's options
  * (AP_ESCALA..AP_ASSOPAC) start here and live in assperf.txt. */
 static const int TPK[AP_N] = {
   [AP_MOTOR] = 1, [AP_UPLOAD] = 1, [AP_TEXCACHE] = 1, [AP_TEXANEL] = 1, [AP_FORATRAVA] = 1,
   [AP_INCREMENTAL] = 1, [AP_PODA] = 2, [AP_ADIANTE] = 3, [AP_SEGURAR] = 1, [AP_FONTES] = 3,
   [AP_CUES] = 1, [AP_RELAY] = 1, [AP_MUDANCA] = 1, [AP_ESTILO] = 1, [AP_FIOS] = 2,
-  [AP_GPUBLUR] = 1, [AP_GPUMIN] = 2, [AP_PARQUE] = 1, [AP_LEVE3] = 1,
+  [AP_PARQUE] = 1, [AP_LEVE3] = 1,
   [AP_ESCALA] = 5, [AP_GAMA] = 0, [AP_CONTRASTE] = 0, [AP_LIBASS] = 1, [AP_ASSTAM] = 100, [AP_ASSOPAC] = 100,
-  [AP_BLUR] = 1,
 };
 #define AP_PRIMEIRA_DA_PESSOA AP_ESCALA
 static const struct { const char *chave; int min, max; } PESSOA[AP_N - AP_PRIMEIRA_DA_PESSOA] = {
   { "escala", 0, 5 }, { "gama", 0, 10 }, { "contraste", 0, 30 }, { "libass", 0, 1 },
-  { "asstam", 50, 200 }, { "assopac", 20, 100 }, { "blur", 0, 1 },
+  { "asstam", 50, 200 }, { "assopac", 20, 100 },
 };
 
 static int val[AP_N] __attribute__((unused));
 static int iniciado;
 static unsigned versao;
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
-/* GPU blur: off by the crash guard (this session) or by the RAM rule. */
-static int gpuQueda, gpuRam;
 
 static int valido(int id, int v) {
   if (id == AP_ESCALA) return v == 0 || v == 2 || v == 5;
@@ -65,7 +62,7 @@ void assperf_iniciar(void) {
   if (iniciado) { pthread_mutex_unlock(&trava); return; }
 #ifdef NV_TPK
   {
-    char *t = dados_ler(AP_ARQ), *marca;
+    char *t = dados_ler(AP_ARQ);
     int i;
     for (i = AP_PRIMEIRA_DA_PESSOA; i < AP_N; i++) val[i] = TPK[i];
     if (t) {
@@ -81,17 +78,9 @@ void assperf_iniciar(void) {
       }
       free(t);
     }
-    marca = dados_ler(AP_MARCA);
-    if (marca) {
-      free(marca);
-      dados_apagar(AP_MARCA);
-      if (avisos_sessao_anterior_caiu()) {
-        gpuQueda = 1;
-        printf("[assperf] the previous session crashed while ASS subtitles were drawing: GPU blur off for this session\n");
-      }
-    }
-    printf("[assperf] subtitles: libass %s, blur %s, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
-           val[AP_LIBASS] ? "on" : "off", val[AP_BLUR] ? "Auto" : "CPU",
+    { char *marca = dados_ler(AP_MARCA); if (marca) { free(marca); dados_apagar(AP_MARCA); } }
+    printf("[assperf] subtitles: libass %s, blur CPU x%d, size %d%%, opacity %d%%, render resolution %s, contrast %d, gamma %d\n",
+           val[AP_LIBASS] ? "on" : "off", TPK[AP_FIOS] + 1,
            val[AP_ASSTAM], val[AP_ASSOPAC],
            val[AP_ESCALA] == 5 ? "Auto" : val[AP_ESCALA] == 2 ? "75%" : "100%", 30 - val[AP_CONTRASTE],
            val[AP_GAMA] <= 5 ? -val[AP_GAMA] : 11 - val[AP_GAMA]);
@@ -115,15 +104,8 @@ int assperf_get(int id) {
   return id >= 0 && id < AP_N ? __atomic_load_n(&val[id], __ATOMIC_RELAXED) : 0;
 #elif defined(NV_TPK)
   if (id < 0 || id >= AP_N) return 0;
-  if (id < AP_PRIMEIRA_DA_PESSOA && id != AP_GPUBLUR) return TPK[id];
+  if (id < AP_PRIMEIRA_DA_PESSOA) return TPK[id];
   assperf_iniciar();
-  if (id == AP_GPUBLUR) {
-    int m = __atomic_load_n(&val[AP_BLUR], __ATOMIC_RELAXED);
-    /* Auto = every blur of 64k px or more on the GPU, in any scene (the
-     * behaviour tested since 24/10). Switching only for busy scenes (27/10)
-     * made the start of the phone scene redraw everything at once. */
-    return m && !__atomic_load_n(&gpuQueda, __ATOMIC_RELAXED) && !__atomic_load_n(&gpuRam, __ATOMIC_RELAXED);
-  }
   return __atomic_load_n(&val[id], __ATOMIC_RELAXED);
 #else
   (void)id;
@@ -169,12 +151,6 @@ size_t assperf_fontes_teto(void) {
   static const size_t mb[5] = { 16, 32, 48, 64, 96 };
   int v = assperf_get(AP_FONTES);
   return mb[v < 0 || v > 4 ? 0 : v] * 1024u * 1024u;
-}
-
-long assperf_gpu_min(void) {
-  static const long px[4] = { 0, 16384, 65536, 262144 };
-  int v = assperf_get(AP_GPUMIN);
-  return px[v < 0 || v > 3 ? 0 : v];
 }
 
 int assperf_adiante_fixo_ms(void) {
@@ -363,51 +339,4 @@ int assperf_legendas_pesadas(void) {
   r = A.em75 || pesado_locked(agoraS());
   pthread_mutex_unlock(&autoTrava);
   return r;
-}
-
-void assperf_faixa_ativa(int ativa) {
-#ifdef NV_TPK
-  static int marcada;
-  /* The mark is about the GPU blur being possible this session (Auto turns it
-   * on later, in a busy scene). */
-  if (ativa && assperf_get(AP_BLUR) && !__atomic_load_n(&gpuQueda, __ATOMIC_RELAXED)) { if (!__atomic_exchange_n(&marcada, 1, __ATOMIC_ACQ_REL)) dados_gravar(AP_MARCA, "1\n"); }
-  else if (__atomic_exchange_n(&marcada, 0, __ATOMIC_ACQ_REL)) dados_apagar(AP_MARCA);
-#else
-  (void)ativa;
-#endif
-}
-
-/* GPU blur RAM rule (owner 26/10: "GPU off IF RAM gets really tight,
- * otherwise leave it on for heavy stuff"). Lowest free RAM seen on the S95C
- * with it on: 196-250 MB. */
-#define RAM_DESLIGA_MB 180
-#define RAM_LIGA_MB    225
-#define RAM_LIGA_S     10.0
-void assperf_ram_tick(void) {
-#ifdef NV_TPK
-  static double ult, folgaDesde;
-  double t = agoraS();
-  long mb;
-  if (t - ult < 1.0) return;
-  ult = t;
-  mb = memlog_livre_mb();
-  if (mb < 0) return;
-  if (!gpuRam) {
-    if (mb < RAM_DESLIGA_MB) {
-      __atomic_store_n(&gpuRam, 1, __ATOMIC_RELAXED);
-      __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
-      folgaDesde = 0;
-      printf("[assperf] GPU blur off: %ld MB free (under %d MB)\n", mb, RAM_DESLIGA_MB);
-      fflush(stdout);
-    }
-  } else if (mb >= RAM_LIGA_MB) {
-    if (!folgaDesde) folgaDesde = t;
-    if (t - folgaDesde >= RAM_LIGA_S) {
-      __atomic_store_n(&gpuRam, 0, __ATOMIC_RELAXED);
-      __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
-      printf("[assperf] GPU blur back on: %ld MB free for %.0f s\n", mb, RAM_LIGA_S);
-      fflush(stdout);
-    }
-  } else folgaDesde = 0;
-#endif
 }

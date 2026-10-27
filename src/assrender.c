@@ -119,14 +119,6 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include "bidi.h"
 #include "assperf.h"
 #include "assfios.h"
-/* Blur na GPU (.tpk, libass 0005): o libass entrega o nitido + a receita e o
- * fio GL borra (assgpublur.c). */
-#if defined(NV_TPK) && defined(ASS_NV_API_DEFER)
-#define ASS_GPU 1
-#include "assgpublur.h"
-#else
-#define ASS_GPU 0
-#endif
 #if !defined(__EMSCRIPTEN__)
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -139,33 +131,12 @@ typedef struct {
   int w, h;
 } AssTex;
 
-#if ASS_GPU
-/* Bitmap nitido inteiro de um letreiro adiado (copia compacta, stride = w),
- * uma vez por quadro mesmo quando varias imagens saem dele (\kf, recortes). */
-typedef struct {
-  unsigned char *buf;
-  int w, h;
-  unsigned long long chave;
-  const unsigned char *orig;   // ponteiro do libass (so para achar repetidas na copia)
-} AssGpuFonte;
-/* A receita do libass (ASS_NvDefer) com indices nas fontes do quadro. */
-typedef struct {
-  int fonte, fill;             // fill -1 = sem fix
-  double r2x, r2y;
-  int subX, subY, fix, fillDx, fillDy, shiftX, shiftY;
-  int coreX, coreY, coreW, coreH;
-} AssGpuRec;
-#endif
 
 typedef struct {
   int x, y, w, h, stride, type;
   unsigned color;
-  unsigned char *bitmap;      // NULL numa imagem adiada (gpu): sai da receita
+  unsigned char *bitmap;
   unsigned long long chave;   // assperf: conteudo (bitmap + w + h); 0 = nao calculada
-#if ASS_GPU
-  int gpu;
-  AssGpuRec g;
-#endif
 } AssCpuImage;
 
 typedef struct {
@@ -178,10 +149,6 @@ typedef struct {
   float ox, oy;          // canto da area do video na tela quando foi renderizado
   int k;                 // pixels do alvo por unidade de layout: o quadro foi renderizado k vezes maior (#335)
   float esc;             // assperf: pixels do quadro por unidade de layout (k x resolucao); 0 = k
-#if ASS_GPU
-  AssGpuFonte *fontes;   // dos letreiros adiados (blur na GPU)
-  int nfontes;
-#endif
 } AssCpuFrame;
 
 static pthread_mutex_t assTrava = PTHREAD_MUTEX_INITIALIZER;
@@ -609,10 +576,6 @@ static void ass_iniciar_locked(int sistema) {
 static void ass_frame_liberar(AssCpuFrame *frame) {
   int i;
   for (i = 0; i < frame->count; i++) free(frame->images[i].bitmap);
-#if ASS_GPU
-  for (i = 0; i < frame->nfontes; i++) free(frame->fontes[i].buf);
-  free(frame->fontes);
-#endif
   free(frame->images);
   memset(frame, 0, sizeof *frame);
 }
@@ -672,41 +635,11 @@ static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h,
   return hsh ? hsh : 1;
 }
 
-#if ASS_GPU
-/* Indice da copia de um bitmap do libass nas fontes do quadro (copia na
- * primeira vez). -1 sem memoria. */
-static int ass_fonte_copiar(AssCpuFrame *out, int *cap, const unsigned char *src, int w, int h, int stride,
-                            size_t *total) {
-  int i, y;
-  AssGpuFonte *f;
-  size_t bytes = (size_t)w * (size_t)h;
-  for (i = 0; i < out->nfontes; i++)
-    if (out->fontes[i].orig == src && out->fontes[i].w == w && out->fontes[i].h == h) return i;
-  if (bytes > 16u * 1024u * 1024u - *total) return -1;
-  if (out->nfontes == *cap) {
-    int nc = *cap ? *cap * 2 : 16;
-    AssGpuFonte *nv = realloc(out->fontes, (size_t)nc * sizeof *nv);
-    if (!nv) return -1;
-    out->fontes = nv; *cap = nc;
-  }
-  f = &out->fontes[out->nfontes];
-  f->buf = malloc(bytes ? bytes : 1);
-  if (!f->buf) return -1;
-  for (y = 0; y < h; y++) memcpy(f->buf + (size_t)y * (size_t)w, src + (size_t)y * (size_t)stride, (size_t)w);
-  f->w = w; f->h = h; f->orig = src;
-  f->chave = ass_chave_bitmap(f->buf, w, h, 0x5A17u);
-  *total += bytes;
-  return out->nfontes++;
-}
-#endif
 
 static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear, int corNaChave) {
   ASS_Image *p;
   int n = 0, i = 0;
   size_t total = 0;
-#if ASS_GPU
-  int capFontes = 0;
-#endif
   memset(out, 0, sizeof *out);
   for (p = im; p; p = p->next) {
     if (p->bitmap && p->w > 0 && p->h > 0 && p->stride >= p->w) n++;
@@ -729,31 +662,6 @@ static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear, int co
       ass_frame_liberar(out); return 0;
     }
     dst = &out->images[i];
-#if ASS_GPU
-    { ASS_NvDefer d;
-      if (ass_nv_image_defer(p, &d)) {
-        /* Letreiro adiado: o nitido inteiro (e o preenchimento do fix) vao uma
-         * vez por quadro; a imagem guarda so a receita. */
-        int fo = ass_fonte_copiar(out, &capFontes, d.src, d.src_w, d.src_h, d.src_stride, &total), fi = -1;
-        if (fo >= 0 && d.fix && d.fill)
-          fi = ass_fonte_copiar(out, &capFontes, d.fill, d.fill_w, d.fill_h, d.fill_stride, &total);
-        if (fo < 0 || (d.fix && d.fill && fi < 0)) { ass_frame_liberar(out); return 0; }
-        dst->gpu = 1;
-        dst->g.fonte = fo; dst->g.fill = fi;
-        dst->g.r2x = d.r2x; dst->g.r2y = d.r2y;
-        dst->g.subX = d.sub_x; dst->g.subY = d.sub_y;
-        dst->g.fix = d.fix && fi >= 0; dst->g.fillDx = d.fill_dx; dst->g.fillDy = d.fill_dy;
-        dst->g.shiftX = d.shift_x; dst->g.shiftY = d.shift_y;
-        dst->g.coreX = d.core_x; dst->g.coreY = d.core_y; dst->g.coreW = d.core_w; dst->g.coreH = d.core_h;
-        dst->bitmap = NULL;
-        dst->x = p->dst_x; dst->y = p->dst_y;
-        dst->w = p->w; dst->h = p->h; dst->stride = p->w;
-        dst->type = p->type; dst->color = p->color;
-        dst->chave = 0;
-        i++;
-        continue;
-      } }
-#endif
     dst->bitmap = malloc(bytes);
     if (!dst->bitmap) { ass_frame_liberar(out); return 0; }
     dst->x = p->dst_x; dst->y = p->dst_y;
@@ -925,26 +833,6 @@ static void ass_aplicar_assperf_locked(void) {
 #endif
 }
 
-#if ASS_GPU
-/* -1 = a GPU ainda nao tentou; 0 = os shaders falharam (o blur fica na CPU);
- * 1 = pronta. Escrito pelo fio GL. */
-static int assGpuOk = -1;
-static int assTcManterGpu;           // seek: ass_tc_apagar keeps the finished GPU pictures
-
-/* Worker, under assTrava, before each render: libass defers the blur while
- * the GPU blur is on (RAM rule, crash guard) and the shaders work. */
-static void ass_adiar_aplicar_locked(void) {
-  int quer = assperf_get(AP_GPUBLUR) && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 0;
-  if (!assRenderer) return;
-  ass_nv_set_deferred_min_area(assRenderer, (int)assperf_gpu_min());
-  if (ass_nv_get_deferred_blur(assRenderer) == quer) return;
-  ass_nv_set_deferred_blur(assRenderer, quer);
-  if (!quer && assperf_get(AP_GPUBLUR)) {
-    printf("[assperf] GPU blur: the shaders are not available, blur stays on the CPU\n");
-    fflush(stdout);
-  }
-}
-#endif
 
 /* Evento que muda SOZINHO entre Start e End: \t, \move, \fad/\fade,
  * karaoke (\k, \kf, \ko, \K) ou Effect (Banner/Scroll). */
@@ -1051,9 +939,6 @@ static void *ass_worker_loop(void *unused) {
       if (ass_estilo_autor_locked())
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
-#if ASS_GPU
-      ass_adiar_aplicar_locked();
-#endif
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
 #ifdef NV_TPK
@@ -1076,9 +961,11 @@ static void *ass_worker_loop(void *unused) {
       { int i, nIni = 0, nImg = 0, nIniC = 0; long chars = 0, charsC = 0; const ASS_Image *im;
         for (i = 0; i < assTrack->n_events; i++) {
           const ASS_Event *ev = &assTrack->events[i];
-          long n = ev->Text ? (long)strlen(ev->Text) : 0;
-          if (ev->Start >= t && ev->Start < t + 1000) { nIni++; chars += n; }
-          if (ev->Start >= t + 500 && ev->Start < t + 1500) { nIniC++; charsC += n; }
+          long n;
+          if (ev->Start < t || ev->Start >= t + 1500) continue;   /* text length only inside the window */
+          n = ev->Text ? (long)strlen(ev->Text) : 0;
+          if (ev->Start < t + 1000) { nIni++; chars += n; }
+          if (ev->Start >= t + 500) { nIniC++; charsC += n; }
         }
         for (im = images; im; im = im->next) nImg++;
         assperf_previsao(nIni, chars, nImg, nIniC, charsC); }
@@ -1280,10 +1167,6 @@ static AssCpuFrame assMain;      // o quadro em tela no caminho novo (so o fio G
 static int assMainValido;
 static GLuint *assMainTex;       // textura de cada imagem do assMain
 static int *assMainIdx;          // e o indice dela em assTc (-1 = sem cache)
-#if ASS_GPU
-static unsigned long long *assMainGk;   // imagem adiada: a chave da textura no cache do assgpublur
-#endif
-static int *assMainTw, *assMainTh;      // tamanho da TEXTURA de cada imagem (o blur da GPU arredonda)
 static int assMainTexCap, assMainEnviado;
 static int assMainCorChave = -2, assMainFmt = -1, assMainCache = -1;
 static int assCaminhoNovoAntes = -1;
@@ -1300,9 +1183,6 @@ static void ass_tc_apagar(void) {
     if (assSlot[i].tex) { gfx_tex_esquecer(assSlot[i].tex); glDeleteTextures(1, &assSlot[i].tex); }
   free(assSlot); assSlot = NULL; assSlotCap = 0;
   assMainEnviado = 0;
-#if ASS_GPU
-  if (!assTcManterGpu && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) assgpublur_apagar();
-#endif
 }
 
 static void ass_main_soltar(void) {
@@ -1427,100 +1307,6 @@ static GLuint ass_slot_obter(int i, const AssCpuImage *im, int alfa, int corAtiv
   return t->tex;
 }
 
-#if ASS_GPU
-/* A receita de uma imagem adiada como o libass a entende, sobre as copias. */
-static void ass_gpu_receita(const AssCpuFrame *f, const AssCpuImage *im, ASS_NvDefer *d) {
-  const AssGpuFonte *s = &f->fontes[im->g.fonte];
-  memset(d, 0, sizeof *d);
-  d->src = s->buf; d->src_w = s->w; d->src_h = s->h; d->src_stride = s->w;
-  d->sub_x = im->g.subX; d->sub_y = im->g.subY;
-  d->core_x = im->g.coreX; d->core_y = im->g.coreY; d->core_w = im->g.coreW; d->core_h = im->g.coreH;
-  d->r2x = im->g.r2x; d->r2y = im->g.r2y;
-  if (im->g.fix && im->g.fill >= 0) {
-    const AssGpuFonte *g = &f->fontes[im->g.fill];
-    d->fix = 1; d->fill = g->buf; d->fill_w = g->w; d->fill_h = g->h; d->fill_stride = g->w;
-    d->fill_dx = im->g.fillDx; d->fill_dy = im->g.fillDy;
-  }
-  d->shift_x = im->g.shiftX; d->shift_y = im->g.shiftY;
-}
-
-static void ass_gpu_pedido(const AssCpuFrame *f, const AssCpuImage *im, AgbPedido *p) {
-  const AssGpuFonte *s = &f->fontes[im->g.fonte];
-  const AssGpuFonte *g = im->g.fix && im->g.fill >= 0 ? &f->fontes[im->g.fill] : NULL;
-  memset(p, 0, sizeof *p);
-  p->src = s->buf; p->srcW = s->w; p->srcH = s->h; p->srcChave = s->chave;
-  if (g) { p->fill = g->buf; p->fillW = g->w; p->fillH = g->h; p->fillChave = g->chave; }
-  p->r2x = im->g.r2x; p->r2y = im->g.r2y;
-  p->subX = im->g.subX; p->subY = im->g.subY; p->w = im->w; p->h = im->h;
-  p->fix = g != NULL; p->fillDx = im->g.fillDx; p->fillDy = im->g.fillDy;
-  p->shiftX = im->g.shiftX; p->shiftY = im->g.shiftY;
-}
-
-/* PRE-BLUR (GL thread, under assFilaTrava): the frames already in the queue
- * (render ahead) get their signs blurred a few per UI frame, before their
- * time. When the frame goes on screen the textures are already in the
- * assgpublur cache and the GL thread does not stop 20-75 ms at once (24/10).
- * The budget is GL thread time (ms per UI frame). */
-#define ASS_GPU_ADIANTE_MS 3.0
-static void ass_gpu_adiantar_locked(void) {
-  int q, i;
-  double gasto = 0;
-  struct timespec ini0, agoraT;
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 1 || !assperf_get(AP_GPUBLUR) || !assFilaN) return;
-  clock_gettime(CLOCK_MONOTONIC, &ini0);
-  assgpublur_lote_ini();
-  for (q = 0; q < assFilaN && gasto < ASS_GPU_ADIANTE_MS; q++) {
-    const AssCpuFrame *f = &assFila[q];
-    for (i = 0; i < f->count && gasto < ASS_GPU_ADIANTE_MS; i++) {
-      const AssCpuImage *im = &f->images[i];
-      AgbPedido p;
-      unsigned long long k;
-      if (!im->gpu) continue;
-      ass_gpu_pedido(f, im, &p);
-      p.soCache = 1;
-      if (assgpublur_obter(&p, assGlQuadro, &k)) continue;   // already done
-      p.soCache = 0;
-      assgpublur_obter(&p, assGlQuadro, &k);
-      clock_gettime(CLOCK_MONOTONIC, &agoraT);
-      gasto = ass_ms_entre(&ini0, &agoraT);
-    }
-  }
-  assgpublur_lote_fim();
-}
-
-/* Texture of a deferred image: the GPU blurs; when it cannot, the recipe runs
- * on the CPU (libass's own drawing) and goes up as an ordinary image. GL thread. */
-static GLuint ass_gpu_textura(const AssCpuFrame *f, const AssCpuImage *im, unsigned long long *gk,
-                              unsigned recicla, size_t *enviados, int *idx, int *tw, int *th) {
-  GLuint t = 0;
-  int ok = __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE);
-  *gk = 0; *idx = -1; *tw = im->w; *th = im->h;
-  if (ok != 0) {
-    if (ok < 0) {
-      ok = assgpublur_iniciar();
-      __atomic_store_n(&assGpuOk, ok, __ATOMIC_RELEASE);
-    }
-    if (ok) {
-      AgbPedido p;
-      ass_gpu_pedido(f, im, &p);
-      t = assgpublur_obter(&p, assGlQuadro, gk);
-      if (t) { assgpublur_ultimo_tam(tw, th); return t; }
-    }
-  }
-  { ASS_NvDefer d;
-    AssCpuImage c = *im;
-    int r = 0;
-    ass_gpu_receita(f, im, &d);
-    c.gpu = 0; c.stride = c.w;
-    c.bitmap = malloc((size_t)c.w * (size_t)c.h);
-    if (!c.bitmap) return 0;
-    if (!ass_nv_defer_apply(&d, c.w, c.h, c.bitmap, c.w)) { free(c.bitmap); return 0; }
-    t = ass_tc_obter(&c, ass_chave_bitmap(c.bitmap, c.w, c.h, 0), 1, recicla, 0, 0, 0, 0, &r, enviados, idx);
-    free(c.bitmap);
-    return t;
-  }
-}
-#endif
 
 /* Sobe (se o quadro e novo ou a cor mudou) e desenha assMain. Fio GL. */
 static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
@@ -1550,42 +1336,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       ni = (int *)realloc(assMainIdx, (size_t)assMain.count * sizeof *ni);
       if (!ni) return 0;
       assMainIdx = ni;
-#if ASS_GPU
-      { unsigned long long *ng = (unsigned long long *)realloc(assMainGk, (size_t)assMain.count * sizeof *ng);
-        if (!ng) return 0;
-        assMainGk = ng; }
-#endif
-      { int *a = (int *)realloc(assMainTw, (size_t)assMain.count * sizeof *a);
-        if (!a) return 0;
-        assMainTw = a;
-        a = (int *)realloc(assMainTh, (size_t)assMain.count * sizeof *a);
-        if (!a) return 0;
-        assMainTh = a; }
       assMainTexCap = assMain.count;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-#if ASS_GPU
-    { int temGpu = 0;
-      for (i = 0; i < assMain.count && !temGpu; i++) temGpu = assMain.images[i].gpu;
-      /* Save the app's GL state BEFORE any GPU blur work, the first frame
-       * too (assgpublur_iniciar runs inside the loop below). Saving it only
-       * once the blur was ready left blending off and the blur's framebuffer
-       * bound after the first frame, and every later batch "restored" that
-       * (26/10: white screen, judder in the fingers and phone scenes). */
-      if (temGpu && __atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) != 0) assgpublur_lote_ini(); }
-#endif
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
       int r = 0;
-      assMainTw[i] = im->w; assMainTh[i] = im->h;
-#if ASS_GPU
-      assMainGk[i] = 0;
-      if (im->gpu) {
-        assMainTex[i] = alfa ? ass_gpu_textura(&assMain, im, &assMainGk[i], recicla, &enviados, &assMainIdx[i],
-                                               &assMainTw[i], &assMainTh[i]) : 0;
-        continue;
-      }
-#endif
       if (cache) {
         /* RGBA leva a cor do usuario assada: ela entra na chave tambem. */
         unsigned long long ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, alfa ? 0u : im->color);
@@ -1598,9 +1354,6 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       }
       reusadas += r;
     }
-#if ASS_GPU
-    assgpublur_lote_fim();
-#endif
     (void)reusadas; (void)enviados;
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     gfx_tex_esquecer(0);
@@ -1613,9 +1366,6 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
      * conta quadros GL sem desenho). */
     for (i = 0; i < assMain.count; i++) {
       if (assMainIdx[i] >= 0 && assMainIdx[i] < assTcN) assTc[assMainIdx[i]].uso = assGlQuadro;
-#if ASS_GPU
-      if (assMain.images[i].gpu) assgpublur_usar(assMainGk[i], assGlQuadro);
-#endif
     }
   }
   /* Calibracao para casar com o video (AP_CONTRASTE, AP_GAMA): a imagem da TV
@@ -1640,9 +1390,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       if (gama != 1.0 || contraste != 1.0) {
         r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
       }
-      /* A textura do blur da GPU pode ser maior que a imagem (classe de tamanho,
-       * sobra transparente a direita e embaixo): desenha a textura inteira. */
-      gfx_rect((GfxRect){ dx, dy, (float)assMainTw[i] / esc, (float)assMainTh[i] / esc }, tex, GFX_MARCA,
+      gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
                0, 0, 0, 0, r, g, b, alpha * op);
     } else {
       gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_TEXTO,
@@ -2040,7 +1788,6 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   __atomic_store_n(&assTrackAtivo, 1, __ATOMIC_RELEASE);
   ass_diag(simples ? "libass: texto RTL simples ativo" : "libass: ASS completo ativo");
   pthread_mutex_unlock(&assTrava);
-  assperf_faixa_ativa(1);
   if (!ass_worker_iniciar()) {
     pthread_mutex_lock(&assTrava);
     if (assTrack == track) { ass_authored_styles_free(); ass_free_track(assTrack); assTrack = NULL; }
@@ -2217,7 +1964,6 @@ int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) {
 
 void assrender_limpar(void) {
   ass_inc_esquecer();
-  assperf_faixa_ativa(0);
   assperf_escala_reset();   // Render resolution Auto: a new track starts at 100 %
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
@@ -2239,7 +1985,6 @@ void assrender_limpar(void) {
 
 void assrender_limpar_fontes(void) {
   ass_inc_esquecer();
-  assperf_faixa_ativa(0);
   pthread_mutex_lock(&assTrava);
   ass_atuais_limpar_locked();
   ass_authored_styles_free();
@@ -2470,9 +2215,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   memset(&novo, 0, sizeof novo);
   generation = __atomic_load_n(&assGeracao, __ATOMIC_ACQUIRE);
   agora = ass_na_grade((long long)llround(posSeg * 1000.0) + (long long)atrasoMs);
-#ifdef NV_TPK
-  assperf_ram_tick();   // GPU blur RAM rule (assperf.c)
-#endif
   /* assperf: caminho de desenho novo (qualquer chave de upload ligada) e
    * render ahead. Tudo em "old": o mesmo de sempre, linha por linha. */
   novoCaminho = assperf_get(AP_UPLOAD) || assperf_get(AP_TEXCACHE) || assperf_get(AP_FORATRAVA);
@@ -2520,7 +2262,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   }
   pthread_mutex_lock(&assFilaTrava);
   if (!assWorkerCriado) { pthread_mutex_unlock(&assFilaTrava); return 0; }
-  { /* An option changed (Subtitles > Style, GPU blur RAM rule): the frame on
+  { /* An option changed (Subtitles > Style): the frame on
      * screen may be valid for seconds (render only on changes); ask again. */
     static unsigned versaoVista;
     unsigned v = assperf_versao();
@@ -2650,13 +2392,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     } else pthread_mutex_unlock(&assFilaTrava);
     if (reset || saltou || assMainResetar) {
       ass_main_soltar();
-#if ASS_GPU
-      assTcManterGpu = saltou && !reset && !assMainResetar;   // seek only: the finished GPU pictures stay
-#endif
       ass_tc_apagar();
-#if ASS_GPU
-      assTcManterGpu = 0;
-#endif
       assMainResetar = 0;
     }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
@@ -2675,9 +2411,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     temTexto = assMainValido && n > 0;
     inicioMax = assMainValido ? assMain.inicioMax : -1;
     if (foraTrava) pthread_mutex_lock(&assFilaTrava);
-#if ASS_GPU
-    ass_gpu_adiantar_locked();
-#endif
     ass_medir_locked(agora, temTexto, inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
   }
@@ -2695,20 +2428,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       Uint32 tk = SDL_GetTicks();
       __atomic_store_n(&assBordaQuerTick, tk ? tk : 1u, __ATOMIC_RELEASE);
     } }
-#endif
-#if ASS_GPU
-  if (__atomic_load_n(&assGpuOk, __ATOMIC_ACQUIRE) == 1) {
-    /* GPU blur switched off (RAM rule): once no picture on screen comes from
-     * it, its textures and buffers go at once instead of after ~5 s. */
-    static int gpuAntes = 1;
-    int gpu = assperf_get(AP_GPUBLUR), usa = 0;
-    if (gpu) gpuAntes = 1;
-    else if (gpuAntes) {
-      for (i = 0; assMainValido && i < assMain.count && !usa; i++) usa = assMain.images[i].gpu;
-      if (!usa) { assgpublur_apagar(); gpuAntes = 0; }
-    }
-    assgpublur_aparar(assGlQuadro);
-  }
 #endif
   return n;
 }

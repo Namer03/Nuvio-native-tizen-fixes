@@ -71,7 +71,7 @@ fi
 tpk_sdk
 
 # libass PATCHED for the TV (tools/tpk/libass-nv/patches): ARMv7 NEON bitmap
-# engine, blur threads, deferred blur. The patches are applied HERE, on the host (the
+# engine, blur threads, dialogue opacity. The patches are applied HERE, on the host (the
 # build image has no `patch`), to a fresh copy of the 0.17.5 tarball in
 # $CACHE/src/libass-nv; deps.sh builds a copy of that tree. The stamp is the
 # hash of the patches: change a patch and libass (only libass) is rebuilt.

@@ -1637,7 +1637,6 @@
   T("Desfocar não assistidos", "未視聴をぼかす"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "次のエピソードのぼかしは、これがオンのときだけ働きます。"),
   T("Desfocar próximo episódio", "次のエピソードをぼかす"),
-  T("Desfoque", "ぼかし"),
   T("Desfoque da barra moderna", "モダンなサイドバーのぼかし"),
   T("Desligada", "オフ"),
   T("Desligado", "オフ"),

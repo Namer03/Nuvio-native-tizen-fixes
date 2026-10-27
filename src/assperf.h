@@ -14,9 +14,8 @@
 // Android: there assperf_get returns 0 for every option, the behaviour from
 // before 23/10.
 //
-// CRASH GUARD: while an ASS track draws with the GPU blur on, the mark
-// assperf-ativo.txt is kept. If the app dies with it there, the next start
-// draws without the GPU blur (that session only) and says so in the log.
+// BLUR: libass's own, on the CPU (NEON, 3 threads). A GPU blur was tried on
+// the S95C (24-27/10) and removed: CPU only was faster and lighter there.
 #ifndef NV_ASSPERF_H
 #define NV_ASSPERF_H
 
@@ -39,8 +38,6 @@ enum {
   AP_MUDANCA,      // 1 = render only when the picture can change
   AP_ESTILO,       // 1 = styled ASS drawn as authored (the person's colour, border... do not apply)
   AP_FIOS,         // NEON blur threads - 1 (2 = 3 threads)
-  AP_GPUBLUR,      // blur on the GPU NOW (libass deferred blur): from AP_BLUR; off under the RAM rule / crash guard
-  AP_GPUMIN,       // smallest blur sent to the GPU: 2 = 64k px
   AP_PARQUE,       // relay blocks beyond the harvest window: 0 thrown away, 1 kept up to 6 MB
   AP_LEVE3,        // normal scenes: 1 = 3 frames ahead while frames cost > 40 ms
   // The person's (Subtitles > Style on ASS/SSA, .tpk):
@@ -50,25 +47,23 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  AP_BLUR,         // blur: 0 CPU, 1 Auto (GPU for every blur of 64k px or more; off when RAM is tight)
   AP_N
 };
 
 // Current value (cheap). Outside the .tpk: always 0.
 int  assperf_get(int id);
-// Reads assperf.txt once (later calls do nothing) and runs the crash guard.
+// Reads assperf.txt once (later calls do nothing).
 void assperf_iniciar(void);
-// Saves one of the person's options (AP_ESCALA .. AP_BLUR) and logs it.
+// Saves one of the person's options (AP_ESCALA .. AP_ASSOPAC) and logs it.
 void assperf_definir(int id, int v);
 // The person's options back to their defaults.
 void assperf_restaurar(void);
-// Changes with every assperf_definir / GPU blur switch (the worker re-applies).
+// Changes with every assperf_definir (the worker re-applies).
 unsigned assperf_versao(void);
 
 // Derived values.
 size_t assperf_fontes_teto(void);            // bytes
 int    assperf_fios(void);                   // 1..4
-long   assperf_gpu_min(void);                // pixels (libass ass_nv_set_deferred_min_area)
 int    assperf_adiante_fixo_ms(void);        // 0 = off
 long   assperf_poda_ms(void);                // 0 = off
 double assperf_escala(void);                 // render resolution now (Auto: the one in use)
@@ -88,12 +83,6 @@ void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (
 void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
 int    assperf_legendas_pesadas(void);       // busy or Auto at 75 % (others yield to libass)
-
-// Crash guard mark (assrender: an ASS track starts / stops drawing).
-void assperf_faixa_ativa(int ativa);
-// GPU blur RAM rule: off below 180 MB free, back on after 10 s at 225 MB or
-// more. GL thread, once per drawn frame (reads the free RAM once a second).
-void assperf_ram_tick(void);
 
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // tests on the computer

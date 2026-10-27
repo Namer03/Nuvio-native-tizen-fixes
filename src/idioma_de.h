@@ -1636,7 +1636,6 @@
   T("Desfocar não assistidos", "Ungesehene unscharf machen"),
   T("Desfocar o próximo episódio só funciona com esta opção ligada.", "Das nächste Episode weichzeichnen geht nur mit dieser Option."),
   T("Desfocar próximo episódio", "Nächste Folge unscharf machen"),
-  T("Desfoque", "Weichzeichnung"),
   T("Desfoque da barra moderna", "Unschärfe der modernen Leiste"),
   T("Desligada", "Aus"),
   T("Desligado", "Aus"),
