@@ -1070,13 +1070,18 @@ static void *ass_worker_loop(void *unused) {
        * (22:13) 377-1228 falas e 130-440 mil caracteres por segundo; desenhos
        * de 22:19 1,6 milhao; dedos (19:05) uma rajada de 132 / 176 mil; fala
        * comum 0-1. Mais o numero de imagens em tela (cena "simples"). */
-      { int i, nIni = 0, nImg = 0; long chars = 0; const ASS_Image *im;
+      /* Also the second starting 0.5 s ahead: render resolution Auto drops to
+       * 75 % that much before a busy scene, so its full redraw happens just
+       * before the scene instead of in its first frames (owner 27/10). */
+      { int i, nIni = 0, nImg = 0, nIniC = 0; long chars = 0, charsC = 0; const ASS_Image *im;
         for (i = 0; i < assTrack->n_events; i++) {
           const ASS_Event *ev = &assTrack->events[i];
-          if (ev->Start >= t && ev->Start < t + 1000) { nIni++; if (ev->Text) chars += (long)strlen(ev->Text); }
+          long n = ev->Text ? (long)strlen(ev->Text) : 0;
+          if (ev->Start >= t && ev->Start < t + 1000) { nIni++; chars += n; }
+          if (ev->Start >= t + 500 && ev->Start < t + 1500) { nIniC++; charsC += n; }
         }
         for (im = images; im; im = im->next) nImg++;
-        assperf_previsao(nIni, chars, nImg); }
+        assperf_previsao(nIni, chars, nImg, nIniC, charsC); }
       /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
       if (assperf_get(AP_MUDANCA)) {
         int i, anima = 0;

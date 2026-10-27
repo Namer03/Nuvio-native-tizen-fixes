@@ -236,7 +236,7 @@ static double agoraS(void) {
 #define CG_PREV_CHARS   400000L
 #define CG_TELA_SIMPLES 20
 static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
-static struct { double ms[CG_BALDES]; long long id[CG_BALDES]; double ult, leveAcum, leveDesde; int on, prevPesada, imagens, inicios; long chars; } CG;
+static struct { double ms[CG_BALDES]; long long id[CG_BALDES]; double ult, leveAcum, leveDesde; int on, prevPesada, prevCedo, imagens, inicios; long chars; } CG;
 
 static double carga_locked(double t) {
   long long b = (long long)floor(t * 10.0);
@@ -279,10 +279,13 @@ static int pesado_locked(double t) {
   }
   return CG.on;
 }
-void assperf_previsao(int inicios, long chars, int imagens) {
+void assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo) {
   pthread_mutex_lock(&autoTrava);
   CG.inicios = inicios; CG.chars = chars; CG.imagens = imagens;
   CG.prevPesada = inicios >= CG_PREV_INICIOS || chars >= CG_PREV_CHARS;
+  /* The same thresholds, 0.5 s further on: only Auto looks at it, so the
+   * busy flag (picture sync) still switches with the scene itself. */
+  CG.prevCedo = iniciosCedo >= CG_PREV_INICIOS || charsCedo >= CG_PREV_CHARS;
   carga_somar_locked(agoraS(), 0.0);   /* now: on before the first busy frame */
   pthread_mutex_unlock(&autoTrava);
 }
@@ -312,8 +315,8 @@ int assperf_pesado(void) {
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
 
-static void auto_trocar_locked(int em75, double t) {
-  if (em75) printf("[assperf] render resolution Auto: 75 %% (subtitles busy)\n");
+static void auto_trocar_locked(int em75, double t, int antes) {
+  if (em75) printf("[assperf] render resolution Auto: 75 %% (%s)\n", antes ? "busy scene in 0.5 s" : "subtitles busy");
   else printf("[assperf] render resolution Auto: back to 100 %% (%.0f s at 75 %%)\n", t - A.desde);
   fflush(stdout);
   A.em75 = em75; A.desde = t;
@@ -331,9 +334,9 @@ double assperf_escala_quadro(void) {
   }
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
-  { int pesado = pesado_locked(t);
-    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
-    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
+  { int pesado = pesado_locked(t) || CG.prevCedo;
+    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t, !CG.on);
+    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t, 0); }
   r = A.em75 ? 0.75 : 1.0;
   pthread_mutex_unlock(&autoTrava);
   return r;

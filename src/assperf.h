@@ -83,8 +83,9 @@ void   assperf_escala_reset(void);           // track change: back to 100 %
 void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
 void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (0 = playing tick)
 // Worker: lines starting in the next second, their text size and the pictures
-// in this frame (busy-scene forecast).
-void   assperf_previsao(int inicios, long chars, int imagens);
+// in this frame (busy-scene forecast); and the same for the second starting
+// 0.5 s ahead (render resolution Auto only, so it drops to 75 % just before).
+void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
 int    assperf_legendas_pesadas(void);       // busy or Auto at 75 % (others yield to libass)
 
