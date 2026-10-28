@@ -73,6 +73,9 @@
 #include "androidcache.h"
 #include "negcache.h"
 #include "p2pmotor.h"
+#ifdef NV_TPK
+#include "telalag.h"
+#endif
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -2176,6 +2179,7 @@ int main(int argc, char **argv) {
     Uint64 t0 = NV_T0();
     tex_upl_n = 0; tex_upl_bytes = 0;
     gputempo_quadro_inicio();   // the GPU clock brackets uploads + draw
+    telalag_quadro_inicio();    // .tpk: the GPU queue limit (Auto at 75 %)
     tex_bombear(3);
     fBomb = NV_DT(t0);
     fUplN = tex_upl_n; fUplB = tex_upl_bytes;
@@ -2297,6 +2301,7 @@ int main(int argc, char **argv) {
     capturaSeSolicitado();
     fAux = NV_DT(t0);
     gputempo_quadro_fim();
+    telalag_quadro_fim();
     t0 = NV_T0();
     int playerUi = player_ui_frame(player_aberto(), gfx_n_rect, gfx_n_outros);
     if (playerUi != playerUiPrevious) {
