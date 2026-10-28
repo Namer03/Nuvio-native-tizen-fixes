@@ -243,6 +243,15 @@ void nv_tpk_log(const char *linha) {
   fflush(stdout);
 }
 
+// Linha de erro do .NET (tizen-tpk/NetLog.cs) com o tempo de sessao, a mesma
+// base dos registros de falha do queda.c ("t=" = SDL_GetTicks).
+__attribute__((visibility("default")))
+void nv_tpk_log_net(const char *linha) {
+  Uint32 t = SDL_GetTicks();
+  printf("[net t=%u.%03us] %s\n", (unsigned)(t / 1000), (unsigned)(t % 1000), linha ? linha : "");
+  fflush(stdout);
+}
+
 // 1 depois que o main() do app devolveu: o host fecha.
 __attribute__((visibility("default")))
 int nv_tpk_terminou(void) { return terminou; }
