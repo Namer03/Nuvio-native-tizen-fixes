@@ -49,9 +49,12 @@ int  queda_relatar(const char *arquivo);
 void queda_espelho(const char *arquivo);
 // O mesmo que queda_relatar, escrevendo em `saida` (ex.: open_memstream).
 int  queda_relatar_em(const char *arquivo, FILE *saida);
-// Modo encadeado: o tratador de SIGSEGV ainda e o nosso? Outro sigaction
-// depois do armar (biblioteca do host, runtime) tira o relato sem aviso.
-// 1 = nosso (ou nao armado); 0 = trocado — loga uma linha "[queda]" na
-// primeira vez, com `quando` (ex.: "player fechado"). Fora do tratador.
+// Modo encadeado: o tratador de SIGSEGV (e dos outros sinais) ainda e o
+// nosso? Outro sigaction depois do armar (biblioteca do host, player, runtime)
+// tirava o relato sem aviso (28/10). Trocado: loga quem trocou ("[queda]
+// signal N handler replaced (<quando>) by <modulo>+0x..", no maximo 8 linhas
+// por sessao), poe o nosso de volta por cima e passa a encadear para quem
+// entrou; se ele nos chamar de volta, a reentrada segue a cadeia original.
+// 1 = nada trocado (ou nao armado); 0 = rearmado. Fora do tratador.
 int  queda_conferir(const char *quando);
 #endif

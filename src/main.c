@@ -92,6 +92,7 @@
 #include "desempenho.h"
 #include "atualizacao.h"
 #include "avisos.h"
+#include "queda.h"
 #include "seguro.h"
 #include "video.h"
 #include "addons.h"
@@ -2422,6 +2423,9 @@ int main(int argc, char **argv) {
                          quentes, (float)(bytesQ / 1048576.0), pend, tex_despejos, tex_despejos_quentes,
                          (float)rssMB());
       avisos_sinal(NULL, (float)rssMB());   // batida: no maximo 1 a cada 60 s
+#ifdef NV_TPK
+      queda_conferir("periodic");           // outro tratador de SIGSEGV por cima: rearma (queda.h)
+#endif
       seguro_batida(SDL_GetTicks() / 1000); // confirma mudancas arriscadas depois de 3 min
       corviva_gravar_se_preciso(0);          // corviva.txt: no maximo 1 a cada 20 s
       dados_sync_sucessos = 0;

@@ -98,7 +98,13 @@ void queda_espelho(const char *arquivo) {
 #define QD_E_QUADROS 32   // cadeia de fp (aarch64)
 #define QD_E_SINAIS 5
 static const int qdSinaisE[QD_E_SINAIS] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
-static struct sigaction qdVelho[QD_E_SINAIS];
+// Quem estava antes de nos, por sinal, em DOIS lugares: queda_conferir rearma
+// por cima de quem nos trocou e publica a cadeia nova trocando o indice, sem
+// o tratador (outro fio, a qualquer hora) ler um sigaction pela metade.
+static struct sigaction qdVelhoSlot[2][QD_E_SINAIS];
+static int qdSlot;                       // indice publicado (atomico)
+static struct sigaction qdOrig[QD_E_SINAIS];   // a cadeia do primeiro armar (CoreCLR)
+static int qdDentroTid;                  // fio dentro do tratador (reentrada), 0 = nenhum
 static void (*qdAntes)(void);
 static volatile int qdGravou;
 static int qdEncadeado;   // queda_armar_encadeado ja rodou (queda_conferir)
@@ -276,14 +282,18 @@ static int qdGravarE(const char *arquivo, int sig, siginfo_t *si, void *ctx) {
   return 1;
 }
 
+static void qdTratarE(int sig, siginfo_t *si, void *ctx);
+
 // Passa o sinal a quem estava antes, como a libsigchain faria.
-static void qdEncadear(int sig, siginfo_t *si, void *ctx) {
-  struct sigaction *v = NULL, d;
+static void qdEncadearCom(const struct sigaction *tab, int sig, siginfo_t *si, void *ctx) {
+  const struct sigaction *v = NULL;
+  struct sigaction d;
   int i;
-  for (i = 0; i < QD_E_SINAIS; i++) if (qdSinaisE[i] == sig) v = &qdVelho[i];
+  for (i = 0; i < QD_E_SINAIS; i++) if (qdSinaisE[i] == sig) v = &tab[i];
   if (v) {
     if (v->sa_flags & SA_SIGINFO) {
-      if ((void *)v->sa_sigaction != (void *)SIG_DFL && (void *)v->sa_sigaction != (void *)SIG_IGN && v->sa_sigaction) {
+      if ((void *)v->sa_sigaction != (void *)SIG_DFL && (void *)v->sa_sigaction != (void *)SIG_IGN && v->sa_sigaction &&
+          v->sa_sigaction != qdTratarE) {
         v->sa_sigaction(sig, si, ctx); return;
       }
     } else if (v->sa_handler != SIG_DFL && v->sa_handler != SIG_IGN && v->sa_handler) {
@@ -300,6 +310,12 @@ static void qdEncadear(int sig, siginfo_t *si, void *ctx) {
 }
 
 static void qdTratarE(int sig, siginfo_t *si, void *ctx) {
+  int tid = qdGettid(), livre = 0, meu;
+  // REENTRADA: quem nos trocou guardou NOSSO tratador como o anterior dele e o
+  // chama. Rearmados por cima dele, a cadeia seria nos -> ele -> nos -> ...;
+  // na volta segue a cadeia ORIGINAL (a do primeiro armar), que nao passa por ele.
+  if (__atomic_load_n(&qdDentroTid, __ATOMIC_ACQUIRE) == tid) { qdEncadearCom(qdOrig, sig, si, ctx); return; }
+  meu = __atomic_compare_exchange_n(&qdDentroTid, &livre, tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
   // Um relato so: o primeiro fio a cair grava; os outros (e a repeticao da
   // falha depois do debuggerd) so seguem a cadeia.
   if (!__atomic_exchange_n(&qdGravou, 1, __ATOMIC_ACQ_REL)) {
@@ -308,7 +324,8 @@ static void qdTratarE(int sig, siginfo_t *si, void *ctx) {
     if (!qdGravarE(qdArq, sig, si, ctx)) __atomic_store_n(&qdGravou, 0, __ATOMIC_RELEASE);
     else if (qdAntes) qdAntes();
   }
-  qdEncadear(sig, si, ctx);
+  qdEncadearCom(qdVelhoSlot[__atomic_load_n(&qdSlot, __ATOMIC_ACQUIRE) & 1], sig, si, ctx);
+  if (meu) __atomic_store_n(&qdDentroTid, 0, __ATOMIC_RELEASE);
 }
 
 void queda_armar_encadeado(const char *arquivo, void (*antes)(void)) {
@@ -324,25 +341,76 @@ void queda_armar_encadeado(const char *arquivo, void (*antes)(void)) {
   sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&sa.sa_mask);
   for (int i = 0; i < QD_E_SINAIS; i++) {
-    memset(&qdVelho[i], 0, sizeof qdVelho[i]);
-    sigaction(qdSinaisE[i], &sa, &qdVelho[i]);
+    memset(&qdVelhoSlot[0][i], 0, sizeof qdVelhoSlot[0][i]);
+    sigaction(qdSinaisE[i], &sa, &qdVelhoSlot[0][i]);
+    qdOrig[i] = qdVelhoSlot[0][i];
   }
+  __atomic_store_n(&qdSlot, 0, __ATOMIC_RELEASE);
   qdEncadeado = 1;
 }
 
-int queda_conferir(const char *quando) {
-  static int avisou;
-  struct sigaction atual;
-  if (!qdEncadeado) return 1;
-  memset(&atual, 0, sizeof atual);
-  if (sigaction(SIGSEGV, NULL, &atual) != 0) return 1;
-  if ((atual.sa_flags & SA_SIGINFO) && atual.sa_sigaction == qdTratarE) return 1;
-  if (!avisou) {
-    avisou = 1;
-    printf("[queda] another SIGSEGV handler replaced the crash reporter (%s): a crash from here on leaves no report\n",
-           quando ? quando : "?");
-    fflush(stdout);
+// Modulo e deslocamento de um endereco, pelo /proc/self/maps. Fora do
+// tratador (stdio e buffer proprio): quem trocou o tratador de SIGSEGV.
+static void qdModuloDe(uintptr_t a, char *out, size_t n) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  char l[512], base[384] = "";
+  uintptr_t baseIni = 0;
+  snprintf(out, n, "0x%lx (no module)", (unsigned long)a);
+  if (!f) return;
+  while (fgets(l, sizeof l, f)) {
+    unsigned long ini, fim, desl;
+    char perm[8], cam[384] = "";
+    l[strcspn(l, "\n")] = 0;
+    if (sscanf(l, "%lx-%lx %7s %lx %*s %*s %383[^\n]", &ini, &fim, perm, &desl, cam) < 4) continue;
+    if (desl == 0 && cam[0] == '/') { snprintf(base, sizeof base, "%s", cam); baseIni = ini; }
+    if (a < ini || a >= fim) continue;
+    if (cam[0]) {
+      const char *b = strrchr(cam, '/');
+      uintptr_t rel = !strcmp(base, cam) ? a - baseIni : a - ini + desl;
+      snprintf(out, n, "%s+0x%lx", b ? b + 1 : cam, (unsigned long)rel);
+    } else snprintf(out, n, "0x%lx (anonymous memory)", (unsigned long)a);
+    break;
   }
+  fclose(f);
+}
+
+int queda_conferir(const char *quando) {
+  static int linhas;
+  struct sigaction atual, sa;
+  int i, trocou = 0, ativo, novo;
+  if (!qdEncadeado) return 1;
+  ativo = __atomic_load_n(&qdSlot, __ATOMIC_ACQUIRE) & 1;
+  novo = !ativo;
+  memcpy(qdVelhoSlot[novo], qdVelhoSlot[ativo], sizeof qdVelhoSlot[novo]);
+  for (i = 0; i < QD_E_SINAIS; i++) {
+    void *h;
+    memset(&atual, 0, sizeof atual);
+    if (sigaction(qdSinaisE[i], NULL, &atual) != 0) continue;
+    if ((atual.sa_flags & SA_SIGINFO) && atual.sa_sigaction == qdTratarE) continue;
+    // Trocado: quem entrou vira o "anterior" da cadeia, e nos voltamos por cima.
+    qdVelhoSlot[novo][i] = atual;
+    trocou |= 1 << i;
+    h = (atual.sa_flags & SA_SIGINFO) ? (void *)atual.sa_sigaction : (void *)atual.sa_handler;
+    if (linhas < 8) {
+      char onde[200];
+      linhas++;
+      if (h == (void *)SIG_DFL || h == (void *)SIG_IGN) snprintf(onde, sizeof onde, "%s", h == (void *)SIG_DFL ? "SIG_DFL" : "SIG_IGN");
+      else qdModuloDe((uintptr_t)h, onde, sizeof onde);
+      printf("[queda] signal %d handler replaced (%s) by %s; crash reporter re-armed on top of it\n",
+             qdSinaisE[i], quando ? quando : "?", onde);
+      fflush(stdout);
+    }
+  }
+  if (!trocou) return 1;
+  // Publica a cadeia nova ANTES de voltar por cima: uma falha no meio vai a
+  // quem esta instalado, e a cadeia nova ja chama esse mesmo.
+  __atomic_store_n(&qdSlot, novo, __ATOMIC_RELEASE);
+  memset(&sa, 0, sizeof sa);
+  sa.sa_sigaction = qdTratarE;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  for (i = 0; i < QD_E_SINAIS; i++)
+    if (trocou & (1 << i)) sigaction(qdSinaisE[i], &sa, NULL);
   return 0;
 }
 
