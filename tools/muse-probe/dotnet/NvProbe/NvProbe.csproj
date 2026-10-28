@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Targets netcoreapp3.1 to match the TV's Microsoft.NETCore.App 3.1.0
+       runtime (same as vetro's SamsungTvRootAgent). Framework-dependent, so
+       the output is a tiny IL DLL run on the TV with:
+         /usr/bin/dotnet NvProbe.dll
+       Managed IL is JITed in-process by coreclr (not an execve/mmap of a file),
+       so UEP does not block it. Runs as root when launched via vetro /exec. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <AssemblyName>NvProbe</AssemblyName>
+    <Nullable>disable</Nullable>
+    <LangVersion>8.0</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- IL is architecture-neutral; the same DLL runs on the TV's armv7. -->
+  </PropertyGroup>
+
+</Project>
