@@ -7,9 +7,11 @@
 //   - the first 20 NullReference / AccessViolation exceptions of the session
 //     (first-chance: the moment they are thrown, caught or not), with the C#
 //     stack of the throwing thread.
-// Lines go through nv_tpk_log_net, which stamps the session time the native
-// fault records use ("[net t=12.345s] ..."). An older libnuvio without it:
-// nv_tpk_log ("[host] [net] ..."), no time. Never throws.
+// Every line goes through nv_tpk_log_net (src/tpk.c), which REDACTS it with
+// the log page's rules (URLs cut at the host, keys / tokens / passwords /
+// cookies, long token-like strings) and stamps the session time the native
+// fault records use ("[net t=12.345s] ..."). Nothing is written here unredacted:
+// an older libnuvio without that export gets no .NET lines at all. Never throws.
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -21,7 +23,6 @@ namespace NuvioTpk
     static class NetLog
     {
         [DllImport("libnuvio.so")] static extern void nv_tpk_log_net(string linha);
-        [DllImport("libnuvio.so")] static extern void nv_tpk_log(string linha);
 
         const int PrimeirasMax = 20;
         [ThreadStatic] static bool dentro;   // logging must never log itself
@@ -38,13 +39,10 @@ namespace NuvioTpk
 
         static void Linha(string l)
         {
-            if (!semNet)
-            {
-                try { nv_tpk_log_net(l); return; }
-                catch (EntryPointNotFoundException) { semNet = true; }
-                catch (Exception) { return; }   // lib not loaded yet
-            }
-            try { nv_tpk_log("[net] " + l); } catch (Exception) { }
+            if (semNet) return;
+            try { nv_tpk_log_net(l); }
+            catch (EntryPointNotFoundException) { semNet = true; }   // older lib: no unredacted fallback
+            catch (Exception) { }                                    // lib not loaded yet
         }
 
         static void Erro(string onde, Exception e, object bruto)

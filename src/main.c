@@ -73,9 +73,7 @@
 #include "androidcache.h"
 #include "negcache.h"
 #include "p2pmotor.h"
-#ifdef NV_TPK
-#include "telalag.h"
-#endif
+#include "telalag.h"   // every target: off the .tpk the calls are no-ops (telalag.c)
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>

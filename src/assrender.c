@@ -1126,6 +1126,7 @@ static GLuint ass_textura_locked(int slot, const AssCpuImage *im) {
   return assTex[slot].tex;
 }
 
+#if ASS_NOVO   /* only built where it runs (.tpk): off it, nothing of this is used */
 /* ===== O CAMINHO NOVO DO DESENHO (fio GL, ASS_NOVO) =========================
  *
  * O caminho antigo (acima, assAtual + assTex) e o de fora do .tpk. Este:
@@ -1306,6 +1307,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
   gfx_tex_aspect_atual = 0.0f;
   return assMain.count;
 }
+#endif   /* ASS_NOVO: o caminho novo do desenho */
 
 /* ===== assperf: CARGA INCREMENTAL ("Batch loading = New lines only") =======
  *
@@ -2011,7 +2013,9 @@ void assrender_aplicar_invalidacao(void) {
   if (assTexResetar) {
     assTexResetar = 0;
     ass_apagar_texturas_locked();
+#if ASS_NOVO
     assMainResetar = 1;   // o caminho novo tambem solta o quadro e as texturas dele
+#endif
   }
   pthread_mutex_unlock(&assFilaTrava);
 }
@@ -2210,8 +2214,11 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       assMed.trocas++;
     } }
   reset = assTexResetar; assTexResetar = 0;
-  corAtiva = assCorAtiva; cr = assCorR; cg = assCorG; cb = assCorB;
+  corAtiva = assCorAtiva; cr = assCorR; cg = assCorG; cb = assCorB;   // read under the lock (new path)
   assUltimoVistoMs = (double)pedido; assUltimoVistoGeracao = generation;
+#if !ASS_NOVO
+  (void)corAtiva; (void)cr; (void)cg; (void)cb; (void)saltou;
+#endif
 
   if (!ASS_NOVO) {
     /* ---- o caminho de sempre (fora do .tpk) ---- */
@@ -2250,7 +2257,9 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     n = assAtual.count;
     ass_medir_locked(agora, n > 0, assAtual.inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
-  } else {
+  }
+#if ASS_NOVO
+  else {
     /* ---- o caminho novo: upload e desenho fora da trava ---- */
     long long inicioMax;
     int temTexto;
@@ -2273,6 +2282,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     ass_medir_locked(agora, temTexto, inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
   }
+#endif
   ass_frame_liberar(&novo);
 #ifdef NV_TPK
   /* Borda das legendas: o libass quer o premult se desenhou agora, se ha um
