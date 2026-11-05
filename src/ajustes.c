@@ -3191,6 +3191,12 @@ int ajustes_mic_busca(void) { return valor[AJ_MIC_BUSCA]; }   // 0 auto, 1 ligad
 int ajustes_trailer_zoom_tpk(void) { return lig(AJ_TRAILER_ZOOM_TPK); }   // 1 = Ligado
 #ifdef NV_ANDROID
 int ajustes_legenda_sync_audio(void) { return lig(AJ_LEG_SYNC_AUDIO); }
+#elif defined(NV_TPK) && !defined(NV_TPK40)
+// .tpk 6+: sempre ligada, sem opcao em Ajustes. So existe audio decodificado
+// quando o conversor DTS/TrueHD toca (dts_hls_tpk.c registra o tap); fora
+// dele a capacidade diz "sem audio" e nada e pedido. O custo e um downmix do
+// PCM que o conversor ja decodifica.
+int ajustes_legenda_sync_audio(void) { return 1; }
 #else
 int ajustes_legenda_sync_audio(void) { return 0; }   // escondida fora do Android
 #endif

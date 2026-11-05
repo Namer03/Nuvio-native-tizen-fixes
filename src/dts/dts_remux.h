@@ -52,6 +52,11 @@ int dts_remux_available(void);
 void dts_remux_set_queue_budget_mib(int mib);
 /* Device offset, snapshotted by each new source. Positive delays audio only. */
 void dts_remux_set_audio_offset_ms(int ms);
+/* Audio-sync tap (.tpk): while on, the generator feeding playback also hands
+ * its decoded audio (mono 16 kHz, centre channel when there is one) to
+ * audsync.c. Registered as the audsync backend by dts_hls_tpk.c. Costs one
+ * downmix of PCM this converter already decodes. */
+void dts_remux_audio_tap(int on);
 
 /* Opens the source and reads its keyframe index (one seek: Matroska parses
  * Cues lazily). audio_ordinal: which audio track to convert, counted among the

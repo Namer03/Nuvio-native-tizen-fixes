@@ -43,6 +43,11 @@ void audsync_backend(void (*ligar)(int on));
 void audsync_formato(int fmt);
 // Returns 1 if the chunk was queued (tap armed and room in the ring).
 int  audsync_pcm(const int16_t *mono16k, int n, int64_t ptsUs);
+// Free room in the ring, in samples. For a backend that produces FASTER than
+// real time (the .tpk DTS converter decodes ahead of playback): it may wait a
+// few ms for room instead of dropping and restarting the window. Never needed
+// by a real-time tap (Android). -1 = not listening (no point waiting).
+int  audsync_espaco(void);
 
 typedef enum {
   AUDSYNC_CAP_PLATAFORMA = 0, AUDSYNC_CAP_SEM_AUDIO, AUDSYNC_CAP_PASSTHROUGH, AUDSYNC_CAP_OK

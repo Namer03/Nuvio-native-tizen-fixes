@@ -37,6 +37,7 @@ int dts_tpk_e_url(const char *u) { (void)u; return 0; }
 #else
 
 #include "dts_engine.h"
+#include "../audsync.h"
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -1030,6 +1031,10 @@ int dts_tpk_abrir(const char *url, const char *headers, int track, int stereo, i
          id, MODO_NOME[modo], track, stereo ? "AAC 2.0" : "AC3",
          strstr(out, ".m3u8") ? "a playlist HLS" : "o fluxo progressivo", SEG_ALVO_S);
   fflush(stdout);
+  // Sincronia de legenda pelo audio: este conversor decodifica o audio que
+  // toca, entao ele e o "tap" do audsync enquanto a sessao existir.
+  audsync_backend(dts_remux_audio_tap);
+  audsync_formato(AUDSYNC_FMT_PCM);
   return 1;
 }
 
@@ -1051,6 +1056,7 @@ void dts_tpk_fechar(void) {
   pthread_mutex_lock(&G);
   encerrarAtual();
   pthread_mutex_unlock(&G);
+  audsync_formato(AUDSYNC_FMT_NENHUM);   // sem conversor, sem audio decodificado
 }
 
 #define LER_ATUAL(tipo, campo, padrao) \

@@ -109,6 +109,12 @@ int audsync_pcm(const int16_t *a, int n, int64_t pts) {
   return 1;
 }
 
+int audsync_espaco(void) {
+  int l;
+  pthread_mutex_lock(&M); l = S.armado && !S.pausado ? (int)(AUDSYNC_RING - S.wUsado) : -1; pthread_mutex_unlock(&M);
+  return l;
+}
+
 void audsync_teste_travar(int t) {
   pthread_mutex_lock(&M); travadoTeste = t; pthread_cond_broadcast(&C); pthread_mutex_unlock(&M);
 }
