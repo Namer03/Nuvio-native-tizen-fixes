@@ -61,7 +61,7 @@ typedef enum {
 typedef enum {
   AUDSYNC_M_OK = 0, AUDSYNC_M_PLATAFORMA, AUDSYNC_M_PASSTHROUGH, AUDSYNC_M_SEM_FALA,
   AUDSYNC_M_CONTINUA, AUDSYNC_M_SEM_LEGENDA, AUDSYNC_M_CONFIANCA, AUDSYNC_M_JANELA,
-  AUDSYNC_M_MEMORIA
+  AUDSYNC_M_MEMORIA, AUDSYNC_M_AMBIGUO
 } AudSyncMotivo;
 const char *audsync_motivo(AudSyncMotivo m);   // stable English reason for logs
 
@@ -75,6 +75,7 @@ typedef struct {
   long descartados;     // chunks dropped because the ring was full
   int estimativaMs;     // candidate offset (audvad) once aligned
   double confianca;     // candidate score (heuristic, not a probability)
+  double janelaIni, janelaFim;   // media seconds of the heard window (once aligned)
 } AudSyncStatus;
 
 #define AUDSYNC_ALVO_SEG 300     // listening window (engine needs >= 180 s overlap)
@@ -87,6 +88,11 @@ void audsync_cancelar(void);
 // automatic plan swapped it): the window keeps going and is aligned against
 // `prim`. 0 = not that session or no longer listening (caller restarts).
 int  audsync_trocar_legenda(uint64_t pedido, LegendaDocumento *prim);
+// THE HEARD AUDIO STAYS (06/11, dono): a finished window keeps its speech
+// for this session. A new subtitle is aligned against it at once, without
+// listening again. Returns the new request id (fase ALINHANDO), 0 when there
+// is no finished window of `sessao` (caller listens with audsync_pedir).
+uint64_t audsync_realinhar(uint64_t sessao, LegendaDocumento *prim, int raioMs);
 void audsync_pausar(int sensivel);
 void audsync_passo(void);                 // applies tap on/off on the UI thread
 AudSyncStatus audsync_status(void);

@@ -97,6 +97,36 @@ static void testeAlinhamento(void) {
     fprintf(stderr, "   unrelated: %s score %.3f\n", audalign_motivo(a.motivo), a.score);
     assert(a.motivo == AUDALIGN_CONFIANCA || a.motivo == AUDALIGN_AMBIGUO);
   }
+  // 06/11: Silero merges speech into ~2 s segments, so the winning peak is
+  // ~2 s wide. The TV refused +1.6 s (score 0.504) because the "alternative"
+  // was its own shoulder 550 ms away (0.457). The alternative is now the best
+  // score beyond the winner's valleys.
+  CASO("align: long merged speech segments -> the peak's shoulder is not an alternative");
+  {
+    static AudSeg fala[2048], leg[2048];
+    int nf = 0, nl = 0, semente;
+    for (semente = 1; semente <= 5; semente++) {
+      uint32_t x = (uint32_t)semente * 2654435761u;
+      double t = 0;
+      AudAlign a;
+      nf = nl = 0;
+#define RND() ((x = x * 1664525u + 1013904223u) / 4294967296.0)
+      while (t < 300 && nf < 2048) {
+        double d = 0.3 - 2.2 * log(1 - RND() * 0.999), g = 0.3 - 2.0 * log(1 - RND() * 0.999);
+        if (RND() > 0.1) { fala[nf].inicio = t; fala[nf].fim = t + d; nf++; }          // VAD misses 10 %
+        if (RND() > 0.15) {                                                                 // 15 % unsubtitled
+          leg[nl].inicio = t + 1.6 + (RND() - 0.5) * 0.5; leg[nl].fim = t + d + 1.6 + (RND() - 0.5) * 0.5; nl++;
+        }
+        t += d + g;
+      }
+#undef RND
+      a = audalign_estimar(fala, nf, leg, nl, 0, 300, 30000);
+      fprintf(stderr, "   seed %d: %d ms score %.3f alt %.3f at %d ms, peak %d ms wide (%s)\n", semente, a.offsetMs,
+              a.score, a.alternativo, a.altOffsetMs, a.larguraMs, audalign_motivo(a.motivo));
+      assert(a.motivo == AUDALIGN_OK && abs(a.offsetMs - 1600) <= 100);
+      assert(a.larguraMs >= 1000 && abs(a.altOffsetMs - a.offsetMs) * 2 > a.larguraMs);
+    }
+  }
 }
 
 // --- sessao inteira ---------------------------------------------------------------------------
@@ -227,6 +257,21 @@ static void testeSessao(void) {
   legsync_primaria_outra(1); passo(0);
   assert(audsync_status().fase == AUDSYNC_PARADO && atomic_load(&tapLigado) == 0);
 
+  CASO("subtitle change mid-listen keeps the heard audio (06/11)");
+  legsync_primaria_externa("ext://legenda.srt", "en", "OpenSubtitles"); esperar(LEGSYNC_PRONTA);
+  assert(legsync_acao(LEGSYNC_ACAO_AUDIO)); tocar(100, 130, 0, SINT_FALA | SINT_RUIDO);
+  { int i; for (i = 0; i < 2000 && audsync_teste_livre() < AUDSYNC_RING; i++) usleep(1000); }
+  { AudSyncStatus a0 = audsync_status(), a1;
+    int i;
+    assert(a0.fase == AUDSYNC_OUVINDO && a0.progresso >= 8);
+    legsync_primaria_externa("ext://outra.srt", "en", "Other");
+    for (i = 0; i < 200; i++) { passo(0); usleep(1000); }
+    a1 = audsync_status();
+    assert(a1.pedido == a0.pedido && a1.fase == AUDSYNC_OUVINDO && a1.progresso >= a0.progresso);
+    assert(atomic_load(&tapLigado) == 1); }
+  legsync_primaria_outra(1); passo(0);
+  assert(audsync_status().fase == AUDSYNC_PARADO);
+
   CASO("cancel: audio track change");
   legsync_primaria_externa("ext://legenda.srt", "en", "OpenSubtitles"); esperar(LEGSYNC_PRONTA);
   assert(legsync_acao(LEGSYNC_ACAO_AUDIO)); tocar(100, 110, 0, SINT_FALA | SINT_RUIDO);
@@ -287,11 +332,54 @@ static void testeAnel(void) {
   legenda_documento_liberar(d);
 }
 
+// --- 06/11: a finished window's speech is reused for another subtitle --------------------
+static void testeRealinhar(void) {
+  int16_t b[960];
+  double t;
+  int i;
+  uint64_t p, r;
+  LegendaDocumentoInfo info = { .sessao = 78, .flags = LEGENDA_DOC_COMPLETO };
+  LegendaDocumento *d;
+  AudSyncStatus st;
+  CASO("realign: a finished window aligns a new subtitle without listening again");
+  sint_timeline(0, 600, 99);
+  d = legenda_documento_criar(corpoSrt, &info);
+  assert(d);
+  audsync_backend(ligarTap); audsync_formato(AUDSYNC_FMT_PCM);
+  assert(!audsync_realinhar(78, d, 30000));            // nothing heard yet
+  p = audsync_pedir(78, d, AUDSYNC_ALVO_SEG, 30000);
+  assert(p && !audsync_realinhar(78, d, 30000));       // still listening: trocar_legenda's job
+  for (t = 100; t < 100 + AUDSYNC_ALVO_SEG + 1; t += 0.06) {
+    sint_pcm(b, 960, t, 2.5, SINT_FALA | SINT_RUIDO);
+    while (audsync_teste_livre() < 960 && audsync_status().fase == AUDSYNC_OUVINDO) usleep(100);
+    if (audsync_status().fase != AUDSYNC_OUVINDO) break;
+    audsync_pcm(b, 960, (int64_t)llround(t * 1e6));
+  }
+  for (i = 0; i < 60000 && ((st = audsync_status()).fase == AUDSYNC_ALINHANDO || st.fase == AUDSYNC_OUVINDO); i++) usleep(1000);
+  st = audsync_status();
+  assert(st.pedido == p && st.fase == AUDSYNC_PRONTO && abs(st.estimativaMs - 2500) <= 100);
+  assert(st.janelaFim - st.janelaIni > 250);
+  assert(!audsync_realinhar(79, d, 30000));            // another session's window: no
+  r = audsync_realinhar(78, d, 30000);
+  assert(r && r != p);
+  for (i = 0; i < 60000 && audsync_status().fase == AUDSYNC_ALINHANDO; i++) usleep(1000);
+  st = audsync_status();
+  assert(st.pedido == r && st.fase == AUDSYNC_PRONTO && abs(st.estimativaMs - 2500) <= 100);
+  // A new listening request forgets the old window.
+  p = audsync_pedir(78, d, AUDSYNC_ALVO_SEG, 30000);
+  for (i = 0; i < 200; i++) usleep(1000);
+  assert(!audsync_realinhar(78, d, 30000));
+  audsync_cancelar();
+  assert(!audsync_realinhar(78, d, 30000));            // the reset window is gone
+  legenda_documento_liberar(d);
+}
+
 int main(void) {
   testeVad();
   testeAlinhamento();
   testeSessao();
   testeAnel();
+  testeRealinhar();
   legsync_destruir();
   fprintf(stderr, "audsync: %d casos ok\n", casos);
   free(corpoSrt);

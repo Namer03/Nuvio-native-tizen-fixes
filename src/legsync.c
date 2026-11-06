@@ -4,6 +4,7 @@
 #include "audsync.h"
 #include "legenda.h"
 #include "legenda2.h"
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +119,24 @@ static void pararAudio(void) {
   L.audRef = L.audRec = NULL;
 }
 
+// O AUDIO OUVIDO FICA (06/11, dono): a pessoa trocou de legenda externa. A
+// fala nao depende da legenda: a janela em curso continua (aoBaixar passa a
+// legenda nova ao audsync) e uma janela ja fechada fica no audsync para
+// realinhar (escutarCedo). Um pedido a mao vira escuta cedo do plano novo. Com M.
+static void manterEscuta(void) {
+  uint64_t ouvindo = 0;
+  AudSyncStatus st = audsync_status();
+  if (L.audCedo && !L.audCedoPronto && st.pedido == L.audCedo && st.fase == AUDSYNC_OUVINDO) ouvindo = L.audCedo;
+  else if (L.audPedido && st.pedido == L.audPedido && st.fase == AUDSYNC_OUVINDO) ouvindo = L.audPedido;
+  if (!ouvindo) { pararAudio(); return; }   // nada em curso; a fala de uma janela fechada fica no audsync
+  L.audPedido = 0; L.audUltimo = 0; L.audFalha = AUDSYNC_M_OK;
+  L.audCedoPronto = 0;
+  legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec);
+  L.audRef = L.audRec = NULL;
+  L.audCedo = ouvindo;
+  printf("[legsync] automatico: legenda trocada; a escuta continua (%d%%)\n", st.progresso); fflush(stdout);
+}
+
 // Geracao nova para a MESMA escolha de legenda (troca de fonte no meio da
 // sessao) ou para um titulo novo (manterPrimaria = 0).
 static void soltarSegunda(void) {
@@ -227,8 +246,13 @@ static void aoBaixar(const char *corpo, unsigned g, int vigente, void *u) {
       legenda_documento_dados(doc, &L.primN);
       if (!L.autoTrocou) L.autoOrigN = L.primN;
       if (m->sessao == L.sessao) autosync_selecionar(L.sync, 0, doc);
-      // A escuta cedo continua com a legenda trocada pela automatica.
-      if (L.audCedo && !audsync_trocar_legenda(L.audCedo, doc)) { audsync_cancelar(); L.audCedo = 0; }
+      // A escuta cedo continua com a legenda trocada (pela automatica ou pela
+      // pessoa); fechada no meio do caminho, a fala ouvida realinha a nova.
+      if (L.audCedo && !audsync_trocar_legenda(L.audCedo, doc)) {
+        uint64_t r = m->sessao == L.sessao ? audsync_realinhar(L.sessao, doc, AUDSYNC_RAIO_MS) : 0;
+        if (!r) audsync_cancelar();
+        L.audCedo = r;
+      }
     } else L.primFase = 2;
   }
   pthread_mutex_unlock(&M);
@@ -265,7 +289,7 @@ void legsync_primaria_externa(const char *url, const char *idioma, const char *o
     // audio, nao da legenda; aoBaixar passa a legenda nova ao audsync.
     L.nExcl = 0; zerarAnalise();
     if (L.autoTroca && L.audCedo && !L.audCedoPronto) { /* continua ouvindo */ }
-    else pararAudio();
+    else manterEscuta();
     // R4: a pessoa (ou a automatica de idioma) escolheu: plano novo. Vinda do
     // trocador, o plano continua e so anota a legenda tentada.
     L.autoEtapa = 0; L.autoRefTent = 0; L.autoPend = 0; L.manualFase = L.manualLog = 0;
@@ -457,6 +481,26 @@ static int iniciarAudio(void) {
   return ok;
 }
 
+// DIAGNOSTICO (06/11): o que o audio achou contra o que a sincronia por
+// texto aceita diz no MEIO da janela ouvida, no mesmo sinal (positivo
+// adianta a legenda). Mostra se o resultado do audio esta certo. Com M.
+static void logAudioVsTexto(const AudSyncStatus *st) {
+  AutoSyncResultado e;
+  double meio;
+  int texto;
+  if (!L.criado || st->janelaFim <= st->janelaIni) return;
+  meio = (st->janelaIni + st->janelaFim) * 0.5;
+  e = autosync_estado(L.sync, 0);
+  if (e.estado != AUTOSYNC_ACCEPTED || !dona()) {
+    fprintf(stderr, "[legsync] audio vs texto: audio=%d ms (score %.3f), sem sincronia por texto aceita para comparar\n",
+            st->estimativaMs, st->confianca);
+    return;
+  }
+  texto = (int)lround((autosync_posicao(L.sync, 0, meio) - meio) * 1000.0) + autosync_offset_ms(L.sync, 0);
+  fprintf(stderr, "[legsync] audio vs texto: audio=%d ms texto=%d ms diferenca=%d ms no meio da janela (%.0f s)\n",
+          st->estimativaMs, texto, st->estimativaMs - texto, meio);
+}
+
 static int audioPossivel(void) {
   return L.audLigado && motivoAudio() == LEGSYNC_M_NENHUM && primariaAtual();
 }
@@ -466,6 +510,13 @@ static void escutarCedo(void) {
   uint64_t p;
   AudSyncStatus st;
   if (L.audCedo || L.audCedoPronto || L.audPedido || !audioPossivel()) return;
+  // Uma janela ja ouvida nesta sessao serve: alinha na hora (06/11).
+  p = audsync_realinhar(L.sessao, L.primDoc, AUDSYNC_RAIO_MS);
+  if (p) {
+    L.audCedo = p;
+    printf("[legsync] automatico: audio ja ouvido; realinhando com esta legenda\n"); fflush(stdout);
+    return;
+  }
   p = audsync_pedir(L.sessao, L.primDoc, AUDSYNC_ALVO_SEG, AUDSYNC_RAIO_MS);
   st = audsync_status();
   if (st.pedido == p && st.fase == AUDSYNC_FALHOU) return;
@@ -537,7 +588,13 @@ static void autoPasso(void) {
   AutoSyncResultado e;
   if (L.autoFase != 1 || L.autoPend) return;
   if (L.primTipo != 1) { L.autoFase = 0; return; }
-  if (L.primFase == 2) { autoEncerrar("legenda incompleta; fica a da tela"); return; }
+  if (L.primFase == 2) {
+    // Nao e "baixa confianca" (06/11): o download falhou (HTTP 429, rede) ou
+    // o arquivo nao deu falas. O log diz qual; a pilula segue igual.
+    if (L.autoFalha == AUTOSYNC_OK) L.autoFalha = AUTOSYNC_INCOMPLETE;
+    autoEncerrar(L.falhaDownload ? "download da legenda falhou; fica a da tela" : "legenda sem falas legiveis; fica a da tela");
+    return;
+  }
   if (L.primFase == 0) return;                              // ainda baixando
   if (L.autoTrocou && L.autoOrigN > 0 && L.primN * 2 < L.autoOrigN) {
     printf("[legsync] automatico: candidata com %d de %d falas; volta a original\n", L.primN, L.autoOrigN);
@@ -590,7 +647,7 @@ static void autoPasso(void) {
     if (L.solicitou && e.estado == AUTOSYNC_ACCEPTED) { L.autoFase = 2; L.autoEtapa = 9; L.autoFalha = AUTOSYNC_OK; return; }
     if ((L.solicitou && e.estado == AUTOSYNC_REJECTED) || L.audFalha != AUDSYNC_M_OK) {
       if (L.solicitou && e.estado == AUTOSYNC_REJECTED) L.autoFalha = e.motivo;
-      else if (L.audFalha != AUDSYNC_M_OK) L.autoFalha = AUTOSYNC_LOW_CONFIDENCE;
+      else if (L.audFalha != AUDSYNC_M_OK) L.autoFalha = L.audFalha == AUDSYNC_M_AMBIGUO ? AUTOSYNC_AMBIGUOUS : AUTOSYNC_LOW_CONFIDENCE;
       L.autoFase = 3; L.autoEtapa = 9;
     }
   }
@@ -731,6 +788,7 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
     if (st.pedido != L.audCedo) L.audCedo = 0;
     else if (st.fase == AUDSYNC_PRONTO) {
       LegendaDocumento *r = NULL, *c = NULL;
+      logAudioVsTexto(&st);
       if (audsync_tomar(L.audCedo, &r, &c)) {
         legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec);
         L.audRef = r; L.audRec = c; L.audCedo = 0; L.audCedoPronto = 1;
@@ -739,6 +797,7 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
     } else if (st.fase == AUDSYNC_FALHOU) {
       fprintf(stderr, "[legsync] audio_sync early rejected reason=%s restarts=%d dropped=%ld\n",
               audsync_motivo(st.motivo), st.reinicios, st.descartados);
+      logAudioVsTexto(&st);
       L.audCedo = 0;
     } else audsync_pausar(sensivel);
   }
@@ -747,6 +806,7 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
     if (st.pedido != L.audPedido) L.audPedido = 0;
     else if (st.fase == AUDSYNC_PRONTO) {
       LegendaDocumento *r = NULL, *c = NULL;
+      logAudioVsTexto(&st);
       if (audsync_tomar(L.audPedido, &r, &c)) {
         legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec);
         L.audRef = r; L.audRec = c;
@@ -757,6 +817,7 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
       L.audFalha = st.motivo; L.audPedido = 0;
       fprintf(stderr, "[legsync] audio_sync rejected reason=%s restarts=%d dropped=%ld\n",
               audsync_motivo(st.motivo), st.reinicios, st.descartados);
+      logAudioVsTexto(&st);
     } else audsync_pausar(sensivel);
   }
   // TETO DO PLANO AUTOMATICO, SEM PROGRESSO. Na TV do dono a linha

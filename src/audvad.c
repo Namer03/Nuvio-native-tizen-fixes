@@ -230,7 +230,21 @@ AudAlign audalign_estimar(const AudSeg *fala, int nFala, const AudSeg *cues, int
   }
   r.score = sc[melhor];
   r.offsetMs = (melhor - R) * 50;
-  for (s = 0; s <= 2 * R; s++) if (abs(s - melhor) * 50 > 500 && sc[s] > r.alternativo) r.alternativo = sc[s];
+  // THE ALTERNATIVE IS ANOTHER PEAK (06/11). It used to be any offset more
+  // than 500 ms away; with Silero's merged speech (segments of ~2 s) the
+  // winning peak is ~2 s wide, so that point sat on its own shoulder (TV log:
+  // score 0.504, "alternative" 0.457 at +-550 ms) and a right answer was
+  // refused as ambiguous. Walk down both sides of the winner to the valleys;
+  // the alternative is the best score beyond them (and still > 500 ms away).
+  { int lo = melhor, hi = melhor;
+    while (lo > 0 && sc[lo - 1] <= sc[lo]) lo--;
+    while (hi < 2 * R && sc[hi + 1] <= sc[hi]) hi++;
+    r.larguraMs = (hi - lo) * 50;
+    r.altOffsetMs = r.offsetMs;
+    for (s = 0; s <= 2 * R; s++)
+      if ((s < lo || s > hi) && abs(s - melhor) * 50 > 500 && sc[s] > r.alternativo) {
+        r.alternativo = sc[s]; r.altOffsetMs = (s - R) * 50;
+      } }
   if (r.score < 0.30) r.motivo = AUDALIGN_CONFIANCA;
   else if (r.score - r.alternativo < 0.08) r.motivo = AUDALIGN_AMBIGUO;
   else r.motivo = AUDALIGN_OK;

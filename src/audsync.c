@@ -39,6 +39,10 @@ static struct {
   AudSyncStatus st;
   LegendaDocumento *ref, *recorte;
   int tapAplicado;
+  // A finished window's speech (S.vad) is kept for this session (06/11):
+  // audsync_realinhar aligns another subtitle against it.
+  int falaGuardada;
+  uint64_t falaSessao;
   // worker only
   AudVad vad;
   int64_t spanIni, esperado;
@@ -50,7 +54,7 @@ static struct {
 const char *audsync_motivo(AudSyncMotivo m) {
   static const char *const n[] = { "ok", "platform", "passthrough", "no_speech", "continuous_audio",
                                    "no_subtitle_activity", "low_confidence", "short_window",
-                                   "out_of_memory" };
+                                   "out_of_memory", "ambiguous_peak" };
   return m >= 0 && m < (int)(sizeof n / sizeof *n) ? n[m] : "invalid";
 }
 
@@ -167,6 +171,7 @@ static AudSyncMotivo deAlign(AudAlignMotivo m) {
     case AUDALIGN_CONTINUA: return AUDSYNC_M_CONTINUA;
     case AUDALIGN_SEM_LEGENDA: return AUDSYNC_M_SEM_LEGENDA;
     case AUDALIGN_JANELA: return AUDSYNC_M_JANELA;
+    case AUDALIGN_AMBIGUO: return AUDSYNC_M_AMBIGUO;   // was reported as low_confidence
     default: return AUDSYNC_M_CONFIANCA;
   }
 }
@@ -251,6 +256,7 @@ static void *trabalhar(void *u) {
     if (S.parar) break;
     if (S.resetar) {
       S.resetar = 0; S.temSpan = 0; audvad_iniciar(&S.vad); S.vadCpu = 0; S.st.progresso = 0;
+      S.falaGuardada = 0;
       continue;
     }
     if (S.alinhar) {
@@ -274,11 +280,14 @@ static void *trabalhar(void *u) {
       }
       m = montar(prim, pedido, ini, fim, raio, &ref, &rec, &al);
       legenda_documento_liberar(prim);
-      fprintf(stderr, "[audsync] audio_sync window reason=%s offset_ms=%d score=%.3f alt=%.3f speech=%.2f segments=%d\n",
-              audsync_motivo(m), al.offsetMs, al.score, al.alternativo, al.falaFracao, S.vad.nseg);
+      fprintf(stderr, "[audsync] audio_sync window reason=%s offset_ms=%d score=%.3f alt=%.3f alt_offset_ms=%d peak_width_ms=%d speech=%.2f segments=%d window=%.0f-%.0fs\n",
+              audsync_motivo(m), al.offsetMs, al.score, al.alternativo, al.altOffsetMs, al.larguraMs,
+              al.falaFracao, S.vad.nseg, ini, fim);
       pthread_mutex_lock(&M);
+      if (!S.resetar) S.falaGuardada = 1;   // this window's speech serves the next subtitle too
       if (ger == S.geracao && S.st.fase == AUDSYNC_ALINHANDO) {
         S.st.estimativaMs = al.offsetMs; S.st.confianca = al.score;
+        S.st.janelaIni = ini; S.st.janelaFim = fim;
         if (m == AUDSYNC_M_OK) {
           S.ref = ref; S.recorte = rec; ref = rec = NULL;
           S.st.fase = AUDSYNC_PRONTO; S.st.motivo = AUDSYNC_M_OK;
@@ -300,6 +309,7 @@ static void *trabalhar(void *u) {
       if (!S.temSpan || d.quebra || llabs(d.pts - S.esperado) > SALTO_US) {
         if (S.temSpan) S.st.reinicios++;
         audvad_iniciar(&S.vad); S.vadCpu = 0; S.temSpan = 1; S.spanIni = d.pts;
+        S.falaGuardada = 0;
       }
       S.esperado = d.pts + (int64_t)d.n * 1000000 / AUDVAD_HZ;
       pthread_mutex_unlock(&M);
@@ -343,6 +353,7 @@ uint64_t audsync_pedir(uint64_t sessao, LegendaDocumento *prim, int alvoSeg, int
   memset(&S.st, 0, sizeof S.st);
   S.pedido = S.geracao; S.st.pedido = S.pedido;   // monotonic across requests
   S.sessao = sessao; S.alvoMs = (alvoSeg > 0 ? alvoSeg : AUDSYNC_ALVO_SEG) * 1000;
+  S.falaGuardada = 0; S.falaSessao = sessao;
   S.raioMs = raioMs > 0 ? raioMs : AUDSYNC_RAIO_MS;
   S.pausado = 0; S.alinhar = 0;
   limparRing();
@@ -371,6 +382,30 @@ int audsync_trocar_legenda(uint64_t pedido, LegendaDocumento *prim) {
   pthread_mutex_unlock(&M);
   legenda_documento_liberar(velho);
   return ok;
+}
+
+uint64_t audsync_realinhar(uint64_t sessao, LegendaDocumento *prim, int raioMs) {
+  LegendaDocumento *a, *b, *c;
+  uint64_t id = 0;
+  if (!prim) return 0;
+  pthread_mutex_lock(&M);
+  // Only a FINISHED window (speech closed, worker not listening) of this
+  // session; a window still being heard is retargeted by trocar_legenda.
+  if (!S.fio || !S.falaGuardada || S.falaSessao != sessao || S.armado || S.st.fase == AUDSYNC_OUVINDO) {
+    pthread_mutex_unlock(&M); return 0;
+  }
+  soltarSessao(&a, &b, &c);
+  S.geracao++;
+  memset(&S.st, 0, sizeof S.st);
+  S.pedido = S.geracao; S.st.pedido = S.pedido;
+  S.raioMs = raioMs > 0 ? raioMs : AUDSYNC_RAIO_MS;
+  S.prim = legenda_documento_reter(prim);
+  S.pausado = 0; S.st.fase = AUDSYNC_ALINHANDO; S.alinhar = 1;
+  pthread_cond_signal(&C);
+  id = S.pedido;
+  pthread_mutex_unlock(&M);
+  legenda_documento_liberar(a); legenda_documento_liberar(b); legenda_documento_liberar(c);
+  return id;
 }
 
 void audsync_cancelar(void) {

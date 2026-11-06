@@ -84,6 +84,9 @@ typedef struct {
   AudAlignMotivo motivo;
   int offsetMs;          // positive advances the subtitle (autosync.h sign)
   double score, alternativo, falaFracao;
+  // The best score OUTSIDE the winning peak (06/11): its offset, and the
+  // width of the winning peak (from valley to valley) in ms.
+  int altOffsetMs, larguraMs;
 } AudAlign;
 
 // fala: speech segments inside [ini, fim]; cues: subtitle activity (already
