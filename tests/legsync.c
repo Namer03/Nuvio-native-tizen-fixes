@@ -18,6 +18,9 @@
 
 static const char *DIR;
 // legsyncui.c (provedor do seletor do F04) sem SDL: stubs do que ele chama.
+#include "audsync.h"
+#include "audsync_sint.h"
+static void ligarTapLs(int on) { (void)on; }
 #include "legendasui.h"
 static LegendasSyncProvider prov; static int provLigado;
 void legendasui_definir_sync(const LegendasSyncProvider *p) { provLigado = p != NULL; if (p) prov = *p; }
@@ -655,6 +658,37 @@ int main(int argc, char **argv) {
     legsync_iniciar(MKV); trocas = 0; cand[0] = "ext_mais2500.srt"; nCand = 1; candIdioma = "en";
     legsync_primaria_externa("ext://0/ext_ruim.srt", "pt", "Ruim");
     v = esperarAuto(MKV, 3); assert(trocas == 0); candIdioma = "pt";
+
+    // 12e2. 06/11: AUDIO TAKES OVER. The embedded reference refuses the
+    //       subtitle and there is no other one in its language: the audio
+    //       (listening since the plan started, next to the embedded check)
+    //       aligns it. Only an ACCEPTED engine result moves it.
+    { char c[700]; FILE *f; char *srt; int k;
+      sint_timeline(0, 600, 77); srt = sint_srt();
+      snprintf(c, sizeof c, "%s/ext_sint.srt", DIR); f = fopen(c, "wb"); assert(f); fputs(srt, f); fclose(f); free(srt);
+      audsync_backend(ligarTapLs); audsync_formato(AUDSYNC_FMT_PCM); legsync_audio_habilitar(1);
+      legsync_iniciar(MKV); trocas = 0; nCand = 0;
+      legsync_primaria_externa("ext://0/ext_sint.srt", "pt", "Sint");
+      for (k = 0; k < 4000 && audsync_status().fase != AUDSYNC_OUVINDO; k++) { passo(MKV, 0); usleep(500); }
+      assert(audsync_status().fase == AUDSYNC_OUVINDO);              // listening early, embedded still deciding
+      { int16_t b[960]; double t; int q = 0;
+        for (t = 100; t < 100 + AUDSYNC_ALVO_SEG + 2; t += 0.06, q++) {
+          sint_pcm(b, 960, t, 2.5, SINT_FALA | SINT_RUIDO);
+          while (audsync_teste_livre() < 960) usleep(100);
+          audsync_pcm(b, 960, (int64_t)llround(t * 1e6));
+          if (q % 16 == 0) passo(MKV, 0);
+        } }
+      v = esperarAuto(MKV, 2);
+      fprintf(stderr, "   audio takeover: %d ms\n", v.offsetAutoMs);
+      assert(v.audio && abs(v.offsetAutoMs - 2500) <= 100 && trocas == 0);
+      // Accepted embedded match: the early window is dropped, nothing listens.
+      legsync_iniciar(MKV); trocas = 0; nCand = 0;
+      legsync_primaria_externa("ext://0/ext_mais2500.srt", "pt", "Boa");
+      v = esperarAuto(MKV, 2);
+      assert(!v.audio && abs(v.offsetAutoMs - 2500) <= 25);
+      for (k = 0; k < 20; k++) passo(MKV, 0);
+      assert(audsync_status().fase == AUDSYNC_PARADO);
+      legsync_audio_habilitar(0); audsync_formato(AUDSYNC_FMT_NENHUM); audsync_backend(NULL); casos++; }
 
     // 12f. REGRESSAO "fala que ta ok e ta fora de sincronia" (dono, 04/10).
     //      Traducao de verdade: outro corte das falas (juntadas e partidas),

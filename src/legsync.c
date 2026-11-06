@@ -56,6 +56,12 @@ static struct {
   // foi por audio (desfazer/aceite/recusa falam dela; "Outra referencia" nao).
   int audLigado, audUltimo;
   uint64_t audPedido;
+  // ESCUTA CEDO (06/11): o plano automatico liga o audio junto da embutida;
+  // se a embutida aceitar, a escuta e jogada fora; se recusar, o audio assume
+  // com o que ja ouviu. audCedoPronto = a janela fechou e audRef/audRec
+  // esperam a vez.
+  uint64_t audCedo;
+  int audCedoPronto;
   AudSyncMotivo audFalha;
   LegendaDocumento *audRef, *audRec;
   // R4: plano automatico. autoEtapa: 0 a iniciar, 1 contra a faixa embutida,
@@ -105,8 +111,9 @@ static void zerarAnalise(void) {
 // F06: para a escuta e solta a referencia de audio. Com M. audsync tem lock
 // proprio e nunca chama de volta para ca.
 static void pararAudio(void) {
-  if (L.audPedido) audsync_cancelar();
+  if (L.audPedido || L.audCedo) audsync_cancelar();
   L.audPedido = 0; L.audUltimo = 0; L.audFalha = AUDSYNC_M_OK;
+  L.audCedo = 0; L.audCedoPronto = 0;
   legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec);
   L.audRef = L.audRec = NULL;
 }
@@ -220,6 +227,8 @@ static void aoBaixar(const char *corpo, unsigned g, int vigente, void *u) {
       legenda_documento_dados(doc, &L.primN);
       if (!L.autoTrocou) L.autoOrigN = L.primN;
       if (m->sessao == L.sessao) autosync_selecionar(L.sync, 0, doc);
+      // A escuta cedo continua com a legenda trocada pela automatica.
+      if (L.audCedo && !audsync_trocar_legenda(L.audCedo, doc)) { audsync_cancelar(); L.audCedo = 0; }
     } else L.primFase = 2;
   }
   pthread_mutex_unlock(&M);
@@ -252,12 +261,18 @@ void legsync_primaria_externa(const char *url, const char *idioma, const char *o
     autosync_selecionar(L.sync, 0, NULL);
     // A referencia embutida continua valendo para outra externa da mesma
     // midia; as exclusoes eram do par anterior.
-    L.nExcl = 0; zerarAnalise(); pararAudio();
+    // A troca da automatica (L.autoTroca) mantem a escuta cedo: a janela e do
+    // audio, nao da legenda; aoBaixar passa a legenda nova ao audsync.
+    L.nExcl = 0; zerarAnalise();
+    if (L.autoTroca && L.audCedo && !L.audCedoPronto) { /* continua ouvindo */ }
+    else pararAudio();
     // R4: a pessoa (ou a automatica de idioma) escolheu: plano novo. Vinda do
     // trocador, o plano continua e so anota a legenda tentada.
     L.autoEtapa = 0; L.autoRefTent = 0; L.autoPend = 0; L.manualFase = L.manualLog = 0;
     L.autoFalha = AUTOSYNC_OK;
-    if (L.autoTroca && L.autoVolta) { L.autoFase = 3; L.autoEtapa = 9; L.autoTrocou = 0; L.autoNome[0] = 0; }
+    // Volta da original depois da troca recusada: o audio ainda pode assumir
+    // (etapa 8: espera a original baixar e decide em autoPasso).
+    if (L.autoTroca && L.autoVolta) { L.autoFase = 1; L.autoEtapa = 8; L.autoTrocou = 0; L.autoNome[0] = 0; }
     else if (L.autoTroca) {
       L.autoFase = 1; L.autoTrocou = 1; L.autoNome[0] = 0; L.autoTrocasEp++;
       if (L.nAutoTent < LS_AUTO_MAX + 2) L.autoTent[L.nAutoTent++] = h;
@@ -410,6 +425,7 @@ void legsync_audio_habilitar(int ligado) {
     if (L.audPedido) { audsync_cancelar(); L.audPedido = 0; }
     L.audFalha = AUDSYNC_M_OK;
   }
+  if (!ligado && L.audCedo) { audsync_cancelar(); L.audCedo = 0; L.audCedoPronto = 0; }
   L.audLigado = ligado != 0;
   pthread_mutex_unlock(&M);
 }
@@ -417,6 +433,8 @@ void legsync_audio_habilitar(int ligado) {
 void legsync_audio_trocou(void) {
   pthread_mutex_lock(&M);
   if (L.audPedido) { audsync_cancelar(); L.audPedido = 0; L.audUltimo = 0; }
+  if (L.audCedo) { audsync_cancelar(); L.audCedo = 0; }
+  if (L.audCedoPronto) { L.audCedoPronto = 0; legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec); L.audRef = L.audRec = NULL; }
   if (L.audUltimo && autosync_estado(L.sync, 0).estado == AUTOSYNC_ANALYSING) {
     autosync_cancelar(L.sync, 0); L.audUltimo = 0; L.reenviar = 0;
   }
@@ -443,6 +461,47 @@ static int audioPossivel(void) {
   return L.audLigado && motivoAudio() == LEGSYNC_M_NENHUM && primariaAtual();
 }
 
+// Liga a escuta cedo junto da embutida. Com M.
+static void escutarCedo(void) {
+  uint64_t p;
+  AudSyncStatus st;
+  if (L.audCedo || L.audCedoPronto || L.audPedido || !audioPossivel()) return;
+  p = audsync_pedir(L.sessao, L.primDoc, AUDSYNC_ALVO_SEG, AUDSYNC_RAIO_MS);
+  st = audsync_status();
+  if (st.pedido == p && st.fase == AUDSYNC_FALHOU) return;
+  L.audCedo = p;
+  printf("[legsync] automatico: audio escutando junto da embutida\n"); fflush(stdout);
+}
+
+// A embutida decidiu (aceitou ou recusou sem troca): a escuta cedo sai. Com M.
+static void soltarCedo(void) {
+  if (L.audCedo) audsync_cancelar();
+  if (L.audCedoPronto) { legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec); L.audRef = L.audRec = NULL; }
+  L.audCedo = 0; L.audCedoPronto = 0;
+}
+
+// O AUDIO ASSUME (06/11): sem referencia embutida, ou ela recusou (depois da
+// troca unica). Usa a escuta cedo quando ha: o que ja foi ouvido conta. Com M.
+static int assumirAudio(const char *porque) {
+  int ok;
+  if (L.refPedido) { legref_cancelar(L.ref); L.refPedido = 0; }
+  L.autoEtapa = 2;
+  printf("[legsync] automatico: audio assume (%s)%s\n", porque,
+         L.audCedoPronto ? ", janela ja ouvida" : L.audCedo ? ", com a escuta em curso" : ""); fflush(stdout);
+  if (L.audCedoPronto) {
+    L.audCedoPronto = 0; zerarAnalise(); L.audUltimo = 1;
+    ok = dona() && solicitarAudio();
+    if (!ok) L.reenviar = 1;
+    return 1;
+  }
+  if (L.audCedo) {
+    zerarAnalise(); L.audUltimo = 1;
+    L.audPedido = L.audCedo; L.audCedo = 0;
+    return 1;
+  }
+  return iniciarAudio();
+}
+
 // R4: a legenda atual nao sincroniza. Pede outra do mesmo idioma ao trocador
 // (executado fora do lock, no fim de legsync_passo); acabadas as trocas, volta
 // a escolha original. Com M.
@@ -451,6 +510,7 @@ static int audioPossivel(void) {
 // de TENTAR e a referencia RECUSAR, uma vez por episodio; a candidata com menos
 // da metade das falas da original devolve a original (autoPasso).
 static void autoEncerrar(const char *motivo) {
+  soltarCedo();
   L.autoFase = 3; L.autoEtapa = 9;
   if (L.autoFalha == AUTOSYNC_OK) L.autoFalha = AUTOSYNC_LOW_CONFIDENCE;
   printf("[legsync] automatico: encerra sem trocar (%s)\n", motivo); fflush(stdout);
@@ -458,6 +518,8 @@ static void autoEncerrar(const char *motivo) {
 
 static void autoFalhou(int semReferencia) {
   if (semReferencia) {
+    // A embutida nao serve de juiz: o audio ainda pode.
+    if (audioPossivel()) { assumirAudio("referencia embutida invalida"); return; }
     // Sem referencia nao e "baixa confianca": o log e a pilula dizem o motivo
     // real (a UI de Android/LG segue igual: os dois viram o mesmo texto la).
     if (L.autoFalha == AUTOSYNC_OK) L.autoFalha = AUTOSYNC_NO_REFERENCE;
@@ -466,7 +528,8 @@ static void autoFalhou(int semReferencia) {
   if (L.autoTrocasEp == 0 && L.nAutoTent < LS_AUTO_MAX && L.primIdioma[0]) {
     L.autoPend = 1;
     printf("[legsync] automatico: referencia recusou; troca uma vez\n"); fflush(stdout);
-  } else autoEncerrar(L.autoTrocasEp ? "ja trocou neste episodio" : "sem outra do idioma");
+  } else if (audioPossivel()) assumirAudio("embutida recusada");
+  else { soltarCedo(); autoEncerrar(L.autoTrocasEp ? "ja trocou neste episodio" : "sem outra do idioma"); }
 }
 
 // R4: o motor do plano. Um passo por quadro, com M. Nunca bloqueia.
@@ -482,6 +545,12 @@ static void autoPasso(void) {
     L.autoPend = 2; return;
   }
   if (!dona()) { L.autoFase = 0; return; }                  // o overlay mudou de dono
+  if (L.autoEtapa == 8) {
+    // A original voltou (a troca nao serviu): o audio assume, ou acaba.
+    if (audioPossivel()) assumirAudio("embutida recusou a original e a troca");
+    else autoEncerrar("ja trocou neste episodio");
+    return;
+  }
   if (L.autoEtapa == 0) {
     L.desfeita = 0;
     if (L.ref) {
@@ -489,15 +558,17 @@ static void autoPasso(void) {
       if (L.refDoc) { if (!solicitar(AUTOSYNC_QUICK)) autoEncerrar("pedido nao aceito"); }
       else {
         L.querModo = AUTOSYNC_QUICK; iniciarColeta();
-        if (!L.refPedido) { L.querModo = -1; if (audioPossivel()) { L.autoEtapa = 2; iniciarAudio(); } else autoFalhou(1); }
+        if (!L.refPedido) { L.querModo = -1; if (audioPossivel()) assumirAudio("sem referencia embutida"); else autoFalhou(1); }
+        else escutarCedo();
       }
-    } else if (audioPossivel()) { L.autoEtapa = 2; iniciarAudio(); }
+      if (L.refDoc && L.autoEtapa == 1) escutarCedo();
+    } else if (audioPossivel()) assumirAudio("sem referencia embutida");
     else { if (L.autoFalha == AUTOSYNC_OK) L.autoFalha = AUTOSYNC_NO_REFERENCE; autoEncerrar("sem referencia nesta plataforma"); }
     return;
   }
   e = autosync_estado(L.sync, 0);
   if (L.autoEtapa == 1) {
-    if (L.solicitou && e.estado == AUTOSYNC_ACCEPTED) { L.autoFase = 2; L.autoEtapa = 9; L.autoFalha = AUTOSYNC_OK; return; }
+    if (L.solicitou && e.estado == AUTOSYNC_ACCEPTED) { soltarCedo(); L.autoFase = 2; L.autoEtapa = 9; L.autoFalha = AUTOSYNC_OK; return; }
     if (L.solicitou && e.estado == AUTOSYNC_REJECTED) { L.autoFalha = e.motivo; autoFalhou(e.referenciaInvalida); return; }
     if (!L.refDoc && !L.refPedido && L.refMotivo != LEGREF_OK && L.refMotivo != LEGREF_PARADO) {
       // Faixa de referencia ruim (sem duracao/incompleta): outra faixa do arquivo pode servir.
@@ -511,8 +582,8 @@ static void autoPasso(void) {
         return;
       }
       // Arquivo sem faixa de texto, sem Range ou fora do ar: sem referencia. Resta o audio.
-      if (audioPossivel()) { L.autoEtapa = 2; iniciarAudio(); }
-      else autoFalhou(1);
+      if (audioPossivel()) assumirAudio("sem referencia embutida");
+      else { soltarCedo(); autoFalhou(1); }
     }
   } else if (L.autoEtapa == 2) {
     if (L.audPedido) return;
@@ -654,6 +725,23 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
   // F06: escuta do audio. Seek/buffer pausa (a janela recomeca depois); a
   // janela pronta vira o par de documentos que vai a engine.
   audsync_passo();
+  if (L.audCedo) {
+    // A escuta cedo: a janela pronta fica guardada ate a embutida decidir.
+    AudSyncStatus st = audsync_status();
+    if (st.pedido != L.audCedo) L.audCedo = 0;
+    else if (st.fase == AUDSYNC_PRONTO) {
+      LegendaDocumento *r = NULL, *c = NULL;
+      if (audsync_tomar(L.audCedo, &r, &c)) {
+        legenda_documento_liberar(L.audRef); legenda_documento_liberar(L.audRec);
+        L.audRef = r; L.audRec = c; L.audCedo = 0; L.audCedoPronto = 1;
+        printf("[legsync] automatico: escuta cedo pronta; espera a embutida\n"); fflush(stdout);
+      }
+    } else if (st.fase == AUDSYNC_FALHOU) {
+      fprintf(stderr, "[legsync] audio_sync early rejected reason=%s restarts=%d dropped=%ld\n",
+              audsync_motivo(st.motivo), st.reinicios, st.descartados);
+      L.audCedo = 0;
+    } else audsync_pausar(sensivel);
+  }
   if (L.audPedido) {
     AudSyncStatus st = audsync_status();
     if (st.pedido != L.audPedido) L.audPedido = 0;
@@ -736,7 +824,12 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
     memcpy(tent, L.autoTent, sizeof tent);
     snprintf(idioma, sizeof idioma, "%s", L.primIdioma);
     L.autoPend = 0;
-    if (pend && !t) { L.autoFase = 3; L.autoEtapa = 9; pend = 0; }
+    if (pend && !t) {
+      // Sem trocador (so testes/plataforma sem lista de addons): o audio assume.
+      pend = 0;
+      if (audioPossivel()) assumirAudio("embutida recusada, sem troca");
+      else { soltarCedo(); L.autoFase = 3; L.autoEtapa = 9; }
+    }
     if (pend) L.autoTroca = 1, L.autoVolta = pend == 2;
     pthread_mutex_unlock(&M);
     if (pend) {
@@ -747,7 +840,8 @@ void legsync_passo(const char *url, double pos, double folga, int sensivel, unsi
       if (!ok && L.autoTroca) {
         L.autoTroca = L.autoVolta = 0;
         if (pend == 1 && n > 1) L.autoPend = 2;           // sem outra candidata: volta a original no proximo passo
-        else { L.autoFase = 3; L.autoEtapa = 9; }
+        else if (L.autoFase == 1 && audioPossivel()) assumirAudio("embutida recusada, sem outra legenda do idioma");
+        else { soltarCedo(); L.autoFase = 3; L.autoEtapa = 9; }
       } else if (ok && pend == 1 && L.autoTrocou) snprintf(L.autoNome, sizeof L.autoNome, "%s", nome);
       pthread_mutex_unlock(&M);
     }

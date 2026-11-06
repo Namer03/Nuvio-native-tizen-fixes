@@ -341,6 +341,17 @@ uint64_t audsync_pedir(uint64_t sessao, LegendaDocumento *prim, int alvoSeg, int
   return id;
 }
 
+int audsync_trocar_legenda(uint64_t pedido, LegendaDocumento *prim) {
+  LegendaDocumento *velho = NULL;
+  int ok;
+  pthread_mutex_lock(&M);
+  ok = prim && pedido && S.pedido == pedido && S.st.fase == AUDSYNC_OUVINDO;
+  if (ok) { velho = S.prim; S.prim = legenda_documento_reter(prim); }
+  pthread_mutex_unlock(&M);
+  legenda_documento_liberar(velho);
+  return ok;
+}
+
 void audsync_cancelar(void) {
   LegendaDocumento *a, *b, *c;
   pthread_mutex_lock(&M);

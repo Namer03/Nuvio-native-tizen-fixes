@@ -83,6 +83,10 @@ typedef struct {
 // prim: the complete external document of THIS session (retained here).
 uint64_t audsync_pedir(uint64_t sessao, LegendaDocumento *prim, int alvoSeg, int raioMs);
 void audsync_cancelar(void);
+// The subtitle under test changed while the window is still being heard (the
+// automatic plan swapped it): the window keeps going and is aligned against
+// `prim`. 0 = not that session or no longer listening (caller restarts).
+int  audsync_trocar_legenda(uint64_t pedido, LegendaDocumento *prim);
 void audsync_pausar(int sensivel);
 void audsync_passo(void);                 // applies tap on/off on the UI thread
 AudSyncStatus audsync_status(void);
