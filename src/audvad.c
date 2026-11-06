@@ -16,6 +16,10 @@
 #define VAD_SOLTA        15
 #define VAD_JUNTA_S      0.30
 #define VAD_MIN_S        0.20
+#define SIL_LIGA         0.50f  // Silero: start of speech
+#define SIL_MANTEM       0.35f  // Silero: speech continues (threshold - 0.15)
+#define SIL_ONSET        1
+#define SIL_SOLTA        4      // 128 ms
 #define BIN_LO           10     // 312 Hz (31.25 Hz/bin)
 #define BIN_HI           128    // 4000 Hz
 
@@ -29,9 +33,19 @@ static void biquad(double f0, int passaAlta, double b[3], double a[2]) {
   a[0] = -2.0 * c / a0; a[1] = (1.0 - al) / a0;
 }
 
-void audvad_iniciar(AudVad *v) {
+void audvad_iniciar(AudVad *v) { audvad_iniciar_modo(v, AUDVAD_SILERO); }
+
+const char *audvad_nome(const AudVad *v) { return v->modo == AUDVAD_SILERO ? "silero" : "energy"; }
+
+double audvad_segundos(const AudVad *v) {
+  return v->modo == AUDVAD_SILERO ? v->quadros * (double)SILERO_BLOCO / AUDVAD_HZ
+                                  : v->quadros * (double)AUDVAD_QUADRO / AUDVAD_HZ;
+}
+
+void audvad_iniciar_modo(AudVad *v, int modo) {
   int i;
   memset(v, 0, sizeof *v);
+  v->modo = modo == AUDVAD_SILERO && silero_disponivel() ? AUDVAD_SILERO : AUDVAD_ENERGIA;
   biquad(300.0, 1, v->hb, v->ha);
   biquad(3400.0, 0, v->lb, v->la);
   for (i = 0; i < AUDVAD_FFT / 2; i++) {
@@ -77,6 +91,23 @@ static void empurrar(AudVad *v, double ini, double fim) {
   v->seg[v->nseg].inicio = ini; v->seg[v->nseg].fim = fim; v->nseg++;
 }
 
+// Onset/release state machine shared by both detectors.
+static void decidir(AudVad *v, int ativo, double t0, double t1, int onset, int solta) {
+  v->quadros++;
+  if (ativo) {
+    v->quadrosFala++;
+    if (!v->ativos) v->inicioFala = v->falando ? v->inicioFala : t0;
+    v->ativos++; v->inativos = 0; v->ultimoAtivo = t1;
+    if (!v->falando && v->ativos >= onset) v->falando = 1;
+  } else {
+    if (!v->falando) v->ativos = 0;
+    else if (++v->inativos >= solta) {
+      empurrar(v, v->inicioFala, v->ultimoAtivo);
+      v->falando = 0; v->ativos = 0; v->inativos = 0;
+    }
+  }
+}
+
 static void quadro(AudVad *v) {
   float re[AUDVAD_FFT], im[AUDVAD_FFT];
   double et = 0, eb = 0, somaMag = 0, fluxo = 0;
@@ -112,23 +143,26 @@ static void quadro(AudVad *v) {
   if (v->npiso < AUDVAD_PISO_N) v->npiso++;
   for (i = 0; i < v->npiso; i++) if (v->piso[i] < piso) piso = v->piso[i];
   ativo = lb > VAD_ABS_DB && lb > piso + VAD_ACIMA_DB && eb > VAD_FRACAO * et && f > VAD_FLUXO;
-  v->quadros++;
-  if (ativo) {
-    v->quadrosFala++;
-    if (!v->ativos) v->inicioFala = v->falando ? v->inicioFala : t0;
-    v->ativos++; v->inativos = 0; v->ultimoAtivo = t1;
-    if (!v->falando && v->ativos >= VAD_ONSET) v->falando = 1;
-  } else {
-    if (!v->falando) v->ativos = 0;
-    else if (++v->inativos >= VAD_SOLTA) {
-      empurrar(v, v->inicioFala, v->ultimoAtivo);
-      v->falando = 0; v->ativos = 0; v->inativos = 0;
-    }
-  }
+  decidir(v, ativo, t0, t1, VAD_ONSET, VAD_SOLTA);
+}
+
+static void bloco(AudVad *v) {
+  double t0 = v->blocoUs / 1e6, t1 = t0 + (double)SILERO_BLOCO / AUDVAD_HZ;
+  float p = silero_prob(&v->sil, v->bloco);
+  v->somaProb += p;
+  decidir(v, p >= (v->falando ? SIL_MANTEM : SIL_LIGA), t0, t1, SIL_ONSET, SIL_SOLTA);
 }
 
 void audvad_pcm(AudVad *v, const int16_t *a, int n, int64_t pts) {
   int i;
+  if (v->modo == AUDVAD_SILERO) {
+    for (i = 0; i < n; i++) {
+      if (!v->nb) v->blocoUs = pts + (int64_t)i * 1000000 / AUDVAD_HZ;
+      v->bloco[v->nb++] = a[i] / 32768.0f;
+      if (v->nb == SILERO_BLOCO) { bloco(v); v->nb = 0; }
+    }
+    return;
+  }
   for (i = 0; i < n; i++) {
     if (!v->nq) v->quadroUs = pts + (int64_t)i * 1000000 / AUDVAD_HZ;
     v->quadro[v->nq++] = a[i];

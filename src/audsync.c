@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define DESC_N      512
 #define SALTO_US    200000        // pts jump that breaks the window
@@ -42,6 +43,7 @@ static struct {
   AudVad vad;
   int64_t spanIni, esperado;
   int temSpan;
+  double vadCpu;               // seconds spent in audvad_pcm for this window
   int16_t local[4096];
 } S;
 
@@ -234,6 +236,12 @@ fim:
   return m;
 }
 
+static double relogio(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + t.tv_nsec / 1e9;
+}
+
 static void *trabalhar(void *u) {
   (void)u;
   pthread_mutex_lock(&M);
@@ -242,7 +250,7 @@ static void *trabalhar(void *u) {
       pthread_cond_wait(&C, &M);
     if (S.parar) break;
     if (S.resetar) {
-      S.resetar = 0; S.temSpan = 0; audvad_iniciar(&S.vad); S.st.progresso = 0;
+      S.resetar = 0; S.temSpan = 0; audvad_iniciar(&S.vad); S.vadCpu = 0; S.st.progresso = 0;
       continue;
     }
     if (S.alinhar) {
@@ -255,6 +263,15 @@ static void *trabalhar(void *u) {
       S.alinhar = 0;
       pthread_mutex_unlock(&M);
       audvad_fechar(&S.vad);
+      {
+        double fala = 0, seg = audvad_segundos(&S.vad);
+        int i;
+        for (i = 0; i < S.vad.nseg; i++) fala += S.vad.seg[i].fim - S.vad.seg[i].inicio;
+        fprintf(stderr, "[audvad] %s window=%.0fs speech_s=%.1f prob_mean=%.3f ms_per_s=%.2f\n",
+                audvad_nome(&S.vad), seg, fala,
+                S.vad.modo == AUDVAD_SILERO && S.vad.quadros ? S.vad.somaProb / S.vad.quadros : -1.0,
+                seg > 0 ? S.vadCpu * 1000.0 / seg : 0.0);
+      }
       m = montar(prim, pedido, ini, fim, raio, &ref, &rec, &al);
       legenda_documento_liberar(prim);
       fprintf(stderr, "[audsync] audio_sync window reason=%s offset_ms=%d score=%.3f alt=%.3f speech=%.2f segments=%d\n",
@@ -282,11 +299,15 @@ static void *trabalhar(void *u) {
       S.wIni = (S.wIni + d.n) % AUDSYNC_RING; S.wUsado -= d.n;
       if (!S.temSpan || d.quebra || llabs(d.pts - S.esperado) > SALTO_US) {
         if (S.temSpan) S.st.reinicios++;
-        audvad_iniciar(&S.vad); S.temSpan = 1; S.spanIni = d.pts;
+        audvad_iniciar(&S.vad); S.vadCpu = 0; S.temSpan = 1; S.spanIni = d.pts;
       }
       S.esperado = d.pts + (int64_t)d.n * 1000000 / AUDVAD_HZ;
       pthread_mutex_unlock(&M);
-      audvad_pcm(&S.vad, S.local, (int)d.n, d.pts);
+      {
+        double t0 = relogio();
+        audvad_pcm(&S.vad, S.local, (int)d.n, d.pts);
+        S.vadCpu += relogio() - t0;
+      }
       pthread_mutex_lock(&M);
       if (ger != S.geracao || S.st.fase != AUDSYNC_OUVINDO) continue;
       {

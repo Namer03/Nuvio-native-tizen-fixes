@@ -3,13 +3,18 @@
 // No threads, no SDL, no allocation per frame: audsync.c owns the session and
 // the PCM ring; tests feed synthetic PCM straight into this module.
 //
-// VAD: 20 ms frames. A frame is speech-like when the energy of the speech band
+// VAD: Silero (src/silero.c) where its weights are linked (Android, .tpk 6+):
+// one speech probability per 32 ms block, hysteresis 0.5 to start / 0.35 to
+// keep going, release after 4 blocks below (128 ms). Elsewhere, or when forced
+// (audvad_iniciar_modo), the energy VAD below.
+//
+// Energy VAD: 20 ms frames. A frame is speech-like when the energy of the speech band
 // (300-3400 Hz, two biquads) stands well above an adaptive noise floor (minimum
 // over the last 5 s), the band holds a real share of the frame's energy and the
 // smoothed spectral flux (512-point FFT, 300-4000 Hz) shows syllable-rate
-// change. Onset needs 3 frames, release 15; the segment ends at the last
-// speech-like frame (the hangover never stretches it). Gaps < 300 ms merge;
-// segments < 200 ms are dropped. Sustained music/tones raise the floor and keep
+// change. Onset needs 3 frames, release 15.
+// Both: the segment ends at the last speech-like frame (the hangover never
+// stretches it). Gaps < 300 ms merge; segments < 200 ms are dropped. Sustained music/tones raise the floor and keep
 // the flux low: they produce no speech.
 //
 // ALIGNMENT: speech and cue activity on a 50 ms grid, chance-adjusted overlap
@@ -19,6 +24,7 @@
 #ifndef NV_AUDVAD_H
 #define NV_AUDVAD_H
 #include <stdint.h>
+#include "silero.h"
 
 #define AUDVAD_HZ        16000
 #define AUDVAD_QUADRO    320            // 20 ms
@@ -28,7 +34,16 @@
 
 typedef struct { double inicio, fim; } AudSeg;   // media time, seconds
 
+enum { AUDVAD_ENERGIA = 0, AUDVAD_SILERO = 1 };
+
 typedef struct {
+  int modo;                    // AUDVAD_ENERGIA / AUDVAD_SILERO
+  // Silero
+  SileroEstado sil;
+  float bloco[SILERO_BLOCO];
+  int nb;
+  int64_t blocoUs;
+  double somaProb;
   // filters (direct form I, two cascaded biquads)
   double hx1, hx2, hy1, hy2, lx1, lx2, ly1, ly2;
   double hb[3], ha[2], lb[3], la[2];
@@ -45,10 +60,14 @@ typedef struct {
   double inicioFala, ultimoAtivo;
   AudSeg seg[AUDVAD_MAX_SEG];
   int nseg, transbordou;
-  long quadros, quadrosFala;
+  long quadros, quadrosFala;   // frames (energy) or blocks (Silero)
 } AudVad;
 
+// Silero when available, energy otherwise.
 void audvad_iniciar(AudVad *v);
+void audvad_iniciar_modo(AudVad *v, int modo);   // falls back to energy if Silero is missing
+const char *audvad_nome(const AudVad *v);         // "silero" / "energy" for logs
+double audvad_segundos(const AudVad *v);          // audio analysed since iniciar
 // Continuous PCM: pts of samples[0]. A discontinuity is the caller's job
 // (audvad_iniciar again, or audvad_fechar + start a new window).
 void audvad_pcm(AudVad *v, const int16_t *amostras, int n, int64_t ptsUs);

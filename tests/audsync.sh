@@ -9,8 +9,8 @@ D=$(mktemp -d "$T/nv-audsync.XXXXXX"); trap 'rm -rf "$D"' EXIT
 flags=()
 if [ "${SANITIZE:-0}" = 1 ]; then flags+=(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
 elif [ "${SANITIZE:-0}" = thread ]; then flags+=(-fsanitize=thread -fno-omit-frame-pointer); fi
-cc -Isrc -Wall -Wextra -Werror -fsyntax-only src/audvad.c src/audsync.c
+cc -Isrc -Wall -Wextra -Werror -fsyntax-only src/audvad.c src/audsync.c src/silero.c
 cc "${flags[@]}" -Isrc -Itests -I/opt/homebrew/include -I/opt/homebrew/include/SDL2 -O1 -g -Wall -Wextra \
-  src/audvad.c src/audsync.c src/legsync.c src/legsyncui.c src/legenda2.c src/legref.c src/autosync.c src/legenda.c src/assrender.c \
+  src/audvad.c src/silero.c src/silero_pesos.c src/audsync.c src/legsync.c src/legsyncui.c src/legenda2.c src/legref.c src/autosync.c src/legenda.c src/assrender.c \
   tests/audsync.c -pthread -lm -o "$D/t"
 "$D/t" 2>&1 | grep -v '^\[legenda\]'
