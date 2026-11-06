@@ -605,7 +605,11 @@ int main(int argc, char **argv) {
     assert(trocas == 1 && voltou == 0 && v.autoFase == 3 && v.autoTrocou && legsync_offset_ms(0) == 0);
     assert(v.motivo == LEGSYNC_M_REGION_DISAGREEMENT);
     assert(strstr(prov.estado(0, prov.u), "N\xc3\xa3o deu para sincronizar"));
-    assert(prov.acoes(0, rot, 8, prov.u) == 0);
+    // 06/11: the "only what changes the result" menu runs on every platform:
+    // after the region refusal only Completa may be offered, never audio.
+    { int na = prov.acoes(0, rot, 8, prov.u);
+      for (int k = 0; k < na; k++) assert(!strcmp(rot[k], "Completa") || !strcmp(rot[k], "Desfazer"));
+      assert(na <= 1); }
 
     // 12c2. Candidata com menos da metade das falas da original: volta a original.
     { char c[700]; FILE *f; snprintf(c, sizeof c, "%s/ext_curta.srt", DIR); f = fopen(c, "wb"); assert(f);

@@ -175,9 +175,10 @@ static void testeSessao(void) {
   abrirComExterna();                 // waits for the download with audio available
   audsync_backend(NULL);
   v = legsync_visao(0);
-  assert(!(v.acoes & LEGSYNC_ACAO_AUDIO) && v.motivoAudio == LEGSYNC_M_AUD_PLATAFORMA);
+  // 06/11: no "Por audio" button anywhere, so no "unavailable here" notice.
+  assert(!(v.acoes & LEGSYNC_ACAO_AUDIO) && v.motivoAudio == LEGSYNC_M_NENHUM);
   legsync_texto(&v, txt, sizeof txt);
-  assert(strstr(txt, "indispon\xc3\xadvel nesta plataforma"));
+  assert(!strstr(txt, "indispon\xc3\xadvel nesta plataforma"));
   assert(!legsync_acao(LEGSYNC_ACAO_AUDIO));
 
   CASO("toggle off (default): nothing about audio");

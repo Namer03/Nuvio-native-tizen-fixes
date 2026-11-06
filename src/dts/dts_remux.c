@@ -39,8 +39,6 @@
 #include <stdatomic.h>
 static atomic_int audioOffsetMs;
 void dts_remux_set_audio_offset_ms(int ms) { atomic_store(&audioOffsetMs, audsync_offset_ms(ms)); }
-static atomic_int tapOn;
-void dts_remux_audio_tap(int on) { atomic_store(&tapOn, on != 0); }
 
 #if !defined(NV_DTS_FFMPEG) || !(defined(NV_TPK) || defined(NV_DTS_REMUX_TEST))
 int dts_remux_available(void) { return 0; }
@@ -662,71 +660,6 @@ static int openAudio(DtsRemuxGen *g, char *err, size_t errn) {
   return 0;
 }
 
-/* --- audio-sync tap -------------------------------------------------------
- * audsync.c (subtitle sync by speech) needs the decoded audio of what is
- * playing; the TV's player never hands it over, but this converter decodes it
- * anyway. While audsync listens (tapOn), the generator feeding playback also
- * sends a mono 16 kHz copy: the centre channel when there is one (dialogue),
- * else the mean of the non-LFE channels, 3:1 box decimation (enough for the
- * VAD). ONE generator at a time: two runs at once (seek, parallel request)
- * would interleave two timelines and restart the window forever. The owner
- * keeps it while it delivers; another one takes over after TAP_TROCA_MS of
- * silence from it. Generators run ahead of playback, so a full ring makes the
- * owner wait a few ms (never more than TAP_ESPERA_MS) instead of dropping. */
-#define TAP_TROCA_MS  1500
-#define TAP_ESPERA_MS 100
-static _Atomic(DtsRemuxGen *) tapDono;
-static atomic_llong tapDonoMs;
-static void tapSoltar(DtsRemuxGen *g) {
-  DtsRemuxGen *esperado = g;
-  atomic_compare_exchange_strong(&tapDono, &esperado, NULL);
-}
-static void tapPcm(DtsRemuxGen *g, uint8_t **buf, int n, int64_t p48) {
-  int16_t out[4096];
-  int ch = g->src->info.out_channels, centro, lfe, k = 0;
-  long long agora = (long long)(now_s(CLOCK_MONOTONIC) * 1000.0);
-  DtsRemuxGen *dono;
-  int64_t q0, q;
-  if (!atomic_load(&tapOn) || n <= 0 || ch <= 0) return;
-  dono = atomic_load(&tapDono);
-  if (dono != g) {
-    if (dono && agora - atomic_load(&tapDonoMs) < TAP_TROCA_MS) return;
-    atomic_store(&tapDono, g);
-    printf("[dts-tpk] audio-sync tap: %s generator at %.1f s (%d ch, %s)\n", dono ? "switched to another" : "listening from the",
-           p48 / 48000.0, ch, av_channel_layout_index_from_channel(&g->target, AV_CHAN_FRONT_CENTER) >= 0 ? "centre" : "mix");
-    fflush(stdout);
-  }
-  atomic_store(&tapDonoMs, agora);
-  centro = av_channel_layout_index_from_channel(&g->target, AV_CHAN_FRONT_CENTER);
-  lfe = av_channel_layout_index_from_channel(&g->target, AV_CHAN_LOW_FREQUENCY);
-  /* Output sample q covers 48 kHz positions 3q..3q+2 (one global grid, so
-   * consecutive frames continue it); a group split by a frame edge is skipped. */
-  q0 = p48 >= 0 ? (p48 + 2) / 3 : -((-p48) / 3);
-  for (q = q0; 3 * q + 2 < p48 + n && k < (int)(sizeof out / sizeof *out); q++) {
-    int i0 = (int)(3 * q - p48);
-    float acc = 0;
-    for (int d = 0; d < 3; d++) {
-      float v = 0;
-      if (centro >= 0 && centro < ch) v = ((const float *)buf[centro])[i0 + d];
-      else {
-        int m = 0;
-        for (int c = 0; c < ch; c++) if (c != lfe) { v += ((const float *)buf[c])[i0 + d]; m++; }
-        if (m) v /= (float)m;
-      }
-      acc += v;
-    }
-    acc = acc / 3.0f * 32767.0f;
-    out[k++] = (int16_t)(acc > 32767.0f ? 32767 : acc < -32768.0f ? -32768 : acc);
-  }
-  if (!k) return;
-  for (int w = 0; w < TAP_ESPERA_MS / 2; w++) {
-    int livre = audsync_espaco();
-    if (livre < 0 || livre >= k) break;
-    usleep(2000);
-  }
-  audsync_pcm(out, k, q0 * 3 * 1000000LL / 48000);
-}
-
 DtsRemuxGen *dts_remux_gen_new(DtsRemux *r, char *err, size_t errn) {
   DtsRemuxGen *g;
   if (!r) return NULL;
@@ -774,7 +707,6 @@ static void closeMux(DtsRemuxGen *g, int trailer) {
 }
 
 void dts_remux_gen_free(DtsRemuxGen *g) {
-  tapSoltar(g);
   if (!g) return;
   closeMux(g, 0);
   qClear(&g->vq); qClear(&g->aq); free(g->vq.v); free(g->aq.v);
@@ -1009,7 +941,6 @@ static int frameIn(DtsRemuxGen *g, AVFrame *f, char *err, size_t errn) {
     fail(err, errn, "Audio buffer", rr); return -1;
   }
   int n = swr_convert(g->swr, buf, cap, (const uint8_t **)f->extended_data, f->nb_samples);
-  if (n > 0) tapPcm(g, buf, n, p48);   /* source timeline, before the device audio offset */
   rr = n < 0 ? (fail(err, errn, "Audio resample", n), -1) : place(g, buf, n, p48, err, errn);
   av_freep(&buf[0]); av_freep(&buf);
   if (rr < 0) return -1;

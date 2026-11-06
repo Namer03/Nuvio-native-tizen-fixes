@@ -69,7 +69,7 @@ static void textoBase(const LegSyncVisao *v, char *dst, unsigned tam) {
     case LEGSYNC_DEPOIS:     snprintf(dst, tam, "%s", i18n("Segundo idioma: dispon\xc3\xadvel depois")); return;
     case LEGSYNC_AGUARDANDO: snprintf(dst, tam, "%s", i18n("Aguardando a legenda baixar")); return;
     case LEGSYNC_PRONTA:
-      if (!(v->acoes & LEGSYNC_ACAO_RAPIDA) && (v->acoes & LEGSYNC_ACAO_AUDIO)) {
+      if (!(v->acoes & LEGSYNC_ACAO_RAPIDA) && (v->acoes & LEGSYNC_ACAO_AUDIO) && v->autoFase) {
         snprintf(dst, tam, "%s", i18n("Pronta: compara com as falas do \xc3\xa1udio")); return;
       }
       snprintf(dst, tam, "%s", i18n("Pronta: compara com a legenda incorporada do arquivo")); return;
@@ -222,27 +222,26 @@ static int acoesAgora(int slot, int *lista, int max) {
   if (slot != 0 || max < 1) return 0;
   v = legsync_visao(0);
   if (v.autoDesligado) {
-    static const int a[] = { LEGSYNC_ACAO_RAPIDA, LEGSYNC_ACAO_COMPLETA, LEGSYNC_ACAO_AUDIO,
+    // Sem "Por audio" (06/11, dono): o audio so entra como reserva automatica
+    // (Android), nunca como botao.
+    static const int a[] = { LEGSYNC_ACAO_RAPIDA, LEGSYNC_ACAO_COMPLETA,
                             LEGSYNC_ACAO_DESFAZER, LEGSYNC_ACAO_OUTRA, LEGSYNC_ACAO_PARAR };
     for (unsigned i = 0; i < sizeof a / sizeof *a && n < max; i++)
       if (v.acoes & a[i]) lista[n++] = a[i];
   }
-#ifdef NV_TPK
-  // .tpk: com a automatica ligada, o menu so mostra o que MUDA o resultado.
-  // Nada enquanto ela trabalha; depois que ela parou sem sincronizar:
+  // Com a automatica ligada, o menu so mostra o que MUDA o resultado (era so
+  // do .tpk; todas as plataformas desde 06/11). Nada enquanto ela trabalha;
+  // depois que ela parou sem sincronizar:
   //   Completa  - a engine recusou a embutida (4x o tempo de analise);
-  //   Outra referencia - so se o arquivo tem outra faixa que tambem serve;
-  //   Por audio - so com o conversor DTS/TrueHD tocando e o audio ainda nao tentado.
+  //   Outra referencia - so se o arquivo tem outra faixa que tambem serve.
   // Uma acao que nao tem como dar certo nao aparece.
   else if (v.autoFase != 1 && v.manualFase != 1 && v.fase != LEGSYNC_ACEITA &&
            v.fase != LEGSYNC_LENDO && v.fase != LEGSYNC_ANALISANDO && v.fase != LEGSYNC_OUVINDO) {
     if (v.fase == LEGSYNC_RECUSADA && !v.audio && !v.jaCompleta && (v.acoes & LEGSYNC_ACAO_COMPLETA) && n < max)
       lista[n++] = LEGSYNC_ACAO_COMPLETA;
     if ((v.acoes & LEGSYNC_ACAO_OUTRA) && v.outrasRef > 0 && n < max) lista[n++] = LEGSYNC_ACAO_OUTRA;
-    if ((v.acoes & LEGSYNC_ACAO_AUDIO) && !v.audio && n < max) lista[n++] = LEGSYNC_ACAO_AUDIO;
     if ((v.acoes & LEGSYNC_ACAO_DESFAZER) && n < max) lista[n++] = LEGSYNC_ACAO_DESFAZER;
   }
-#endif
   else if (v.acoes & LEGSYNC_ACAO_DESFAZER) lista[n++] = LEGSYNC_ACAO_DESFAZER;
   return n;
 }

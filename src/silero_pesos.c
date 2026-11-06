@@ -6,7 +6,7 @@
 // float16, without the STFT layer (computed in src/silero.c).
 // Only linked where audio sync runs: Android and the .tpk 6+ (and tests that ask).
 #include "silero.h"
-#if defined(NV_ANDROID) || (defined(NV_TPK) && !defined(NV_TPK40)) || defined(NV_SILERO_PESOS)
+#if defined(NV_ANDROID) || defined(NV_SILERO_PESOS)
 const unsigned silero_pesos_n = 243585u;
 const unsigned short silero_pesos_f16[243585] = {
   0x2588,0x2519,0xa4b8,0x2017,0x2684,0x28d0,0xa83f,0xa9fc,0x20ab,0x9134,0x98d0,0x28f8,0x95fa,0x2757,0x294b,0xa552,

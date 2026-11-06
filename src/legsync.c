@@ -703,12 +703,10 @@ int legsync_acao(int acao) {
                        acao == LEGSYNC_ACAO_AUDIO ? "audio" : "outra";
     L.manualFase = ok ? 1 : 3; L.manualLog = L.manualFase;
     if (L.autoFase == 1 && ok) { L.autoFase = 0; L.autoEtapa = 9; L.autoPend = 0; }   // a mao assume
-#ifdef NV_TPK
-    // .tpk: o menu oferece Completa/Outra/Por audio DEPOIS que a automatica
-    // desistiu (legsyncui.c). O resultado desse pedido e o que a linha mostra,
-    // nao o "nao deu" antigo da automatica.
+    // O menu oferece Completa/Outra DEPOIS que a automatica desistiu
+    // (legsyncui.c; todas as plataformas desde 06/11). O resultado desse
+    // pedido e o que a linha mostra, nao o "nao deu" antigo da automatica.
     if (L.autoFase == 3 && ok) { L.autoFase = 0; L.autoEtapa = 9; L.autoPend = 0; }
-#endif
     printf("[legsync] manual: %s -> %s (%s)\n", nome, ok ? "aceita" : "recusada",
            ok ? "trabalhando" : !dona() ? "legenda nao e externa" : !L.ref ? "sem referencia nesta plataforma" :
            L.semOutra ? "sem outra faixa" : "estado atual nao permite");
@@ -923,11 +921,9 @@ static LegSyncMotivo motivoRef(LegRefMotivo m) {
 static LegSyncMotivo motivoFalhaAuto(AutoSyncMotivo m) {
   switch (m) {
     case AUTOSYNC_REGION_DISAGREEMENT: return LEGSYNC_M_REGION_DISAGREEMENT;
-#ifdef NV_TPK
-    // .tpk: a pilula diz "sem legenda embutida para comparar" em vez de um
-    // generico "nao sincronizada".
+    // A pilula diz "sem legenda embutida para comparar" em vez de um
+    // generico "nao sincronizada" (todas as plataformas desde 06/11).
     case AUTOSYNC_NO_REFERENCE: return LEGSYNC_M_SEM_REFERENCIA;
-#endif
     case AUTOSYNC_LOW_CONFIDENCE: case AUTOSYNC_AMBIGUOUS: return LEGSYNC_M_CONFIANCA;
     default: return LEGSYNC_M_CONFIANCA;
   }
@@ -971,15 +967,13 @@ LegSyncVisao legsync_visao(int slot) {
   snprintf(v.autoNome, sizeof v.autoNome, "%s", L.autoNome);
   // F06: so com o ajuste ligado o audio aparece (oferecido ou com o motivo).
   v.motivoAudio = L.audLigado ? motivoAudio() : LEGSYNC_M_NENHUM;
-#ifdef NV_TPK
-  // .tpk: o audio so existe com o conversor DTS/TrueHD tocando. Fora dele nao
-  // ha nada que a pessoa possa ligar: nenhum aviso de "por audio indisponivel".
+  // Sem "Por audio" no menu (06/11): nenhum aviso de "por audio
+  // indisponivel" onde nao ha nada que a pessoa possa ligar.
   if (v.motivoAudio == LEGSYNC_M_AUD_PLATAFORMA || v.motivoAudio == LEGSYNC_M_AUD_SEM_AUDIO)
     v.motivoAudio = LEGSYNC_M_NENHUM;
-#endif
   v.outrasRef = L.refAlt;
   v.jaCompleta = L.ultimoModo == AUTOSYNC_THOROUGH && L.solicitou;
-  audOk = L.audLigado && v.motivoAudio == LEGSYNC_M_NENHUM;
+  audOk = L.audLigado && audsync_capacidade() == AUDSYNC_CAP_OK;   // the real capability, not the hidden notice
   base = (L.ref ? LEGSYNC_ACAO_RAPIDA | LEGSYNC_ACAO_COMPLETA : 0) | (audOk ? LEGSYNC_ACAO_AUDIO : 0);
   v.audio = L.audUltimo;
   if (L.primTipo == 2) { v.motivo = LEGSYNC_M_EMBUTIDA; goto fim; }
