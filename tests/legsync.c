@@ -18,9 +18,18 @@
 
 static const char *DIR;
 // legsyncui.c (provedor do seletor do F04) sem SDL: stubs do que ele chama.
-#include "audsync.h"
-#include "audsync_sint.h"
-static void ligarTapLs(int on) { (void)on; }
+// Reserva por audio (Android): backend falso que so anota as chamadas.
+static int raArmou, raAssumiu, raParou, raN; static char raChave[300];
+static void raArmar(int moveis) { (void)moveis; raArmou++; }
+static void raAssumir(const char *c, const char *i, const LegendaDocumento *d) {
+  (void)i; raAssumiu++; snprintf(raChave, sizeof raChave, "%s", c); legenda_documento_dados(d, &raN);
+}
+static void raParar(void) { raParou++; }
+static const LegSyncAudio raFalso = { raArmar, raAssumir, raParar };
+static int trocasUrl;
+static int trocadorUrlTeste(const char *url, char *nome, unsigned tam) {
+  trocasUrl++; snprintf(nome, tam, "Audio-ok"); legsync_primaria_externa(url, "pt", "Prov"); return 1;
+}
 #include "legendasui.h"
 static LegendasSyncProvider prov; static int provLigado;
 void legendasui_definir_sync(const LegendasSyncProvider *p) { provLigado = p != NULL; if (p) prov = *p; }
@@ -663,36 +672,69 @@ int main(int argc, char **argv) {
     legsync_primaria_externa("ext://0/ext_ruim.srt", "pt", "Ruim");
     v = esperarAuto(MKV, 3); assert(trocas == 0); candIdioma = "pt";
 
-    // 12e2. 06/11: AUDIO TAKES OVER. The embedded reference refuses the
-    //       subtitle and there is no other one in its language: the audio
-    //       (listening since the plan started, next to the embedded check)
-    //       aligns it. Only an ACCEPTED engine result moves it.
-    { char c[700]; FILE *f; char *srt; int k;
-      sint_timeline(0, 600, 77); srt = sint_srt();
-      snprintf(c, sizeof c, "%s/ext_sint.srt", DIR); f = fopen(c, "wb"); assert(f); fputs(srt, f); fclose(f); free(srt);
-      audsync_backend(ligarTapLs); audsync_formato(AUDSYNC_FMT_PCM); legsync_audio_habilitar(1);
+    // 12e2. 06/11: THE AUDIO TAKES OVER (Android backend, Reshaped). The
+    //       backend is armed when the plan starts; the embedded reference
+    //       refuses the subtitle and there is no other one in its language,
+    //       so the backend gets THIS subtitle; its mapping (stretches) is
+    //       what the overlay applies. Withdrawn, failed, one switch per
+    //       episode, and nothing for the audio when the embedded accepts.
+    { int k; const char *RUIM = "ext://0/ext_ruim.srt";
+      LegSyncAudioTrecho tr[2] = { { 0, 1.0, 2500.0 }, { 60000, 1.0, 3000.0 } };
+      legsync_audio_backend(&raFalso); legsync_definir_trocador_url(trocadorUrlTeste); legsync_audio_habilitar(1);
+      raArmou = raAssumiu = raParou = 0; trocasUrl = 0;
       legsync_iniciar(MKV); trocas = 0; nCand = 0;
-      legsync_primaria_externa("ext://0/ext_sint.srt", "pt", "Sint");
-      for (k = 0; k < 4000 && audsync_status().fase != AUDSYNC_OUVINDO; k++) { passo(MKV, 0); usleep(500); }
-      assert(audsync_status().fase == AUDSYNC_OUVINDO);              // listening early, embedded still deciding
-      { int16_t b[960]; double t; int q = 0;
-        for (t = 100; t < 100 + AUDSYNC_ALVO_SEG + 2; t += 0.06, q++) {
-          sint_pcm(b, 960, t, 2.5, SINT_FALA | SINT_RUIDO);
-          while (audsync_teste_livre() < 960) usleep(100);
-          audsync_pcm(b, 960, (int64_t)llround(t * 1e6));
-          if (q % 16 == 0) passo(MKV, 0);
-        } }
-      v = esperarAuto(MKV, 2);
-      fprintf(stderr, "   audio takeover: %d ms\n", v.offsetAutoMs);
-      assert(v.audio && abs(v.offsetAutoMs - 2500) <= 100 && trocas == 0);
-      // Accepted embedded match: the early window is dropped, nothing listens.
+      legsync_primaria_externa(RUIM, "pt", "Ruim");
+      for (k = 0; k < 4000 && !raAssumiu; k++) { passo(MKV, 0); usleep(500); }
+      assert(raArmou == 1 && raAssumiu == 1 && !strcmp(raChave, RUIM) && raN > 100 && trocas == 0);
+      v = legsync_visao(0);
+      assert(v.audio && v.autoFase == 1 && v.fase == LEGSYNC_ANALISANDO && legsync_posicao(100.0) == 100.0);
+      for (k = 0; k < 2000; k++) passo(MKV, 0);                  // no ceiling while the audio listens
+      assert(legsync_visao(0).autoFase == 1);
+      legsync_audio_modelo("ext://0/outra.srt", tr, 1, 0);        // another subtitle's answer: ignored
+      assert(legsync_visao(0).autoFase == 1);
+      legsync_audio_modelo(RUIM, tr, 2, 1);                       // early estimate: applied
+      v = legsync_visao(0);
+      assert(v.audio && v.autoFase == 2 && v.fase == LEGSYNC_ACEITA && v.offsetAutoMs == -2500);
+      assert(fabs(legsync_posicao(30.0) - 27.5) < 1e-6 && fabs(legsync_posicao(100.0) - 97.0) < 1e-6);
+      assert(legsync_offset_ms(0) == 0);
+      legsync_audio_modelo(RUIM, NULL, 0, 0);                      // withdrawn: back to the file's timing
+      v = legsync_visao(0); assert(v.autoFase == 1 && legsync_posicao(100.0) == 100.0);
+      legsync_audio_modelo(RUIM, tr, 1, 0);
+      // Undo: the map goes, the backend stops, the manual delay stays.
+      raParou = 0; assert(legsync_acao(LEGSYNC_ACAO_DESFAZER)); passo(MKV, 0);
+      assert(raParou == 1 && legsync_posicao(100.0) == 100.0 && legsync_visao(0).fase == LEGSYNC_DESFEITA);
+      // The audio fits another subtitle better: one switch, which adopts the audio.
+      legsync_iniciar(MKV); trocas = 0; nCand = 0; raAssumiu = 0;
+      legsync_primaria_externa(RUIM, "pt", "Ruim");
+      for (k = 0; k < 4000 && !raAssumiu; k++) { passo(MKV, 0); usleep(500); }
+      assert(raAssumiu == 1);
+      legsync_audio_trocar(RUIM, "ext://0/ext_mais2500.srt");
+      for (k = 0; k < 4000 && raAssumiu < 2; k++) { passo(MKV, 0); usleep(500); }
+      assert(trocasUrl == 1 && raAssumiu == 2 && !strcmp(raChave, "ext://0/ext_mais2500.srt"));
+      v = legsync_visao(0); assert(v.autoTrocou && !strcmp(v.autoNome, "Audio-ok") && v.autoFase == 1);
+      legsync_audio_modelo("ext://0/ext_mais2500.srt", tr, 1, 0);
+      assert(legsync_visao(0).autoFase == 2);
+      legsync_audio_trocar("ext://0/ext_mais2500.srt", RUIM);      // second switch this episode: refused
+      for (k = 0; k < 20; k++) passo(MKV, 0);
+      assert(trocasUrl == 1);
+      // The backend gives up (too few lines / no detector): the plan says it did not work.
+      legsync_iniciar(MKV); trocas = 0; nCand = 0; raAssumiu = 0;
+      legsync_primaria_externa(RUIM, "pt", "Ruim");
+      for (k = 0; k < 4000 && !raAssumiu; k++) { passo(MKV, 0); usleep(500); }
+      legsync_audio_falhou(RUIM, "teste");
+      v = legsync_visao(0); assert(v.autoFase == 3 && legsync_posicao(100.0) == 100.0);
+      // Accepted embedded match: armed, then stopped; the audio never takes over.
       legsync_iniciar(MKV); trocas = 0; nCand = 0;
+      passo(MKV, 0); raArmou = raAssumiu = raParou = 0;          // the failed session's stop went out
       legsync_primaria_externa("ext://0/ext_mais2500.srt", "pt", "Boa");
       v = esperarAuto(MKV, 2);
-      assert(!v.audio && abs(v.offsetAutoMs - 2500) <= 25);
       for (k = 0; k < 20; k++) passo(MKV, 0);
-      assert(audsync_status().fase == AUDSYNC_PARADO);
-      legsync_audio_habilitar(0); audsync_formato(AUDSYNC_FMT_NENHUM); audsync_backend(NULL); casos++; }
+      assert(!v.audio && abs(v.offsetAutoMs - 2500) <= 25 && raArmou == 1 && raParou == 1 && raAssumiu == 0);
+      // Setting off (or no backend): nothing is armed.
+      legsync_audio_habilitar(0); raArmou = 0;
+      legsync_iniciar(MKV); legsync_primaria_externa("ext://0/ext_mais2500.srt", "pt", "Boa");
+      v = esperarAuto(MKV, 2); assert(raArmou == 0);
+      legsync_audio_backend(NULL); legsync_definir_trocador_url(NULL); casos++; }
 
     // 12f. REGRESSAO "fala que ta ok e ta fora de sincronia" (dono, 04/10).
     //      Traducao de verdade: outro corte das falas (juntadas e partidas),
