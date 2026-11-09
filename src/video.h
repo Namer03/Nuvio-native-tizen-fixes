@@ -197,6 +197,10 @@ int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsi
 int      video_pos_incerta(void);
 // Frame rate and HDR of the playing file (MKV header); 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
+// Measurements for the libass log (assrender.c): position readings since the
+// last call. n = arrived, fora = dropped (query older than the last seek),
+// somaMs / maxMs = time the query took. Resets the counters.
+void     video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs);
 #endif
 int    video_tocando(void);
 // Pausa comprovada pelo backend da sessao atual, nao a intencao local de

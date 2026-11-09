@@ -161,6 +161,9 @@ static atomic_int buscaAlvoMs = -1;
 // celular no bone da menina, a caixa do INBOX fora do celular).
 static pthread_mutex_t amTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct { unsigned seq; int valido, ms; double carimbo, incerteza; } am;
+/* Measurements for the libass log line (assrender.c, "[ass] 10s tv"): readings
+ * since the last video_tpk_leituras, under amTrava. */
+static struct { int n, fora, maxMs; long somaMs; } amMed;
 static double amBusca;                 // monoAgora do ultimo EV_BUSCOU (sob amTrava)
 static atomic_int posIncerta;          // 1 = seek feito, ainda sem leitura real
 static atomic_uint incertaTick;        // SDL_GetTicks do seek (1,5 s no maximo)
@@ -284,13 +287,24 @@ void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboN
   if (!ativo || ms < 0) return;
   if (c > agora + 0.05 || c < agora - 10.0) c = agora - inc;   // relogio diferente: o fim menos meia consulta
   pthread_mutex_lock(&amTrava);
+  amMed.n++;
+  if (consultaMs > 0) { amMed.somaMs += consultaMs; if (consultaMs > amMed.maxMs) amMed.maxMs = consultaMs; }
   /* Consulta que COMECOU antes do ultimo seek (chega depois do EV_BUSCOU, ate
    * 600 ms mais lenta): a posicao e a de antes do salto. Fora — ela tirava o
    * posIncerta com a posicao velha e a legenda da outra cena aparecia. */
-  if (c - inc < amBusca) { pthread_mutex_unlock(&amTrava); return; }
+  if (c - inc < amBusca) { amMed.fora++; pthread_mutex_unlock(&amTrava); return; }
   am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
   pthread_mutex_unlock(&amTrava);
   if (motivo <= 1) atomic_store(&posIncerta, 0);   // a TV ja disse onde caiu depois do seek
+}
+
+/* Position readings since the last call (video.h): how many arrived, how many
+ * were dropped as older than the last seek, and the query time. Resets them. */
+void video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs) {
+  pthread_mutex_lock(&amTrava);
+  *n = amMed.n; *fora = amMed.fora; *somaMs = amMed.somaMs; *maxMs = amMed.maxMs;
+  memset(&amMed, 0, sizeof amMed);
+  pthread_mutex_unlock(&amTrava);
 }
 
 void video_escolher_audio(int i);

@@ -119,6 +119,10 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include "bidi.h"
 #include "assperf.h"
 #include "assfios.h"
+#ifdef NV_TPK
+#include "video.h"    // video_tpk_leituras ("[ass] 10s tv")
+#include "memlog.h"
+#endif
 #if !defined(__EMSCRIPTEN__)
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -818,6 +822,18 @@ static void ass_aplicar_assperf_locked(void) {
       assfios_nome_trocar("nv-assblur", nomeAnt);
       ass_nv_set_threads(ASSPERF_FIOS);
       assfios_nome_voltar(nomeAnt);
+      /* WHAT THIS TV IS, once per session (libass on the Tizen 4/5 .tpk, 09/11):
+       * the engine's values are the S95C's on every .tpk, so a 2018-2020 TV's
+       * "[ass] 10s" lines are read against its cores and memory. */
+      printf("[ass] tv: cores=%ld online of %ld | RAM=%ldMB total, %ldMB free | "
+             "bitmap engine=%s, blur threads=%d | render ahead=%dms, lines dropped after=%lds, "
+             "attached fonts up to=%luMB, relay park=%ldMB\n",
+             sysconf(_SC_NPROCESSORS_ONLN), sysconf(_SC_NPROCESSORS_CONF),
+             memlog_total_mb(), memlog_livre_mb(),
+             ass_nv_get_engine(assRenderer) ? "NEON" : "C", ass_nv_get_threads(),
+             (int)ASSPERF_ADIANTE_MS, (long)(ASSPERF_PODA_MS / 1000L),
+             (unsigned long)(ASSPERF_FONTES_TETO >> 20), (long)(ASSPERF_PARQUE >> 20));
+      fflush(stdout);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
    * \clip, \org or a drawing; the signs keep the author's alpha. */
@@ -2062,6 +2078,22 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
              assMed.renders ? assMed.renderSomaUs / 1000.0 / assMed.renders : 0.0,
              assMed.renderMaxUs / 1000.0, assMed.piscas, assMed.vaziosPisca, assMed.falas,
              assMed.falas ? assMed.atrasoSoma / assMed.falas : 0, assMed.atrasoMax, assEventos);
+#if defined(NV_TPK) && ASS_NOVO
+    /* The TV's side of the same window (libass on the Tizen 4/5 .tpk, 09/11):
+     * how often the position arrives and what a query costs (the 40 ms clock
+     * thread gives ~25/s; without it, 4/s), free memory, and what the engine
+     * holds. The counters are taken every window so the next one starts clean. */
+    { int n, fora, maxMs;
+      long somaMs;
+      double dt = assMed.ultimoRelatorio > 0 ? m - assMed.ultimoRelatorio : 0.0;
+      video_tpk_leituras(&n, &fora, &somaMs, &maxMs);
+      if (dt > 0.0)
+        printf("[ass] 10s tv: position readings=%d (%.1f/s, %d dropped) query avg=%.1fms max=%dms | "
+               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d\n",
+               n, n / dt, fora, n ? (double)somaMs / n : 0.0, maxMs, memlog_livre_mb(),
+               assFilaN, ass_fila_bytes_locked() / 1048576.0, assTcN, assTcBytes / 1048576.0,
+               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado()); }
+#endif
     fflush(stdout);
     assMed.quadros = assMed.trocas = assMed.renders = assMed.iguais = 0;
     assMed.piscas = assMed.vaziosPisca = assMed.falas = 0;
