@@ -39,8 +39,30 @@ void tpk45_tick(int convertendo, const char *modo) { (void)convertendo; (void)mo
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stdlib.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+// fcntl64 DENTRO da lib do 4/5. O FFmpeg e compilado com arquivos de 64 bits,
+// e na libc da build (2.28) isso troca cada fcntl() dele por fcntl64, funcao
+// que nasceu nessa mesma 2.28. A libc das TVs Tizen 4/5 e mais antiga: nao tem
+// esse nome, o carregador ELF do Program40.cs nao acharia o simbolo e o app nem
+// abriria (tools/tpk.sh barra a build por isso). Definida aqui, a referencia
+// do FFmpeg fecha dentro da propria lib e nada novo e pedido a TV.
+// E o que a libc faz: a syscall fcntl64 do kernel ARM de 32 bits, que existe
+// desde o 2.4 (o resto do app segue no fcntl de sempre). O FFmpeg so a usa com
+// F_SETFD, F_SETFL/F_GETFL e F_DUPFD_CLOEXEC.
+#ifdef SYS_fcntl64
+__attribute__((visibility("hidden"))) int fcntl64(int fd, int cmd, ...) {
+  va_list ap;
+  void *arg;
+  va_start(ap, cmd);
+  arg = va_arg(ap, void *);
+  va_end(ap);
+  return (int)syscall(SYS_fcntl64, fd, cmd, arg);
+}
+#endif
 
 #define ARQ "tpk45-teste.txt"
 
