@@ -67,7 +67,7 @@ For TV reports include model, firmware, revision, selected track and output;
 check native DTS, conversion, seeks, track changes and A/V sync using the
 [DTS Debug app](../../../tools/dts-pipeline/DEBUG.md).
 
-## Samsung .tpk (Tizen 6+)
+## Samsung .tpk (Tizen 6+, and Tizen 4-5.5 in test)
 
 The Samsung build converts with its own path: the TV's `Tizen.Multimedia.Player`
 reads the converted stream from a local HTTP server inside the app
@@ -89,6 +89,25 @@ are converted. Each playback logs a `[dts-tpk] mem:` line (app RSS peak, lowest
 MemAvailable, reader rings).
 
 Host test of the server with a .tpk FFmpeg build: `tests/dts_tpk_servidor.sh`.
+
+### Tizen 4-5.5 (NuvioTpk40, TVs of 2018-2020): not yet run on such a TV
+
+`tools/tpk.sh` links the same FFmpeg into `libnuvio-tpk40.so` (skip with
+`NV_TPK40_SEM_FFMPEG=1`) and fails the build if the library has thread-local
+storage or a relocation type the 4/5 ELF loader does not apply. The converter
+then answers on Tizen 4 and up. What differs from 6+ (`src/tpk45.c`, active only
+in that library):
+
+- Ring and queue cap come from the memory free when the conversion opens
+  (normal 16 / 128 MiB, light 8 / 96, minimum 8 / 64), and the seek-bar
+  thumbnails wait for the converter on light and minimum.
+- Delivery Auto opens HLS and, if the player refuses it before the first frame
+  (error, or not prepared in 25 s), retries once as continuous TS and keeps it
+  for the rest of that run. Whether that player takes HEVC inside HLS is the
+  open question this answers.
+- Test rows at the end of the player's audio menu (profile, delivery, memory
+  now) and `[tpk45]` / `[dts-tpk] 4/5:` log lines. The test rows are to be
+  removed once a TV log has settled the values.
 
 ## Dependency provenance and distribution
 

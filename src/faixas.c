@@ -28,6 +28,7 @@
 #include "cacheboost.h"
 #include "velocidade.h"
 #include "faixasmkv.h"
+#include "tpk45.h"
 #define NV_ESCALA_TELA   // o arquivo inteiro mede pela tela virtual (escala.h)
 #include "escala.h"
 #include <stdio.h>
@@ -575,9 +576,16 @@ static int linhaDaLeg(int i) {
   return i;
 }
 
+// TESTE do Tizen 4/5 (tpk45.h; sai antes do PR): depois das faixas de audio
+// vem as linhas de teste do NuvioTpk40 (perfil de memoria, entrega, memoria
+// agora). Fora da .so do 4/5 tpk45_linhas() e 0 e a coluna e a de sempre.
+static int linhaTeste(int col, int i) {
+  int n = video_n_audio();
+  return col == 0 && i >= n && i < n + tpk45_linhas() ? i - n : -1;
+}
 static int nLinhas(int col) {
   if (col == FX_COL_ESTILO) return FX_N_ESTILO;
-  if (col == 0) { int n = video_n_audio(); return n; }
+  if (col == 0) { int n = video_n_audio(); return n + tpk45_linhas(); }
   return nLegendas() + 1;   // +1 pela linha "Desativada"
 }
 
@@ -953,6 +961,12 @@ static void lembrarManual(int i) {
 }
 
 static void aplicar(void) {
+  if (coluna == 0 && linhaTeste(0, foco[0]) >= 0) {
+    // Linha de teste do 4/5: OK passa ao valor seguinte; nao e faixa de audio
+    // (nada a lembrar, nada a trocar no player).
+    tpk45_passo(linhaTeste(0, foco[0]), 1);
+    return;
+  }
   if (coluna == 0) {
     // F06: outra faixa de audio = outras falas; a escuta em curso nao vale mais.
     if (video_audio_atual() != foco[0]) legsync_audio_trocou();
@@ -1265,6 +1279,9 @@ void faixas_evento(const SDL_Event *e) {
   if (k == SDLK_DOWN)  { if (foco[coluna] < nLinhas(coluna) - 1) foco[coluna]++;
                          ajustarRolagem(); return; }
   if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
+    // Linha de teste do 4/5: o OK troca o valor e a folha fica aberta para a
+    // pessoa ver o que ficou (e dar OK de novo).
+    if (coluna == 0 && linhaTeste(0, foco[0]) >= 0) { aplicar(); return; }
     aplicar(); aberta = 0; return;
   }
 }
@@ -1545,7 +1562,9 @@ static void linhaLista(int col, int i, float x, float y, float w, float a) {
   int ativo;
   GfxRect lr = { x, y, w, IL_LN_H };
   nome[0] = sub[0] = 0;
-  if (!col) {
+  if (linhaTeste(col, i) >= 0) {
+    tpk45_rotulo(linhaTeste(col, i), nome, sizeof nome, sub, sizeof sub);
+  } else if (!col) {
     const VideoFaixa *f = video_audio(i);
     partirRotulo(f ? f->rotulo : "", nome, sizeof nome, sub, sizeof sub);
     idioma = f ? f->idioma : NULL;
@@ -1762,7 +1781,7 @@ static void corpoLista(GfxRect c, float a) {
     txt_desenhar_alpha(t, x0 + 10.0f, ty, a);
     if (!modo) {
       char q[32];
-      snprintf(q, sizeof q, i18n("%d faixas"), n);
+      snprintf(q, sizeof q, i18n("%d faixas"), n - tpk45_linhas());
       { TxtLinha l = txt_linha(TXT_G18R, q, 243, 242, 239, 115);
         txt_desenhar_alpha(l, x0 + w - 10.0f - l.w, ty + (float)t.h - (float)l.h - 8.0f, a); }
     } else {

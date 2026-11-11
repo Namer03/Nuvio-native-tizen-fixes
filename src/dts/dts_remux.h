@@ -50,6 +50,9 @@ typedef int (*DtsRemuxWrite)(void *opaque, const unsigned char *data, int n);
 int dts_remux_available(void);
 /* Shared packet budget across generators: 192 MiB, 128 MiB on older TVs. */
 void dts_remux_set_queue_budget_mib(int mib);
+/* Read-only, for log lines: bytes queued now across generators, and the budget. */
+size_t dts_remux_queued_bytes(void);
+int dts_remux_queue_budget_mib(void);
 /* Device offset, snapshotted by each new source. Positive delays audio only. */
 void dts_remux_set_audio_offset_ms(int ms);
 

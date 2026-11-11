@@ -74,6 +74,8 @@ void dts_remux_gen_free(DtsRemuxGen *g) { (void)g; }
 void dts_remux_gen_interrupt(DtsRemuxGen *g) { (void)g; }
 double dts_remux_gen_start_s(const DtsRemuxGen *g) { (void)g; return 0; }
 void dts_remux_set_queue_budget_mib(int mib) { (void)mib; }
+size_t dts_remux_queued_bytes(void) { return 0; }
+int dts_remux_queue_budget_mib(void) { return 0; }
 #else
 
 #include <math.h>
@@ -141,6 +143,8 @@ static atomic_size_t gBudget = (size_t)QUEUE_BUDGET_MIB << 20;
 void dts_remux_set_queue_budget_mib(int mib) {
   if (mib >= 32 && mib <= 512) atomic_store(&gBudget, (size_t)mib << 20);
 }
+size_t dts_remux_queued_bytes(void) { return atomic_load(&gQueued); }
+int dts_remux_queue_budget_mib(void) { return (int)(atomic_load(&gBudget) >> 20); }
 static const char *qFull(const Q *q, size_t add, int video) {
   switch (dtsQcapAdmit(q->bytes, q->n, add, video ? VQ_MAX_BYTES : AQ_MAX_BYTES,
                        video ? VQ_MAX_PKTS : AQ_MAX_PKTS, &gQueued, atomic_load(&gBudget))) {

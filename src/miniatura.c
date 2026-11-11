@@ -34,6 +34,7 @@
 #include "seekr.h"
 #include "miniplat.h"
 #include "mediaurl.h"
+#include "tpk45.h"
 
 #ifdef NV_MINIATURAS
 #include "minidrive.h"
@@ -393,6 +394,19 @@ static void *trabalhar(void *u) {
     printf("[miniatura] %s %s %dx%d %d-bit%s, %d keyframes; %s grid (%s), %d slots\n",
            i->formato, i->codec, i->largura, i->altura, i->bits, i->hdr ? " HDR" : "", i->chaves,
            ps == 1 ? "5 s" : "10 s", porque, (j->n + ps - 1) / ps);
+    // Tizen 4/5 (tpk45.h): the profile's own limits, and the counters of its 10 s line.
+    if (tpk45_ativo()) {
+      int amax = tpk45_mini_altura_max();
+      tpk45_mini_estado(j->feitos, (j->n + ps - 1) / ps, 0);
+      if (amax > 0 && i->altura > amax) {
+        printf("[miniatura] 4/5: not made, a %dx%d video is above this profile's %d-line limit (%s)\n",
+               i->largura, i->altura, amax, tpk45_marca());
+        tpk45_mini_estado(-1, -1, 3);
+        goto semPrevia;
+      }
+      printf("[miniatura] 4/5: floor %ld MB, %s the converter (%s)\n", tpk45_mini_piso_kb() / 1024,
+             tpk45_mini_espera_conversor() ? "waits for" : "runs beside", tpk45_marca());
+    }
     fflush(stdout);
   }
 
@@ -417,13 +431,30 @@ static void *trabalhar(void *u) {
       if (maior < MEDIDA_MIN_KB) maior = MEDIDA_MIN_KB;
       precisa = maior;
     }
-    if (disp >= 0 && disp < PISO_KB + precisa) {
-      int dts = video_dts_estado() == VIDEO_DTS_PREPARANDO || video_dts_estado() == VIDEO_DTS_CONVERTIDO;
+    // Tizen 4/5: the floor of the profile (same 150 MB on "normal" and "light").
+    long piso = tpk45_ativo() && tpk45_mini_piso_kb() > 0 ? tpk45_mini_piso_kb() : PISO_KB;
+    int dts = video_dts_estado() == VIDEO_DTS_PREPARANDO || video_dts_estado() == VIDEO_DTS_CONVERTIDO;
+    // Tizen 4/5, "light" and "minimum": no tile while the converter works, so
+    // the two memory peaks never add up on a small TV.
+    if (dts && tpk45_ativo() && tpk45_mini_espera_conversor()) {
       mini_motor_soltar_decoder(m);
+      tpk45_mini_estado(-1, -1, 2);
+      if (!ultimaPausaLog || SDL_GetTicks() - ultimaPausaLog > 30000) {
+        printf("[miniatura] 4/5: paused while the converter works (free %ld MB; %s)%s\n", disp / 1024, tpk45_marca(),
+               pausasCaladas ? ", still waiting" : "");
+        fflush(stdout);
+        ultimaPausaLog = SDL_GetTicks(); pausasCaladas = 0;
+      } else pausasCaladas++;
+      dormirJ(j, PAUSA_MEM_MS);
+      continue;
+    }
+    if (disp >= 0 && disp < piso + precisa) {
+      mini_motor_soltar_decoder(m);
+      tpk45_mini_estado(-1, -1, 1);
       // One line when it starts, then at most one every 30 s.
       if (!ultimaPausaLog || SDL_GetTicks() - ultimaPausaLog > 30000) {
         printf("[miniatura] paused: low memory (free %ld MB, needs %ld MB + floor %ld MB%s)%s\n",
-               disp / 1024, precisa / 1024, PISO_KB / 1024, dts ? ", DTS converting" : "", pausasCaladas ? ", still waiting" : "");
+               disp / 1024, precisa / 1024, piso / 1024, dts ? ", DTS converting" : "", pausasCaladas ? ", still waiting" : "");
         fflush(stdout);
         ultimaPausaLog = SDL_GetTicks(); pausasCaladas = 0;
       } else pausasCaladas++;
@@ -431,6 +462,7 @@ static void *trabalhar(void *u) {
       continue;
     }
     ultimaPausaLog = 0; pausasCaladas = 0;
+    tpk45_mini_estado(-1, -1, 0);
 
     int classe = 0, k, k2 = -1, c2 = 0;
     long ph = (long)(video_pos() * 1000.0);
@@ -495,6 +527,7 @@ static void *trabalhar(void *u) {
     }
     int f = j->feitos, n = (j->n + j->passo - 1) / j->passo;
     pthread_mutex_unlock(&mu);
+    tpk45_mini_estado(f, n, 0);
     free(jpg);
     feitosAqui++; somaMs += q.totalMs;
     // One line per tile while the first window fills, then one every 20.
@@ -518,6 +551,7 @@ semPrevia:
   if (j == job && !j->feitos) estado = SEEKR_SEM_PREVIA;
   pthread_mutex_unlock(&mu);
 fim:
+  tpk45_mini_estado(-1, -1, 3);
   if (m) mini_motor_fechar(m);
   fflush(stdout);
   salvarDrive(j, &meta, id);

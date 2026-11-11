@@ -12,7 +12,7 @@ name: Build TPK
 
 on:
   push:
-    branches: [master, feat/tpk-local-thumbs]
+    branches: [master, feat/dts-thumbs-tizen4]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -35,7 +35,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      NV_TPK_PACOTES: ${{ github.event.inputs.pacotes || 'NuvioTpk60 NuvioTpk65 NuvioTpk' }}
+      # feat/dts-thumbs-tizen4 (test branch, DTS + thumbnails on Tizen 4/5): a push builds the
+      # 4/5 package for the tester and the 8/9 one for the S95C. Remove with the branch.
+      NV_TPK_PACOTES: ${{ github.event.inputs.pacotes || (github.ref_name == 'feat/dts-thumbs-tizen4' && 'NuvioTpk40 NuvioTpk') || 'NuvioTpk60 NuvioTpk65 NuvioTpk' }}
       # No P2P engine on CI (it lives on the owner's disk, not in the repo).
       NUVIO_P2P_MOTOR: none
       DOTNET_ROOT: ${{ github.workspace }}/.dotnet
