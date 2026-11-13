@@ -24,7 +24,7 @@
  * segment download at a time; every generation is serialized. Nothing here
  * logs a URL (TorBox's carry its token).
  *
- * Only the .tpk with FFmpeg (NV_DTS_FFMPEG) has the server; elsewhere the
+ * Only the .tpk built with FFmpeg has the server; elsewhere the
  * calls are stubs (tba_disponivel() == 0). The playlist helpers are pure and
  * compile everywhere (tests/tbaudio.sh). */
 #ifndef NV_TBAUDIO_TPK_H
