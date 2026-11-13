@@ -11,6 +11,9 @@ TMPDIR="${TMPDIR%/}"
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
 #                   converter needs: TrueHD/MLP
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core.
+#                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): the FLAC
+#                   decoder (FLAC converted), the adts muxer (the MPEG-TS muxer wraps copied
+#                   AAC with it) and the mpegts demuxer (TorBox's segments, Remux).
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -26,8 +29,9 @@ mkdir -p "$BUILD" "$PREFIX"
 if [ "$TARGET" = tpk ]; then
   SRC=${NUVIO_DTS_SRC:?tools/tpk.sh passes the extracted ffmpeg-$VERSION source}
   CC=${CC:-gcc}
-  DECODERS=$DECODERS,truehd,mlp
-  MUXERS=mpegts,matroska,mp4
+  DECODERS=$DECODERS,truehd,mlp,flac
+  MUXERS=mpegts,matroska,mp4,adts
+  DEMUXERS_TPK=,mpegts
   PARSERS=$PARSERS,mlp,ac3
   BSFS=$BSFS,truehd_core
   # zlib: Matroska tracks stored zlib-compressed (ContentCompression) and MP4
@@ -68,7 +72,7 @@ fi
   --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
   --enable-avcodec --enable-avformat --enable-avutil --enable-swresample \
   --enable-decoder="$DECODERS" --enable-encoder=aac,ac3 \
-  --enable-demuxer=matroska,mov --enable-parser="$PARSERS" \
+  --enable-demuxer=matroska,mov${DEMUXERS_TPK:-} --enable-parser="$PARSERS" \
   --enable-bsf="$BSFS" \
   --extra-cflags="${CFLAGS:--O2}"
 make -j"${NUVIO_DTS_JOBS:-2}"

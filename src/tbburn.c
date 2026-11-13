@@ -420,10 +420,12 @@ int tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, con
   return -1;
 }
 
-// File: one line per show, "titulo\tquando\tmodo\tidioma\ttipo\tletreiro\tnome"
-// (modo o = Off, f = a track). Per profile, like legmemoria.
+// File: one line per show, "titulo\tquando\tmodo\tidioma\ttipo\tletreiro\tnome\thdr"
+// (modo o = Off, f = a track; hdr h = burn-in turned On on an HDR file of this
+// show, owner 13/11; older lines have no 8th column = not allowed). Per
+// profile, like legmemoria.
 #define TBMEM_MAX 150
-typedef struct { char titulo[64]; long long quando; char modo; TbFaixa f; } TbMem;
+typedef struct { char titulo[64]; long long quando; char modo, hdr; TbFaixa f; } TbMem;
 static TbMem tbMem[TBMEM_MAX];
 static int nTbMem, tbMemPerfil = -1;
 static char tituloAtual[64];
@@ -462,6 +464,7 @@ static void tbMemCarregar(void) {
     m->f.tipo = atoi(campoTab(&p));
     m->f.letreiro = atoi(campoTab(&p));
     snprintf(m->f.nome, sizeof m->f.nome, "%s", campoTab(&p));
+    m->hdr = campoTab(&p)[0] == 'h' ? 'h' : 0;
     if (m->titulo[0] && (m->modo == 'o' || m->modo == 'f')) nTbMem++;
   }
   free(b);
@@ -473,8 +476,9 @@ static void tbMemGravar(void) {
   if (!buf) return;
   k += (size_t)snprintf(buf + k, cap - k, "# nuvio burn-in v1\n");
   for (i = 0; i < nTbMem && k + 1 < cap; i++)
-    k += (size_t)snprintf(buf + k, cap - k, "%s\t%lld\t%c\t%s\t%d\t%d\t%s\n", tbMem[i].titulo, tbMem[i].quando,
-                          tbMem[i].modo, tbMem[i].f.idioma, tbMem[i].f.tipo, tbMem[i].f.letreiro, tbMem[i].f.nome);
+    k += (size_t)snprintf(buf + k, cap - k, "%s\t%lld\t%c\t%s\t%d\t%d\t%s\t%s\n", tbMem[i].titulo, tbMem[i].quando,
+                          tbMem[i].modo, tbMem[i].f.idioma, tbMem[i].f.tipo, tbMem[i].f.letreiro, tbMem[i].f.nome,
+                          tbMem[i].hdr == 'h' ? "h" : "");
   dados_gravar(tbMemArquivo(), buf);
   free(buf);
 }
@@ -495,6 +499,7 @@ int tbburn_memoria(TbFaixa *out) {
 }
 void tbburn_lembrar(const TbFaixa *f) {
   int i, k = -1;
+  char hdr = 0;
   if (!tituloAtual[0]) return;
   tbMemCarregar();
   for (i = 0; i < nTbMem; i++) if (!strcmp(tbMem[i].titulo, tituloAtual)) k = i;
@@ -505,7 +510,9 @@ void tbburn_lembrar(const TbFaixa *f) {
       k = v;
     } else k = nTbMem++;
   }
+  if (k < nTbMem && !strcmp(tbMem[k].titulo, tituloAtual)) hdr = tbMem[k].hdr;   // the HDR allowance stays
   memset(&tbMem[k], 0, sizeof tbMem[k]);
+  tbMem[k].hdr = hdr;
   snprintf(tbMem[k].titulo, sizeof tbMem[k].titulo, "%s", tituloAtual);
   tbMem[k].quando = (long long)time(NULL);
   tbMem[k].modo = f ? 'f' : 'o';
@@ -516,4 +523,33 @@ void tbburn_lembrar(const TbFaixa *f) {
   tbMemGravar();
   printf("[tbburn] remembered for %s: %s%s%s\n", tituloAtual, f ? f->nome : "Off", f ? " / " : "", f ? f->idioma : "");
   fflush(stdout);
+}
+
+// ---- HDR (owner 13/11) ----------------------------------------------------------
+// TorBox's transcode loses HDR: on an HDR file (the source's HDR badge or the
+// file's own colour info, either one) burn-in starts Off. Turning it On in
+// playback is remembered for the show (the 8th column above).
+static int hdrFonte;
+void tbburn_hdr_fonte(int sim) { hdrFonte = sim ? 1 : 0; }
+int  tbburn_hdr_da_fonte(void) { return hdrFonte; }
+int  tbburn_hdr_permitido(void) {
+  int i;
+  if (!tituloAtual[0]) return 0;
+  tbMemCarregar();
+  for (i = 0; i < nTbMem; i++) if (!strcmp(tbMem[i].titulo, tituloAtual)) return tbMem[i].hdr == 'h';
+  return 0;
+}
+void tbburn_hdr_lembrar(int sim) {
+  int i;
+  if (!tituloAtual[0]) return;
+  tbMemCarregar();
+  for (i = 0; i < nTbMem; i++)
+    if (!strcmp(tbMem[i].titulo, tituloAtual)) {
+      if ((tbMem[i].hdr == 'h') == (sim != 0)) return;
+      tbMem[i].hdr = sim ? 'h' : 0;
+      tbMemGravar();
+      printf("[tbburn] HDR files of %s: burn-in %s\n", tituloAtual, sim ? "On (remembered)" : "Off by default again");
+      fflush(stdout);
+      return;
+    }
 }

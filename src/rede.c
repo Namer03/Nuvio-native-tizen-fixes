@@ -1155,6 +1155,7 @@ int rede_tls_enviar(RedeTls *t, const void *buf, size_t n) { (void)t; (void)buf;
 int rede_tls_tentar_enviar(RedeTls *t, const void *buf, size_t n, size_t *foi) { (void)t; (void)buf; (void)n; if (foi) *foi = 0; return -1; }
 int rede_tls_receber(RedeTls *t, void *buf, size_t n, int esperaMs) { (void)t; (void)buf; (void)n; (void)esperaMs; return -1; }
 void rede_tls_fechar(RedeTls *t) { (void)t; }
+void rede_fio_fechar(void) {}
 
 #else
 
@@ -1595,6 +1596,16 @@ static void descartarHandle(void *c) {
     pthread_setspecific(handleChave, NULL);
     hostsEsquecer();
   }
+}
+// Fecha as conexoes guardadas DESTE fio (o handle e o cache dele). Quem le
+// pouco e fica parado o filme inteiro (legref: 2-4 Ranges na abertura) nao
+// segura um socket aberto no CDN — o TorBox derruba com 5 (tbburn.h).
+void rede_fio_fechar(void) {
+  void *c;
+  if (!curl_reset) return;
+  pthread_once(&handleUma, handleCriarChave);
+  c = pthread_getspecific(handleChave);
+  if (c) descartarHandle(c);
 }
 static void soltarHandleDesde(void *c, int r, const char *url, unsigned primeiraMs) {
   // #382: HTTP recebido prova conectividade mesmo se o corpo falhou/parou.

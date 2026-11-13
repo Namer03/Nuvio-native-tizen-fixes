@@ -602,10 +602,16 @@ static int linhaDaLeg(int i) {
   return i;
 }
 
+// Original audio with TorBox burn-in (tbburn.h): rows under the audio tracks.
+#ifdef NV_TPK
+static int nTba(void) { return video_tpk_tba_linhas(); }
+#else
+static int nTba(void) { return 0; }
+#endif
 static int nEst(void);
 static int nLinhas(int col) {
   if (col == FX_COL_ESTILO) return nEst();
-  if (col == 0) { int n = video_n_audio(); return n; }
+  if (col == 0) { int n = video_n_audio() + nTba(); return n; }
   return nLegendas() + 1;   // +1 pela linha "Desativada"
 }
 
@@ -1162,6 +1168,9 @@ static void lembrarManual(int i) {
 }
 
 static void aplicar(void) {
+#ifdef NV_TPK
+  if (coluna == 0 && foco[0] >= video_n_audio()) { video_tpk_tba_ok(foco[0] - video_n_audio()); return; }
+#endif
   if (coluna == 0) {
     // A ordem automatica (audioescolha.h) volta a esta faixa neste titulo, e
     // nos outros episodios: gravada no perfil (audiomemoria.h), com o numero
@@ -1775,7 +1784,12 @@ static void linhaLista(int col, int i, float x, float y, float w, float a) {
   int ativo;
   GfxRect lr = { x, y, w, IL_LN_H };
   nome[0] = sub[0] = 0;
-  if (!col) {
+  if (!col && i >= video_n_audio()) {
+#ifdef NV_TPK
+    video_tpk_tba_rotulo(i - video_n_audio(), nome, sizeof nome, sub, sizeof sub);
+#endif
+    icone = "pl_audio-lines";
+  } else if (!col) {
     const VideoFaixa *f = video_audio(i);
     partirRotulo(f ? f->rotulo : "", nome, sizeof nome, sub, sizeof sub);
     idioma = f ? f->idioma : NULL;
@@ -1794,7 +1808,7 @@ static void linhaLista(int col, int i, float x, float y, float w, float a) {
   }
   if (sel) plrui_linha_foco(lr, 22.0f, a);
   rostoIdioma((GfxRect){ x + 22.0f, y + (IL_LN_H - 52.0f) * 0.5f, 52.0f, 52.0f }, idioma, icone, sel, a);
-  ativo = col == 0 ? i == video_audio_atual() : legDaLinha(i - 1) == legendaAtiva();
+  ativo = col == 0 ? i < video_n_audio() && i == video_audio_atual() : legDaLinha(i - 1) == legendaAtiva();
   { float tx = x + 22.0f + 52.0f + 18.0f, tw = w - (tx - x) - 22.0f - (ativo ? 46.0f : 0.0f);
     int c = sel ? 255 : 219, cs = 122;
     TxtLinha ln = txt_linha_corta(TXT_ILHA_FORTE, nome, c, c, c - 2, 255, tw);

@@ -147,6 +147,24 @@ int main(void) {
     CHECA(dado && strstr(dadoNome, "-p1"));
     perfil = 2; CHECA(tbburn_memoria(&r) == 0); perfil = 1; }
 
+  // 10) HDR (owner 13/11): burn-in On on an HDR file is remembered per show,
+  // survives a later track pick, and old 7-column lines read as not allowed.
+  { TbFaixa t, r;
+    tbburn_titulo("tt15765670");
+    CHECA(!tbburn_hdr_permitido());
+    memset(&t, 0, sizeof t); snprintf(t.idioma, 16, "eng"); snprintf(t.nome, 96, "Signs");
+    tbburn_lembrar(&t); tbburn_hdr_lembrar(1);
+    CHECA(tbburn_hdr_permitido() && dado && strstr(dado, "\tSigns\th\n"));
+    snprintf(t.nome, 96, "Dialogue"); tbburn_lembrar(&t);              // another pick keeps it
+    CHECA(tbburn_hdr_permitido() && tbburn_memoria(&r) == 2 && !strcmp(r.nome, "Dialogue"));
+    tbburn_titulo("tt0000001"); CHECA(!tbburn_hdr_permitido());        // per show
+    tbburn_titulo("tt15765670"); tbburn_hdr_lembrar(0); CHECA(!tbburn_hdr_permitido());
+    free(dado); dado = strdup("# nuvio burn-in v1\ntt7\t1\tf\teng\t0\t1\tSigns\n");   // older file
+    snprintf(dadoNome, sizeof dadoNome, "tbburn-memoria-p%d.txt", 3); perfil = 3;
+    tbburn_titulo("tt7"); CHECA(tbburn_memoria(&r) == 2 && !tbburn_hdr_permitido());
+    perfil = 1;
+    tbburn_hdr_fonte(1); CHECA(tbburn_hdr_da_fonte()); tbburn_hdr_fonte(0); CHECA(!tbburn_hdr_da_fonte()); }
+
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");
   return 0;
