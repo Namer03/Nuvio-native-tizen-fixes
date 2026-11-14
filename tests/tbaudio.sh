@@ -68,7 +68,7 @@ check "no URL of the source in the log" "! grep -q 'token=secret\\|orig.mkv' '$w
 check "codecs hint: CODECS names the video and the renditions' audio" "grep -qE 'CODECS=\"avc1\\.[0-9A-F]{6},mp4a\\.40\\.2,ac-3,fLaC,Opus\"' '$work/out/master.m3u8'"
 curl -s "$B/a0.m3u8" > "$work/out/a0.m3u8"
 check "audio playlist: 2 s segments (16 for 32 s)" "grep -q '^#EXT-X-TARGETDURATION:2' '$work/out/a0.m3u8' && [ \$(grep -c '^a0_' '$work/out/a0.m3u8') = 16 ]"
-check "seek index read at preparation" "grep -q 'seek index read' '$work/s.log'"
+check "seek index read at preparation, seeks through the video (stream 0)" "grep -qE 'seek index read in [0-9]+ ms: seeks go through stream 0 \\([1-9][0-9]* entries\\)' '$work/s.log'"
 for k in 0 1 3 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
 curl -s -o "$work/out/a2i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2_2.m4s" "$B/a2_5.m4s"
 cat "$work/out/a2i.mp4" "$work/out/a2_2.m4s" > "$work/out/flac.mp4"
@@ -78,6 +78,9 @@ check "AC3 5.1 copied ($(codec "$work/out/a1_2.ts"))" "[ '$(codec "$work/out/a1_
 check "Opus copied ($(codec "$work/out/a3_2.ts"))" "[ '$(codec "$work/out/a3_2.ts")' = 'opus,2' ] && perto $(inicio "$work/out/a3_2.ts" a) $v2 0.05"
 check "DTS converted to AC3 5.1 ($(codec "$work/out/a4_2.ts"))" "[ '$(codec "$work/out/a4_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a4_2.ts" a) $v2 0.05"
 check "FLAC as is in fMP4 (init + segment: $(codec "$work/out/flac.mp4"))" "[ '$(codec "$work/out/flac.mp4")' = 'flac,2' ] && perto $(inicio "$work/out/flac.mp4" a) $v2 0.1"
+curl -s -o "$work/out/back.ts" "$B/a0_1.ts"
+check "a seek back (segment 1 after 5) works ($(inicio "$work/out/back.ts" a 2>/dev/null || echo none))" \
+  "[ -s '$work/out/back.ts' ] && perto $(inicio "$work/out/back.ts" a 2>/dev/null || echo 0) $(awk "BEGIN{print 2+$(inicio "$work/src/tb/s0.ts" v)}") 0.05"
 timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 12 -c copy "$work/out/play.ts" || true
 check "a player reads the master: video + audio, starts together" \
   "[ -s '$work/out/play.ts' ] && perto $(inicio "$work/out/play.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/play.ts" a 2>/dev/null || echo 0) 0.05"

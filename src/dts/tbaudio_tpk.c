@@ -598,6 +598,7 @@ typedef struct Sessao {
   DtsEngine *eng;
   AVFormatContext *ic;
   double origV0, durArq;
+  int sBusca;                          // the stream seeks go through (the one the index covers)
   Faixa fx[TBA_FAIXAS]; int nfx;
   // generator (gm); TorBox video downloads (vm, Parallel strip)
   pthread_mutex_t gm, vm;
@@ -900,11 +901,23 @@ static int prepOriginal(Sessao *s, int ordPedido) {
     s->origV0 = ic->streams[v]->start_time * av_q2d(ic->streams[v]->time_base);
   else if (ic->start_time != AV_NOPTS_VALUE) s->origV0 = ic->start_time / (double)AV_TIME_BASE;
   // The seek index (Matroska reads its Cues on the first seek): read now, not
-  // on the viewer's first seek (log 14/11: first seek 7.7-13 s, later 2 s).
+  // on the viewer's first seek. Seeks then go through the stream the index
+  // covers (the video): with stream -1 FFmpeg picks the non-discarded audio,
+  // which has no index entries, and falls back to reading the file forward
+  // (log 14/11: seeks of 7-13 s; on the TV's FFmpeg 7.1 a seek back failed).
   { double t1 = agoraMs();
-    int r = s->durArq > 10 ? av_seek_frame(ic, -1, (int64_t)(s->durArq * 0.5 * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) : -1;
+    int r = -1, mais = -1;
+    s->sBusca = v >= 0 ? v : 0;
+    if (s->durArq > 10)
+      r = av_seek_frame(ic, s->sBusca, av_rescale_q((int64_t)(s->durArq * 0.5 * AV_TIME_BASE), AV_TIME_BASE_Q,
+                                                    ic->streams[s->sBusca]->time_base), AVSEEK_FLAG_BACKWARD);
+    for (i = 0; i < (int)ic->nb_streams; i++) {
+      int n = avformat_index_get_entries_count(ic->streams[i]);
+      if (n > mais) { mais = n; if (n > avformat_index_get_entries_count(ic->streams[s->sBusca])) s->sBusca = i; }
+    }
     s->leu = 1;
-    printf("[tbaudio] seek index %s in %.0f ms\n", r >= 0 ? "read" : "not read (no seek)", agoraMs() - t1); }
+    printf("[tbaudio] seek index %s in %.0f ms: seeks go through stream %d (%d entries)\n", r >= 0 ? "read" : "NOT read",
+           agoraMs() - t1, s->sBusca, avformat_index_get_entries_count(ic->streams[s->sBusca])); }
   modosRecalcular(s);
   s->audio = -1;
   for (i = 0; i < s->nfx; i++) if (s->fx[i].ord == ordPedido && s->fx[i].modo != M_FORA) s->audio = i;
@@ -1117,8 +1130,11 @@ static int posicionar(Sessao *s, int fi, int seg, const double *ini, double len,
   dts_engine_interrupt(s->eng, 0);
   if (seg > 0 || s->leu) {
     // Straight to the segment: the index gives the keyframe at or before it.
-    if (av_seek_frame(s->ic, -1, (int64_t)(alvo * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) {
-      snprintf(err, en, "seek in the original file"); s->gOk = 0; return -1;
+    AVStream *b = s->ic->streams[s->sBusca];
+    int64_t ts = av_rescale_q((int64_t)(alvo * AV_TIME_BASE), AV_TIME_BASE_Q, b->time_base);
+    if (av_seek_frame(s->ic, s->sBusca, ts, AVSEEK_FLAG_BACKWARD) < 0 &&
+        av_seek_frame(s->ic, -1, (int64_t)(alvo * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) {
+      snprintf(err, en, "seek in the original file to %.1f s", alvo); s->gOk = 0; return -1;
     }
   }
   s->gOk = 1; s->gFaixa = fi; s->gModo = f->modo; s->gSeg = seg; s->gIni = ini;
@@ -1284,7 +1300,7 @@ static void *baixarFio(void *u) {
 static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en, int so, long chave) {
   const Faixa *f = &s->fx[s->audio];
   unsigned char *junto = NULL;
-  int vi = -1, i, saltou = 0, rr = 0, nV = 0, nA = 0, ab = 0, fio = 0, nCol = 0, capCol = 0;
+  int vi = -1, i, saltou = 0, rr = 0, nV = 0, nA = 0, ab = 0, fio = 0, nCol = 0, capCol = 0, posFalhou = 0;
   const char *como = "";
   double t0 = agoraMs(), tAud = 0, fs, fe, vPri = -1, aPri = -1;
   AVFormatContext *in = NULL;
@@ -1302,7 +1318,7 @@ static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en, int so,
   fio = pthread_create(&th, NULL, baixarFio, &dl) == 0;
   if (!fio) baixarFio(&dl);
   // The original audio of the same window, meanwhile.
-  if (posicionar(s, s->audio, seg, s->ini, s->pl.seg[seg].dur, &saltou, &como, err, en) < 0) { rr = -1; goto juntar; }
+  if (posicionar(s, s->audio, seg, s->ini, s->pl.seg[seg].dur, &saltou, &como, err, en) < 0) { rr = -1; posFalhou = 1; goto juntar; }
   fs = s->ini[seg] + s->origV0;
   fe = seg + 1 < s->pl.nseg ? s->ini[seg + 1] + s->origV0 : 1e18;
   for (;;) {
@@ -1331,6 +1347,7 @@ juntar:
     snprintf(err, en, "%s after %.0f ms", ab == 1 ? "the player hung up" : "the player asked for another segment", agoraMs() - t0);
     goto fim;
   }
+  if (posFalhou) { s->gOk = 0; goto fim; }   // positioning failed: its error stands (the download was stopped)
   if (!dl.b) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, dl.st); rr = -1; goto fim; }
   if (rr < 0) { s->gOk = 0; goto passar; }
   if (s->tbMp4 && s->tbInit) {   // fMP4: the init in front, so the demuxer sees moov
