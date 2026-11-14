@@ -14,9 +14,23 @@ work=$(mktemp -d /tmp/nuvio-tbaudio.XXXXXX)
 pids=()
 trap 'for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$work"' EXIT
 mkdir -p "$work/src/tb" "$work/src/tb4" "$work/out"
-ffmpeg -v error -f lavfi -i testsrc2=s=320x180:r=24 -f lavfi -i "sine=f=440:r=48000" -f lavfi -i "sine=f=660:r=48000" -t 32 \
+# An ASS track whose first line is at 6 s, one line every 0.2 s: its Cues
+# outnumber the video's (log 14/11: seeks went through such a track, and a
+# seek to 0 s, before its first entry, left the reader at mid-file).
+python3 - "$work/src/s.ass" <<'PY'
+import sys
+t = lambda x: "0:%02d:%05.2f" % (int(x) // 60, x % 60)
+h = ("[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+     "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+     "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,"
+     "&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, "
+     "MarginR, MarginV, Effect, Text\n")
+open(sys.argv[1], "w").write(h + "".join("Dialogue: 0,%s,%s,Default,,0,0,0,,line %d\n" % (t(6 + i * 0.2), t(6.15 + i * 0.2), i)
+                                         for i in range(120)))
+PY
+ffmpeg -v error -f lavfi -i testsrc2=s=320x180:r=24 -f lavfi -i "sine=f=440:r=48000" -f lavfi -i "sine=f=660:r=48000" -i "$work/src/s.ass" -t 32 \
   -filter_complex "[1:a]asplit=4[a0][a1][a2][a3];[a1]pan=5.1|FL=c0|FR=c0|FC=c0|LFE=c0|BL=c0|BR=c0[a51];[a3]pan=5.1|FL=c0|FR=c0|FC=c0|LFE=c0|BL=c0|BR=c0[d51];[2:a]aformat=channel_layouts=stereo[f]" \
-  -map 0:v -map "[a0]" -map "[a51]" -map "[f]" -map "[a2]" -map "[d51]" \
+  -map 0:v -map "[a0]" -map "[a51]" -map "[f]" -map "[a2]" -map "[d51]" -map 3 -c:s ass \
   -c:v libx264 -preset ultrafast -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p \
   -c:a:0 aac -ac:a:0 2 -c:a:1 ac3 -c:a:2 flac -c:a:3 libopus -ac:a:3 2 -c:a:4 dca -strict -2 -b:a:4 768k \
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn -metadata:s:a:2 language=eng -metadata:s:a:3 language=fre \
@@ -63,6 +77,10 @@ check "TorBox audio: no Nuvio stream" "[ ! -s '$work/url1' ]"
 # 1. Passthrough over MPEG-TS: every codec, on TorBox's timeline, 2 s segments.
 sessao tb/playlist.m3u8 0 0 0
 curl -s "$U" > "$work/out/master.m3u8"
+# The very first request: segment 0, right after the index read moved the reader to mid-file.
+curl -s -o "$work/out/a0_0.ts" "$B/a0_0.ts"
+check "segment 0 first: audio from 0 s ($(inicio "$work/out/a0_0.ts" a 2>/dev/null || echo none))" \
+  "[ -s '$work/out/a0_0.ts' ] && perto $(inicio "$work/out/a0_0.ts" a 2>/dev/null || echo 99) $(inicio "$work/src/tb/s0.ts" v) 0.1"
 check "master: one rendition per audio track (5)" "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master.m3u8') = 5 ]"
 check "master: the chosen track is DEFAULT" "grep -q 'DEFAULT=YES.*URI=\"a0.m3u8\"' '$work/out/master.m3u8'"
 curl -s "$B/v.m3u8" > "$work/out/v.m3u8"

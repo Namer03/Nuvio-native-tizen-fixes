@@ -853,16 +853,23 @@ static int prepOriginal(Sessao *s, int ordPedido) {
   // covers (the video): with stream -1 FFmpeg picks the non-discarded audio,
   // which has no index entries, and falls back to reading the file forward
   // (log 14/11: seeks of 7-13 s; on the TV's FFmpeg 7.1 a seek back failed).
+  // The video's index wins whenever it has one; else the audio with the most
+  // entries. NEVER a subtitle track: its Cues can outnumber the video's, but
+  // they start at its first line and skip the gaps, and a seek before them
+  // left the reader at mid-file (log 14/11, TTGA Kaguya S03E02: segment 0 got
+  // no audio and the player waited forever).
   { double t1 = agoraMs();
     int r = -1, mais = -1;
     s->sBusca = v >= 0 ? v : 0;
     if (s->durArq > 10)
       r = av_seek_frame(ic, s->sBusca, av_rescale_q((int64_t)(s->durArq * 0.5 * AV_TIME_BASE), AV_TIME_BASE_Q,
                                                     ic->streams[s->sBusca]->time_base), AVSEEK_FLAG_BACKWARD);
-    for (i = 0; i < (int)ic->nb_streams; i++) {
-      int n = avformat_index_get_entries_count(ic->streams[i]);
-      if (n > mais) { mais = n; if (n > avformat_index_get_entries_count(ic->streams[s->sBusca])) s->sBusca = i; }
-    }
+    if (v < 0 || avformat_index_get_entries_count(ic->streams[v]) <= 0)
+      for (i = 0; i < (int)ic->nb_streams; i++) {
+        int n = avformat_index_get_entries_count(ic->streams[i]);
+        if (ic->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+        if (n > mais) { mais = n; if (n > 0) s->sBusca = i; }
+      }
     s->leu = 1;
     printf("[tbaudio] seek index %s in %.0f ms: seeks go through stream %d (%d entries)\n", r >= 0 ? "read" : "NOT read",
            agoraMs() - t1, s->sBusca, avformat_index_get_entries_count(ic->streams[s->sBusca])); }
@@ -1080,6 +1087,16 @@ static int posicionar(Sessao *s, int fi, int seg, const double *ini, double len,
     // Straight to the segment: the index gives the keyframe at or before it.
     AVStream *b = s->ic->streams[s->sBusca];
     int64_t ts = av_rescale_q((int64_t)(alvo * AV_TIME_BASE), AV_TIME_BASE_Q, b->time_base);
+    // Before the index's first entry Matroska does not move at all (it
+    // returns 0 and the reader stays where it was): ask for the first entry.
+    if (avformat_index_get_entries_count(b) > 0 && av_index_search_timestamp(b, ts, AVSEEK_FLAG_BACKWARD) < 0) {
+      const AVIndexEntry *e0 = avformat_index_get_entry(b, 0);
+      if (e0 && e0->timestamp > ts) {
+        printf("[tbaudio] seek to %.3f s is before the index (first entry %.3f s): going to the first entry\n", alvo,
+               e0->timestamp * av_q2d(b->time_base));
+        ts = e0->timestamp;
+      }
+    }
     if (av_seek_frame(s->ic, s->sBusca, ts, AVSEEK_FLAG_BACKWARD) < 0 &&
         av_seek_frame(s->ic, -1, (int64_t)(alvo * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) {
       snprintf(err, en, "seek in the original file to %.1f s", alvo); s->gOk = 0; return -1;
