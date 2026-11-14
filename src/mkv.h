@@ -110,6 +110,8 @@ int mkv_faixas_e_caps(const char *url, MkvFaixa *saida, int max,
 #define MKV_CONT_OUTRO 5   // binario que nao e nenhum dos acima: tambem nao e Matroska
 int mkv_contentor(const unsigned char *p, long n);   // puro
 int mkv_ultimo_contentor(void);
+// Segment > Info > Duration (seconds) of the last header read; 0 = not in it.
+double mkv_ultima_duracao(void);
 // 1 quando o contentor lido encerra a pergunta "e MKV?" sem nova tentativa.
 int mkv_contentor_definitivo(int contentor);
 const char *mkv_contentor_nome(int contentor);

@@ -1499,7 +1499,7 @@ void faixas_evento(const SDL_Event *e) {
   // legenda, que e justamente o que fazia os dois botoes do player parecerem o
   // mesmo botao.
 #ifdef NV_TPK
-  // Original audio / FLAC rows (tbburn.h): Left/Right change the value shown,
+  // Original audio row (tbburn.h): Left/Right change the value shown,
   // OK applies it (aplicar).
   if (!modo && coluna == 0 && foco[0] >= video_n_audio() && (k == SDLK_LEFT || k == SDLK_RIGHT)) {
     video_tpk_tba_passo(foco[0] - video_n_audio(), k == SDLK_RIGHT ? 1 : -1);

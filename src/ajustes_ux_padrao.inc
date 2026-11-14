@@ -356,4 +356,4 @@
   1, /* audio sync samples the film on mobile data too: Off (V_LIGA 1) */
   0, /* TorBox plan: Standard (V_TB_PLANO 0) */
   0, /* burn embedded ASS in with TorBox: On (V_LIGA 0); only acts with plan Pro */
-  0, /* original audio with burn-in: TorBox audio (V_TB_AUDIO 0) */
+  0, /* original audio with burn-in: Passthrough (V_TB_AUDIO 0) */

@@ -76,7 +76,7 @@ static const Item TELA[] = {
       OPC(AJ_LEG_MOSTRAR), OPC(AJ_LEG_SYNC_AUTO),
 #ifdef NV_TPK
       OPC(AJ_LEG_QUEIMAR),   // TorBox burn-in (tbburn.h), greyed without plan Pro + key
-      OPC(AJ_TB_AUDIO),      // original audio with burn-in: Parallel | Remux (dts/tbaudio_tpk.h)
+      OPC(AJ_TB_AUDIO),      // original audio with burn-in: Passthrough | TorBox audio (dts/tbaudio_tpk.h)
 #endif
 #ifdef NV_ANDROID
       // Sincronia pelo audio: a reserva do Reshaped so existe no Android (dono,

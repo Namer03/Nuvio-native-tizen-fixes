@@ -100,10 +100,9 @@ void video_tpk_queimar_ligar(int ligar);
 int  video_tpk_leg_queimavel(int i);
 // 1 = burned in is on (or being asked for) and `i` is burnable: hidden from Main/Second.
 int  video_tpk_leg_oculta(int i);
-// Audio menu rows under the tracks (faixas.c), original audio with burn-in
-// (dts/tbaudio_tpk.h): 0 = "Original audio: TorBox audio | Remux | Parallel
-// (codecs hint) | Parallel (strip TorBox audio)" (saves Settings; reopens while
-// burned), 1 = "FLAC: As is | Convert" (files with FLAC).
+// Audio menu row under the tracks (faixas.c), original audio with burn-in
+// (dts/tbaudio_tpk.h): "Original audio: Passthrough | TorBox audio" (saves
+// Settings; reopens while burned). One row (k is always 0); FLAC goes as is.
 int  video_tpk_tba_linhas(void);
 void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns);
 void video_tpk_tba_ok(int k);

@@ -289,7 +289,7 @@ static const char *uxSinonimos(int op) {
     case AJ_LEG_FORCADA: return "legenda forcada forcadas forced letreiros placas audio idioma automatica subtitle";
     case AJ_LEG_SYNC_AUTO: case AJ_LEG_SYNC_AUDIO: case AJ_LEG_SYNC_AUDIO_MOVEL: return "sincronia sincronizar legenda audio fala falas atraso automatico sync subtitle speech";
     case AJ_LEG_QUEIMAR: return "queimar queimada legenda ass torbox burn burned in subtitle pro";
-    case AJ_TB_AUDIO: return "audio original paralelo remux torbox queimar burn in parallel flac dts";
+    case AJ_TB_AUDIO: return "audio original passthrough torbox queimar burn in flac dts";
     case AJ_TB_PLANO: return "torbox plano plan pro standard debrid";
     case AJ_AVANCADAS: return "avancado avancada avancados avancadas tecnico tecnica opcoes ocultas mostrar esconder advanced";
     case AJ_LOGO_TRAILER: return "trailer trailers logo marca titulo oled queimar burn-in esconder canto";

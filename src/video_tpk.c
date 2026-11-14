@@ -200,6 +200,11 @@ static struct {
   Uint32 retentouEm;            // B (owner 14/11): one retry of Nuvio's stream, at most once a minute
 } tb;
 static volatile int mkvN, mkvEstado, faixasNovas;
+// The file's own length (MKV Segment > Info > Duration), 0 = unknown. TorBox's
+// burned HLS rounds its last segment up to 5 s and the TV reports that length
+// (3.9 s and 2.75 s longer on the S95C, 14/11): video_duracao corrects it.
+static double mkvDurArq;
+static int mkvDurAviso;
 // #269: a folha pediu a sonda ja (video_sondar_mkv_agora); `mkvNaoMkv`: a
 // sonda pela rede voltou sem TrackEntry nenhuma (nao e MKV).
 static volatile int mkvSondarJa, mkvNaoMkv;
@@ -387,7 +392,7 @@ void nv_tpk_video_faixas_fim(int selAudio, int selLeg) {
     if (tb.tba) {
       tb.hostA = nNovasA;
       printf("[tbaudio] the TV player lists %d audio track(s) for Nuvio's stream (renditions offered: %d)%s\n", nNovasA,
-             tba_n_rendicoes(), tba_modo() == TBA_PARALELO && nNovasA != tba_n_rendicoes() ?
+             tba_n_rendicoes(), nNovasA != tba_n_rendicoes() ?
              ": an audio change reopens the stream" : "");
     }
     printf("[tbburn] TorBox's stream lists %d audio, %d subtitle(s); the menu keeps the file's tracks\n", nNovasA, nNovasL);
@@ -995,12 +1000,12 @@ static void tbSoltar(const char *porque) {
   fflush(stdout);
   abrirHost(tbPreUrl, tbPreCab);
 }
-static const char *const TBA_NOME[TBA_MODOS] = { "TorBox audio", "Remux", "Parallel (codecs hint)", "Parallel (strip TorBox audio)" };
-static const char *const TBA_ROTULO[TBA_MODOS] = { "Áudio do TorBox", "Remux", "Paralelo (codecs)", "Paralelo (sem áudio do TorBox)" };
+static const char *const TBA_NOME[TBA_MODOS] = { "Passthrough", "TorBox audio" };
+static const char *const TBA_ROTULO[TBA_MODOS] = { "Passthrough", "Áudio do TorBox" };
 // TorBox's burned stream is ready (`m`): what the TV player opens. Settings >
-// "Original audio with burn-in": TorBox audio (default) = TorBox's URL as it
-// is; Remux / Parallel = Nuvio's local stream with the original file's audio
-// (only with the converter in this build).
+// "Original audio with burn-in": Passthrough (default) = Nuvio's local stream,
+// TorBox's video without its audio + the original file's audio (only with the
+// converter in this build); TorBox audio = TorBox's URL as it is.
 static void tbUrlPlayer(const char *m) {
   char loc[256];
   int modo = ajustes_tb_audio_modo();
@@ -1285,7 +1290,7 @@ int video_tocar(const char *u) {
   reconPermitida = reconProxima; reconProxima = 0;
   if (reconPermitida) capmkv_iniciar(urlAtual);
   else capmkv_zerar();
-  mkvGeracao++; mkvN = 0; faixasNovas = 0; mkvOlhou = 0; mkvSondarJa = 0; mkvNaoMkv = !reconPermitida;
+  mkvGeracao++; mkvN = 0; mkvDurArq = 0; mkvDurAviso = 0; faixasNovas = 0; mkvOlhou = 0; mkvSondarJa = 0; mkvNaoMkv = !reconPermitida;
   // Um fio da fonte anterior ainda na rede ve a geracao mudada e descarta.
   mkvEstado = urlAtual[0] && reconPermitida ? 1 : 0;
   pausaPedida = 0; reconPausa = -1;
@@ -1332,6 +1337,7 @@ static void guardarMkv(const MkvFaixa *fx, int n) {
            fx[i].numero, fx[i].tipo, fx[i].codec, fx[i].idioma[0] ? fx[i].idioma : "-",
            fx[i].nome[0] ? fx[i].nome : "-", fx[i].forcado, fx[i].canais);
   fflush(stdout);
+  mkvDurArq = mkv_ultima_duracao();
   mkvN = n;
   faixasNovas = 1;
 }
@@ -2174,8 +2180,7 @@ void video_bombear(void) {
     char mt[160] = "";
     if (tb.tba && tba_falhou(mt, sizeof mt)) { printf("[tbaudio] Nuvio's stream could not start: %s\n", mt); }
     printf("[tbburn] player error 0x%x on %s\n", (unsigned)reconErroCod,
-           tb.tba ? (tba_modo() == TBA_REMUX ? "Nuvio's Remux stream" : "Nuvio's Parallel stream (TorBox video + original audio)")
-                  : "TorBox's burned stream");
+           tb.tba ? "Nuvio's Passthrough stream (TorBox video + original audio)" : "TorBox's burned stream");
     fflush(stdout);
     reconErroPend = 0; reconLinhaRede = 0;
     nv_recon_zerar(&recon);
@@ -2292,7 +2297,7 @@ void video_parar(void) {
   // velha ("[mkv] contagem" e "audio pela ordem ... fica" depois do Voltar).
   // A geracao nova faz um fioMkv ainda na rede descartar o que trouxer;
   // video_tocar zera o mesmo ao abrir o proximo.
-  mkvGeracao++; mkvN = 0; mkvEstado = 0; faixasNovas = 0; faixasLidas = 0;
+  mkvGeracao++; mkvN = 0; mkvDurArq = 0; mkvDurAviso = 0; mkvEstado = 0; faixasNovas = 0; faixasLidas = 0;
   nAudio = nLeg = 0; audioAtual = 0; legAtual = -1; nNovasA = nNovasL = 0;
 }
 void video_pausar(int p) {
@@ -2624,7 +2629,21 @@ double video_pos(void) {
 double video_duracao(void) {
   // Progressivo: o player ve um fluxo sem fim; a duracao e a da fonte.
   if (cv.ativo && cv.prog) return dts_tpk_duracao();
-  return durMs / 1000.0;
+  {
+    double d = durMs / 1000.0, f = mkvDurArq;
+    // TorBox's burned stream with TorBox's audio: the playlist's last segment
+    // counts a full 5 s, so the player overstates the length by up to 5 s.
+    // The file's own Duration wins when it is that much shorter.
+    if (tb.ativo && !tb.tba && f > 0 && d > f && d - f < 5.5) {
+      if (!mkvDurAviso) {
+        mkvDurAviso = 1;
+        printf("[tbburn] length: the player says %.2f s, the file %.2f s (TorBox's last segment is padded): using the file's\n", d, f);
+        fflush(stdout);
+      }
+      return f;
+    }
+    return d;
+  }
 }
 // Capitulos do MKV lidos por um fio lateral (capmkv.c, 203-capitulos).
 double video_creditos(void) { return capmkv_creditos(video_duracao()); }
@@ -2749,8 +2768,8 @@ void video_escolher_audio(int i) {
   // TorBox first, still holding and nothing asked yet: just the choice.
   if (tb.pre && !tb.pend) { audioAtual = i; return; }
   // Original audio with burn-in: only Nuvio's generator changes, TorBox is not
-  // asked again. Parallel: the player switches renditions itself when it lists
-  // them all; otherwise (or Remux) the stream reopens at the same position.
+  // asked again. The player switches renditions itself when it lists them
+  // all; otherwise the stream reopens at the same position (logged why).
   if (tb.ativo && tb.tba && !tb.pend) {
     int ord, r;
     if (i == audioAtual) return;
@@ -2761,14 +2780,22 @@ void video_escolher_audio(int i) {
       return;
     }
     tba_definir_audio(ord);
-    if (tba_modo() == TBA_PARALELO && hEscolher && audioComecou && tb.hostA == tba_n_rendicoes()) {
+    if (hEscolher && audioComecou && tb.hostA == tba_n_rendicoes()) {
       printf("[tbaudio] audio %d (%s): the player switches to rendition %d itself\n", ord, faixaAudio[i].rotulo, r);
       fflush(stdout);
       hEscolher(0, r);
       return;
     }
-    printf("[tbaudio] audio %d (%s): reopening at %.1f s (%s)\n", ord, faixaAudio[i].rotulo, video_pos(),
-           tba_modo() == TBA_REMUX ? "Remux" : !audioComecou ? "audio not started yet" : "the player does not list the renditions");
+    // Why it reopens (owner 14/11: log it). Expected after a mode change:
+    // the player lists only what it opened with until the stream is new.
+    printf("[tbaudio] audio %d (%s): reopening at %.1f s; why: %s (player lists %d audio, Nuvio offers %d renditions, "
+           "audio started %s, in-place switch %s, mode %s)\n", ord, faixaAudio[i].rotulo, video_pos(),
+           !hEscolher ? "this host cannot pick a track in place" :
+           !audioComecou ? "the audio has not started yet" :
+           tb.hostA < 0 ? "the player has not listed its tracks yet" :
+           "the player's list does not match the renditions",
+           tb.hostA, tba_n_rendicoes(), audioComecou ? "yes" : "no", hEscolher ? "available" : "unavailable",
+           TBA_NOME[tba_modo() >= 0 && tba_modo() < TBA_MODOS ? tba_modo() : 0]);
     fflush(stdout);
     tbReabrir(video_pos());
     return;
@@ -2888,57 +2915,46 @@ void video_encerrar(void) { video_parar(); }
 #endif
 
 // ---- Audio menu: original audio with burn-in (owners 13-14/11) -------------------
-// Rows under the audio tracks (faixas.c), shown whenever the Burn in row would
-// be (TorBox Pro, the file on TorBox with an ASS track) and this build has the
-// converter. "Original audio": TorBox audio | Remux | Parallel (codecs hint) |
-// Parallel (strip TorBox audio). "FLAC: As is | Convert" (files with FLAC).
+// One row under the audio tracks (faixas.c), shown whenever the Burn in row
+// would be (TorBox Pro, the file on TorBox with an ASS track) and this build
+// has the converter: "Original audio: Passthrough | TorBox audio". FLAC always
+// goes as is (owner 14/11; the conversion stays in tbaudio with no row).
 // Left/Right only changes the value shown; OK applies it (saves Settings and,
 // while burned, reopens at the same position). Owner 14/11: never on its own.
-static int tbaPend[2] = { -1, -1 };   // value shown, -1 = the current one
-static int tbTemFlac(void) {
-  for (int i = 0; i < mkvN; i++) if (mkvFx[i].tipo == 2 && !strcmp(mkvFx[i].codec, "A_FLAC")) return 1;
-  return 0;
-}
-static int tbaAtual(int k) { return k == 0 ? ajustes_tb_audio_modo() : tba_flac_converter(); }
+static int tbaPend = -1;   // value shown, -1 = the current one
 int video_tpk_tba_linhas(void) {
   if (!ativo || emTrailer || !tba_disponivel() || !(tb.ativo || tb.pend || tbburn_linha_visivel())) return 0;
-  return 1 + (tbTemFlac() ? 1 : 0);
+  return 1;
 }
 void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns) {
-  int v = tbaPend[k ? 1 : 0] >= 0 ? tbaPend[k ? 1 : 0] : tbaAtual(k);
-  int muda = tbaPend[k ? 1 : 0] >= 0 && tbaPend[k ? 1 : 0] != tbaAtual(k);
-  const char *val = k == 0 ? i18n(TBA_ROTULO[v]) : i18n(v ? "Converter" : "Tal como está");
-  snprintf(nome, nn, "%s", k == 0 ? i18n("Áudio original") : "FLAC");
-  if (muda) snprintf(sub, ns, "%s  ·  %s", val, i18n("OK para aplicar"));
+  int atual = ajustes_tb_audio_modo(), v = tbaPend >= 0 ? tbaPend : atual;
+  const char *val = i18n(TBA_ROTULO[v]);
+  (void)k;
+  snprintf(nome, nn, "%s", i18n("Áudio original"));
+  if (tbaPend >= 0 && tbaPend != atual) snprintf(sub, ns, "%s  ·  %s", val, i18n("OK para aplicar"));
   else snprintf(sub, ns, "%s", val);
 }
 void video_tpk_tba_passo(int k, int dir) {
-  int n = k == 0 ? TBA_MODOS : 2, i = k ? 1 : 0;
-  int v = tbaPend[i] >= 0 ? tbaPend[i] : tbaAtual(k);
-  tbaPend[i] = ((v + (dir > 0 ? 1 : -1)) % n + n) % n;
+  int v = tbaPend >= 0 ? tbaPend : ajustes_tb_audio_modo();
+  (void)k;
+  tbaPend = ((v + (dir > 0 ? 1 : -1)) % TBA_MODOS + TBA_MODOS) % TBA_MODOS;
 }
-void video_tpk_tba_soltar(void) { tbaPend[0] = tbaPend[1] = -1; }
+void video_tpk_tba_soltar(void) { tbaPend = -1; }
 void video_tpk_tba_ok(int k) {
-  int i = k ? 1 : 0, v = tbaPend[i];
-  tbaPend[i] = -1;
-  if (v < 0 || v == tbaAtual(k)) return;   // nothing changed: OK just closes
-  if (k == 0) {
-    ajustes_definir_tb_audio_modo(v);
-    printf("[tbaudio] Audio menu: original audio %s (OK; saved in Settings)\n", TBA_NOME[v]);
-    fflush(stdout);
-    if (tb.ativo && tb.urlTb[0]) {
-      double pos = video_pos();
-      char m[sizeof tb.urlTb];
-      snprintf(m, sizeof m, "%s", tb.urlTb);
-      tbUrlPlayer(m);
-      printf("[tbaudio] reopening at %.1f s: %s\n", pos, TBA_NOME[v]);
-      fflush(stdout);
-      tbReabrir(pos);
-    }
-    return;
-  }
-  tba_definir_flac(v);
-  printf("[tbaudio] Audio menu: FLAC %s (OK)\n", v ? "converted" : "as is");
+  int v = tbaPend;
+  (void)k;
+  tbaPend = -1;
+  if (v < 0 || v == ajustes_tb_audio_modo()) return;   // nothing changed: OK just closes
+  ajustes_definir_tb_audio_modo(v);
+  printf("[tbaudio] Audio menu: original audio %s (OK; saved in Settings)\n", TBA_NOME[v]);
   fflush(stdout);
-  if (tb.ativo && tb.tba && tba_audio_e_flac()) tbReabrir(video_pos());
+  if (tb.ativo && tb.urlTb[0]) {
+    double pos = video_pos();
+    char m[sizeof tb.urlTb];
+    snprintf(m, sizeof m, "%s", tb.urlTb);
+    tbUrlPlayer(m);
+    printf("[tbaudio] reopening at %.1f s: %s\n", pos, TBA_NOME[v]);
+    fflush(stdout);
+    tbReabrir(pos);
+  }
 }

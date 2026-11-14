@@ -1,42 +1,33 @@
-/* ORIGINAL AUDIO WITH TORBOX BURN-IN (owner 13/11/2026). While TorBox's burned
- * picture plays (tbburn.h), the sound comes from the original file, read by
- * Nuvio on ONE sequential connection (dts_engine_open_demux), instead of
- * TorBox's stereo downmix. A local HTTP server on 127.0.0.1 (one session at a
- * time) serves the TV player one of these (Settings > "Original audio with
- * burn-in" and the Audio menu row; owner 14/11, default TorBox audio):
+/* ORIGINAL AUDIO WITH TORBOX BURN-IN (owners 13-14/11). While TorBox's burned
+ * picture plays (tbburn.h), Settings > "Original audio with burn-in" picks:
  *
- *   TORBOX AUDIO (default): no session; the TV plays TorBox's stream as is.
- *   REMUX: one stream. Nuvio downloads TorBox segment k (alongside making
- *     the audio), keeps its video packets and muxes in the original audio of
- *     the same window (MPEG-TS). On a failure after the download TorBox's
- *     segment goes through unchanged with its own audio (logged).
- *   PARALLEL (codecs hint): a master playlist whose video is TorBox's media
- *     playlist (mirrored, absolute URLs: the TV downloads the video itself)
- *     and whose audio is one HLS rendition per audio track of the file, in
- *     2 s segments. CODECS names the video and only the renditions' audio.
- *     The S95C played TorBox's own audio here without the hint (14/11).
- *   PARALLEL (strip TorBox audio): the same renditions, but the video comes
- *     through Nuvio with TorBox's audio packets removed (no decoding).
+ *   PASSTHROUGH (default): the sound comes from the original file, read by
+ *     Nuvio on ONE sequential connection (dts_engine_open_demux). A local
+ *     HTTP server on 127.0.0.1 serves the TV a master playlist with one HLS
+ *     audio rendition per audio track (2 s segments, on TorBox's timeline)
+ *     and TorBox's video segments with TorBox's audio removed (vs.m3u8 ->
+ *     v_<k>.ts; nothing is decoded). The S95C played TorBox's muxed audio
+ *     whenever it was still in the video (14/11), so it has to go.
+ *   TORBOX AUDIO: no session; TorBox's stream (its transcoded audio) as is.
  *
  * Audio by codec: AAC / AC3 / E-AC3 / Opus / MP3 copied into MPEG-TS; DTS,
  * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC copied as is
- * into fragmented-MP4 audio segments (MPEG-TS has no FLAC) or, with the
- * Audio-menu test row "FLAC: Convert", converted (AC3 5.1 / AAC 2.0). In
- * REMUX the output is MPEG-TS only, so FLAC is always converted there.
+ * into fragmented-MP4 segments (MPEG-TS has no FLAC; the S95C plays it). The
+ * FLAC conversion stays in the code (tba_definir_flac) with no menu row.
  *
- * Connections: the original file 1 (this module), plus in REMUX / strip one
- * TorBox segment download at a time. Audio generation is serialized; a
- * segment the player hung up on, or left for another position, is dropped.
+ * Connections: the original file 1 + one TorBox segment download at a time.
+ * Audio generation is serialized; a segment the player hung up on, or left
+ * for another position, is dropped. Seeks go through the indexed stream.
  * Nothing here logs a URL (TorBox's carry its token).
  *
- * Only the .tpk built with FFmpeg has the server; elsewhere the
- * calls are stubs (tba_disponivel() == 0). The playlist helpers are pure and
- * compile everywhere (tests/tbaudio.sh). */
+ * Only the .tpk built with FFmpeg has the server; elsewhere the calls are
+ * stubs (tba_disponivel() == 0). The playlist helpers are pure and compile
+ * everywhere (tests/tbaudio.sh). */
 #ifndef NV_TBAUDIO_TPK_H
 #define NV_TBAUDIO_TPK_H
 #include <stddef.h>
 
-enum { TBA_TORBOX = 0, TBA_REMUX = 1, TBA_PARALELO = 2, TBA_PARALELO_SEM = 3, TBA_MODOS };
+enum { TBA_PASSTHROUGH = 0, TBA_TORBOX = 1, TBA_MODOS };
 
 int  tba_disponivel(void);
 /* New session (replaces any previous one). tb_m3u8: TorBox's playlist URL (a
@@ -54,21 +45,21 @@ int  tba_modo(void);
 int  tba_falhou(char *motivo, size_t n);
 /* 1 once the playlists are built (tracks known). */
 int  tba_pronto(void);
-/* PARALLEL: renditions offered (= the TV player's audio list, in order) and
+/* Passthrough: renditions offered (= the TV player's audio list, in order) and
  * the rendition of a file audio track (-1 = not offered). */
 int  tba_n_rendicoes(void);
 int  tba_rendicao_de(int audio_ordinal);
-/* The track the next playlist/segments use (DEFAULT=YES rendition / remux). */
+/* The track the next playlist/segments use (the DEFAULT=YES rendition). */
 void tba_definir_audio(int audio_ordinal);
 int  tba_audio(void);
-/* FLAC test row (session-wide, first build): 1 = convert. */
+/* FLAC conversion (session-wide; no menu row since 14/11, FLAC goes as is): 1 = convert. */
 void tba_definir_flac(int converter);
 int  tba_flac_converter(void);
-/* 1 = the file has a FLAC audio track (the FLAC row shows). */
+/* 1 = the file has a FLAC audio track. */
 int  tba_tem_flac(void);
 /* 1 = the track the session plays is FLAC. */
 int  tba_audio_e_flac(void);
-/* A summary line for the 10 s log (counts, timings, A/V gap). */
+/* A summary line for the 10 s log (counts, timings). */
 void tba_log(void);
 
 /* S2 (logging only): sockets to TorBox's hosts in /proc/net/tcp(6),
