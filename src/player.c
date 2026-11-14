@@ -1374,7 +1374,9 @@ static const char *prefsArquivo(void) {
 // ajustes.txt, que espelha as chaves de layout do app web. Padrao: tamanho 2
 // (o do aparelho), branco, sem fundo, posicao central, contorno.
 // -1 preserves the legacy outline preference until a border colour is chosen.
-static VideoLegendaEstilo legEstilo = { 120, 0, 0, 3, 1, 0, 0, TXT_FAMILIA_INTER, 0, -1 };
+// Owner 14/11/2026: Stremio's look is the default (Plus Jakarta Sans, Outline =
+// Stremio's soft shadow); opacity is a % in steps of 10.
+static VideoLegendaEstilo legEstilo = { 120, 0, 0, 3, 1, 0, 100, TXT_FAMILIA_JAKARTA, 0, -1 };
 // Ver player_leg_estilo_tocou, em player.h: o que a pessoa mexeu vence o que o
 // arquivo ASS pede. Persistido junto com o resto — a preferencia nao pode
 // valer so ate desligar a TV.
@@ -1385,7 +1387,7 @@ static void prefsLer(void) {
   prefsLidas = 1;
   legEstilo.corBorda = -1;
   FILE *f = fopen(prefsArquivo(), "r");
-  char chave[64]; int v, sinalNovo = 0, temAtraso = 0, bordaExplicita = 0;
+  char chave[64]; int v, sinalNovo = 0, temAtraso = 0, bordaExplicita = 0, opacAntiga = -1, opacPct = -1;
   if (!f) return;
   while (fscanf(f, "%63s %d", chave, &v) == 2) {
     // Valor de outra versao (ou arquivo editado a mao) cai no padrao em vez de
@@ -1405,12 +1407,21 @@ static void prefsLer(void) {
     else if (!strcmp(chave, "leg_atraso_sinal") && v == 1) sinalNovo = 1;
     else if (!strcmp(chave, "leg_cor_borda") && v >= -1 && v < VIDEO_LEG_NCORES) legEstilo.corBorda = v;
     else if (!strcmp(chave, "leg_cor_borda_explicita") && v == 1) bordaExplicita = 1;
-    else if (!strcmp(chave, "leg_opacidade") && v >= 0 && v <= 3) legEstilo.opacidade = v;
+    // Opacity: % since 14/11/2026 (leg_opac_pct); the old index only if the
+    // file has no % yet, rounded up (video_legenda_opac_antiga).
+    else if (!strcmp(chave, "leg_opac_pct") && v >= VIDEO_LEG_OPAC_MIN && v <= VIDEO_LEG_OPAC_MAX && v % 10 == 0) opacPct = v;
+    else if (!strcmp(chave, "leg_opacidade") && v >= 0 && v <= 3) opacAntiga = v;
     else if (!strcmp(chave, "leg_familia") && v >= 0 && v < TXT_FAMILIA_N) legEstilo.familia = v;
     else if (!strcmp(chave, "leg_negrito") && (v == 0 || v == 1)) legEstilo.negrito = v;
     else if (!strcmp(chave, "leg_tocado")  && v >= 0) legTocado = v;
   }
   fclose(f);
+  if (opacPct >= 0) legEstilo.opacidade = opacPct;
+  else if (opacAntiga >= 0) legEstilo.opacidade = video_legenda_opac_antiga(opacAntiga);
+  // New default font (owner 14/11/2026: keep saved choices): a font nobody
+  // picked was the old default, Inter; it becomes Plus Jakarta Sans. A font
+  // the person picked (PLR_LEG_FONTE) stays.
+  if (!(legTocado & PLR_LEG_FONTE)) legEstilo.familia = TXT_FAMILIA_JAKARTA;
   // Older players wrote default Black even when no border colour was chosen.
   if (!bordaExplicita && legEstilo.corBorda == 0 && !(legTocado & PLR_LEG_COR_BORDA))
     legEstilo.corBorda = -1;
@@ -1434,7 +1445,7 @@ static int prefsGravar(void) {
   fprintf(f, "leg_borda %d\n",   legEstilo.borda);
   fprintf(f, "leg_atraso %d\n",  legEstilo.atrasoMs);
   fprintf(f, "leg_atraso_sinal 1\n");
-  fprintf(f, "leg_opacidade %d\n", legEstilo.opacidade);
+  fprintf(f, "leg_opac_pct %d\n", legEstilo.opacidade);
   fprintf(f, "leg_familia %d\n", legEstilo.familia);
   fprintf(f, "leg_negrito %d\n", legEstilo.negrito);
   fprintf(f, "leg_tocado %d\n", legTocado);
@@ -1455,7 +1466,7 @@ void player_leg_estilo_mudou(void) {
   if (prefsGravar()) sync_proteger_ajustes_locais();
 }
 const VideoLegendaEstilo *player_leg_estilo_padrao(void) {
-  static const VideoLegendaEstilo padrao = {120, 0, 0, 3, 1, 0, 0, TXT_FAMILIA_INTER, 0, 0};
+  static const VideoLegendaEstilo padrao = {120, 0, 0, 3, 1, 0, 100, TXT_FAMILIA_JAKARTA, 0, 0};
   return &padrao;
 }
 static int estiloPreparar(const VideoLegendaEstilo *estilo, int tocou) {
@@ -1464,7 +1475,8 @@ static int estiloPreparar(const VideoLegendaEstilo *estilo, int tocou) {
       estilo->corBorda < -1 || estilo->corBorda >= VIDEO_LEG_NCORES ||
       estilo->familia < 0 || estilo->familia >= TXT_FAMILIA_N ||
       estilo->fundo < 0 || estilo->fundo > 4 || estilo->posicao < 0 || estilo->posicao > 7 ||
-      estilo->borda < 0 || estilo->borda > 2 || estilo->opacidade < 0 || estilo->opacidade > 3 ||
+      estilo->borda < 0 || estilo->borda > 2 || estilo->opacidade < VIDEO_LEG_OPAC_MIN ||
+      estilo->opacidade > VIDEO_LEG_OPAC_MAX || estilo->opacidade % 10 ||
       estilo->negrito < 0 || estilo->negrito > 1 ||
       estilo->atrasoMs < -LEG_ATRASO_MANUAL_MAX || estilo->atrasoMs > LEG_ATRASO_MANUAL_MAX) return 0;
   player_leg_estilo_carregar();
@@ -5435,7 +5447,7 @@ static void corLegenda(int i,int *r,int *g,int *b){
 // esquerda, 2/5/8 centro, 3/6/9 direita.
 #define PLR_LEG_LINHAS 6
 #define PLR_LEG_LARG   1660.0f
-typedef struct { TxtLinha cor[PLR_LEG_LINHAS], borda[PLR_LEG_LINHAS]; int n; float w, h; } LegBloco;
+typedef struct { TxtLinha cor[PLR_LEG_LINHAS], borda[PLR_LEG_LINHAS]; int n; float w, h; TxtEstilo est; } LegBloco;
 
 static void blocoLinha(LegBloco *bl, TxtEstilo est, const char *linha, int r, int g, int b,
                        TxtFamilia fam, int enf) {
@@ -5445,8 +5457,9 @@ static void blocoLinha(LegBloco *bl, TxtEstilo est, const char *linha, int r, in
   // Latin text comes back byte-identical.
   if (txt_bidi_legenda(fam, est, linha, visual, sizeof visual) > 0) linha = visual;
   bl->cor[bl->n]   = txt_linha_corta_enfase(est, linha, r, g, b, 255, PLR_LEG_LARG, fam, enf);
-  { unsigned cor = ajustes_leg_borda_rgb(legEstilo.corBorda);
-    bl->borda[bl->n] = legEstilo.borda ? txt_linha_corta_enfase(est, linha, (cor >> 16) & 255, (cor >> 8) & 255, cor & 255, 255, PLR_LEG_LARG, fam, enf) : (TxtLinha){0}; }
+  { unsigned cor = ajustes_leg_borda_cor(legEstilo.corBorda, legEstilo.borda);
+    bl->borda[bl->n] = legEstilo.borda ? txt_linha_corta_enfase(est, linha, (cor >> 16) & 255, (cor >> 8) & 255, cor & 255, 255, PLR_LEG_LARG, fam,
+                                                                 enf | (legEstilo.borda == 1 ? TXT_ENF_SUAVE : 0)) : (TxtLinha){0}; }
   if (bl->cor[bl->n].w > bl->w) bl->w = bl->cor[bl->n].w;
   bl->h += bl->cor[bl->n].h + (bl->n ? 5 : 0);
   bl->n++;
@@ -5463,7 +5476,7 @@ static void montarBloco(const LegendaCue *c, TxtEstilo est, int r, int g, int b,
   char texto[768], *linha, *salva;
   TxtFamilia fam = legfontes_caminho(0) ? TXT_FAMILIA_IMPORTADA1 : (TxtFamilia)legEstilo.familia;
   int enf = (c->negrito || legEstilo.negrito ? TXT_ENF_NEGRITO : 0) | (c->italico ? TXT_ENF_ITALICO : 0);
-  bl->n = 0; bl->w = 0; bl->h = 0;
+  bl->n = 0; bl->w = 0; bl->h = 0; bl->est = est;
   snprintf(texto, sizeof texto, "%s", c->texto);
   linha = strtok_r(texto, "\n", &salva);
   while (linha && bl->n < PLR_LEG_LINHAS) {
@@ -5484,17 +5497,42 @@ static void montarBloco(const LegendaCue *c, TxtEstilo est, int r, int g, int b,
   }
 }
 
+// alinha: 0 esquerda (x0 e a borda esquerda), 1 centro (x0 e o centro),
+// 2 direita (x0 e a borda direita).
+static float blocoX(const LegBloco *bl, int i, float x0, int alinha) {
+  float w = (float)bl->cor[i].w;
+  return alinha == 0 ? x0 : alinha == 1 ? x0 - w * .5f : x0 - w;
+}
+// Owner 14/11/2026: the subtitle fades as ONE picture (Stremio, CSS opacity
+// on the subtitle element): border and text composed at 1 in a group, the
+// group drawn once with the opacity. The background box stays as it was.
 static void desenharBloco(const LegBloco *bl, float x0, float y, float alpha, int alinha) {
+  static GfxGrupo grupo;
+  float m = legEstilo.borda == 1 ? txt_suave_margem(bl->est) : 0.0f, yy = y, a;
+  GfxRect caixa = { 0, y - m, 0, bl->h + 2.0f * m + 6.0f };
   int i;
+  if (bl->n <= 0) return;
+  if (legEstilo.fundo) {
+    float fa = legEstilo.fundo * .16f * alpha;
+    for (i = 0; i < bl->n; i++) {
+      TxtLinha l = bl->cor[i];
+      float x = blocoX(bl, i, x0, alinha);
+      gfx_cor((GfxRect){x-18,yy-6,l.w+36,l.h+12},.16f,0,0,0,fa); yy += l.h + 5;
+    }
+  }
+  for (i = 0; i < bl->n; i++) {
+    float x = blocoX(bl, i, x0, alinha);
+    if (!i || x - m < caixa.x) { if (i) caixa.w += caixa.x - (x - m); caixa.x = x - m; }
+    if (x + bl->cor[i].w + m + 6.0f > caixa.x + caixa.w) caixa.w = x + bl->cor[i].w + m + 6.0f - caixa.x;
+  }
+  a = gfx_grupo_comecar(&grupo, caixa, alpha) ? 1.0f : alpha;
   for (i = 0; i < bl->n; i++) {
     TxtLinha l = bl->cor[i];
-    // alinha: 0 esquerda (x0 e a borda esquerda), 1 centro (x0 e o centro),
-    // 2 direita (x0 e a borda direita).
-    float x = alinha == 0 ? x0 : alinha == 1 ? x0 - l.w * .5f : x0 - l.w;
-    if (legEstilo.fundo) { float fa = legEstilo.fundo * .16f * alpha; gfx_cor((GfxRect){x-18,y-6,l.w+36,l.h+12},.16f,0,0,0,fa); }
-    txt_desenhar_borda(bl->borda[i], x, y, legEstilo.borda, alpha);
-    txt_desenhar_alpha(l, x, y, alpha); y += l.h + 5;
+    float x = blocoX(bl, i, x0, alinha);
+    txt_desenhar_borda(bl->borda[i], x, y, legEstilo.borda, m, a);
+    txt_desenhar_alpha(l, x, y, a); y += l.h + 5;
   }
+  gfx_grupo_terminar(&grupo, alpha);
 }
 
 // LIMPA o texto que o AVPlay entrega no onsubtitlechange (#122): SRT vem com
@@ -5675,8 +5713,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
   // Gate collector output, preserving native callback rendering below.
   int overlay = faixas_legenda_overlay();
   PlrRect bitmapArea = areaVideoLegenda();
-  float bitmapAlpha = (legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
-                      legEstilo.opacidade==1?.75f:1.f) * entrada;
+  float bitmapAlpha = video_legenda_opacidade(&legEstilo) * entrada;
   if (overlay && video_dts_legenda_desenhar(posLegenda(), legEstilo.atrasoMs,
         bitmapArea.x, bitmapArea.y, bitmapArea.w, bitmapArea.h, bitmapAlpha)) {
     imgsub_gl_limpar();
@@ -5704,8 +5741,14 @@ static void desenharLegendaPrincipal(float *topoPilha){
       static const char *const families[] = {
         "Inter Display", "LG Display", "Droid Sans",
         "Montserrat", "Roboto", "Atkinson Hyperlegible Next",
-        "JetBrains Sans"
+        "JetBrains Sans", "Plus Jakarta Sans"
       };
+      /* unitsPerEm / (usWinAscent + usWinDescent) x 1000 of the bundled
+       * files (libass sizes a face by its win metrics); 0 = unknown. Only
+       * the soft shadow of Outline uses it (assrender.c). */
+      static const short emMil[] = { 826, 0, 0, 640, 833, 711, 855, 605 };
+      _Static_assert(sizeof families / sizeof *families == TXT_FAMILIA_N, "one ASS name per subtitle family");
+      _Static_assert(sizeof emMil / sizeof *emMil == TXT_FAMILIA_N, "one em ratio per subtitle family");
       PlainAssStyle style = {0};
       int pct = legEstilo.tamanho, fam = legEstilo.familia;
       float base = baseLegendaPrincipal();
@@ -5713,11 +5756,12 @@ static void desenharLegendaPrincipal(float *topoPilha){
       style.size = (pct / 10) * 4;
       if (fam < 0 || fam >= (int)(sizeof families / sizeof families[0])) fam = 0;
       snprintf(style.font, sizeof style.font, "%s", families[fam]);
+      style.emMil = emMil[fam];
       corLegenda(legEstilo.cor, &r, &g, &b);
       style.rgb = (r << 16) | (g << 8) | b;
       style.background = legEstilo.fundo >= 0 && legEstilo.fundo <= 4 ? legEstilo.fundo : 0;
       style.border = legEstilo.borda; style.bold = legEstilo.negrito;
-      style.outlineRgb = (int)ajustes_leg_borda_rgb(legEstilo.corBorda);
+      style.outlineRgb = (int)ajustes_leg_borda_cor(legEstilo.corBorda, legEstilo.borda);
       style.overrides = legTocado;
       if (assrender_fonte_local_ativa(legfontes_caminho(0))) {
         snprintf(style.font, sizeof style.font, "%s", legfontes_nome_ass(0));
@@ -5729,8 +5773,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
        * still follows the video rectangle and the author's styling. */
       if (assrender_texto_simples()) area = (PlrRect){0, 0, NV_TELA_W, NV_TELA_H};
     }
-    float opacidade = legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
-                      legEstilo.opacidade==1?.75f:1.f;
+    float opacidade = video_legenda_opacidade(&legEstilo);
     float alpha = opacidade * entrada;
 #ifdef NV_TPK
     /* Styled ASS: the signs and typesetting (white masks) are part of the
@@ -5775,7 +5818,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
   if (n <= 0) return;
   int pct=legEstilo.tamanho;if(pct<TXT_LEG_PCT_MIN)pct=TXT_LEG_PCT_MIN;if(pct>TXT_LEG_PCT_MAX)pct=TXT_LEG_PCT_MAX;pct=(pct/10)*10;
   TxtEstilo est=(TxtEstilo)(TXT_LEG_50+(pct-50)/10);corLegenda(legEstilo.cor,&r,&g,&b);
-  float alpha=(legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:legEstilo.opacidade==1?.75f:1.f)*entrada;
+  float alpha=video_legenda_opacidade(&legEstilo)*entrada;
   // A pilha "normal" (sem \pos e sem \an, ou \an 2): empilha de baixo para
   // cima a partir da base da folha, como o SRT sempre fez.
   // Com a barra de estilo no topo a base e a da reproducao sem controles: a

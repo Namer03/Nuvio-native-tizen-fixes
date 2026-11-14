@@ -1484,6 +1484,7 @@ static int quebrar(const LegendaCue *c, const VideoLegendaEstilo *e, TxtEstilo e
   TxtFamilia fam = legfontes_caminho(1) ? TXT_FAMILIA_IMPORTADA2 :
     ajustes_leg2_fonte_principal() && legfontes_caminho(0) ? TXT_FAMILIA_IMPORTADA1 : (TxtFamilia)e->familia;
   int enf = (c->negrito || e->negrito ? TXT_ENF_NEGRITO : 0) | (c->italico ? TXT_ENF_ITALICO : 0);
+  int enfBorda = enf | (borda == 1 ? TXT_ENF_SUAVE : 0);   // Outline: Stremio's soft shadow (text.h)
   int n = 0;
   snprintf(texto, sizeof texto, "%s", c->texto);
   for (linha = strtok_r(texto, "\n", &salva); linha && n < max; linha = strtok_r(NULL, "\n", &salva)) {
@@ -1494,7 +1495,7 @@ static int quebrar(const LegendaCue *c, const VideoLegendaEstilo *e, TxtEstilo e
         if (n >= max) break;
         visualLinha(fam, est, atual);
         out[n].cor = txt_linha_corta_enfase(est, atual, r, g, b, 255, maxW, fam, enf);
-        out[n].borda = borda ? txt_linha_corta_enfase(est, atual, (corBorda >> 16) & 255, (corBorda >> 8) & 255, corBorda & 255, 255, maxW, fam, enf) : (TxtLinha){0};
+        out[n].borda = borda ? txt_linha_corta_enfase(est, atual, (corBorda >> 16) & 255, (corBorda >> 8) & 255, corBorda & 255, 255, maxW, fam, enfBorda) : (TxtLinha){0};
         n++;
         snprintf(atual, sizeof atual, "%s", pal);
       } else snprintf(atual, sizeof atual, "%s", tent);
@@ -1502,7 +1503,7 @@ static int quebrar(const LegendaCue *c, const VideoLegendaEstilo *e, TxtEstilo e
     if (atual[0] && n < max) {
       visualLinha(fam, est, atual);
       out[n].cor = txt_linha_corta_enfase(est, atual, r, g, b, 255, maxW, fam, enf);
-      out[n].borda = borda ? txt_linha_corta_enfase(est, atual, (corBorda >> 16) & 255, (corBorda >> 8) & 255, corBorda & 255, 255, maxW, fam, enf) : (TxtLinha){0};
+      out[n].borda = borda ? txt_linha_corta_enfase(est, atual, (corBorda >> 16) & 255, (corBorda >> 8) & 255, corBorda & 255, 255, maxW, fam, enfBorda) : (TxtLinha){0};
       n++;
     }
   }
@@ -1555,7 +1556,7 @@ void legendasui_desenhar_secundaria(const LegendasGeo *g) {
   n = legenda2_cues(g->pos, cues, LEGENDA_SIMULTANEAS);
   if (n <= 0) return;
   secundario = estiloSecundario(principal, &est, &r, &gg, &b, &fundo, &borda);
-  alpha = (e->opacidade == 3 ? .25f : e->opacidade == 2 ? .5f : e->opacidade == 1 ? .75f : 1.f) * g->alpha;
+  alpha = video_legenda_opacidade(e) * g->alpha;
   topo = 48.0f + 72.0f * (g->osd < 0 ? 0 : g->osd > 1 ? 1 : g->osd);
   if (g->videoY > topo) topo = g->videoY + 24.0f;   // letterbox: start on the picture
   if (posicao < 0 && !g->junto && !g->lugarPrincipal && plrilha_rect(&il)) {
@@ -1569,7 +1570,7 @@ void legendasui_desenhar_secundaria(const LegendasGeo *g) {
     }
   }
   for (i = 0; i < n && nl < LEG2_LINHAS; i++)
-    nl += quebrar(&cues[i], e, est, r, gg, b, borda, ajustes_leg_borda_rgb(e->corBorda), x1 - x0, ln + nl, LEG2_LINHAS - nl);
+    nl += quebrar(&cues[i], e, est, r, gg, b, borda, ajustes_leg_borda_cor(e->corBorda, borda), x1 - x0, ln + nl, LEG2_LINHAS - nl);
   if (g->lugarPrincipal) {
     // Signs & Songs main: the second is the dialogue, where the main's would be.
     for (i = 0; i < nl; i++) altura += (float)ln[i].cor.h + (i ? 5.0f : 0.0f);
@@ -1585,14 +1586,29 @@ void legendasui_desenhar_secundaria(const LegendasGeo *g) {
     if (topo < 8.0f) topo = 8.0f;
   }
   y = topo;
-  for (i = 0; i < nl; i++) {
-    TxtLinha l = ln[i].cor;
-    float x = (x0 + x1) * 0.5f - (float)l.w * 0.5f;
-    if (fundo) gfx_cor((GfxRect){ x - 18, y - 6, (float)l.w + 36, (float)l.h + 12 }, .16f, 0, 0, 0, fundo * .16f * alpha);
-    txt_desenhar_borda(ln[i].borda, x, y, borda, alpha);
-    txt_desenhar_alpha(l, x, y, alpha);
-    y += (float)l.h + 5.0f;
-  }
+  /* Owner 14/11/2026: faded as ONE picture, like the main (player.c
+   * desenharBloco): background boxes first, then border + text composed at 1
+   * in a group drawn once with the opacity. */
+  { static GfxGrupo grupo;
+    float m = borda == 1 ? txt_suave_margem(est) : 0.0f, yy = y, a, w = 0.0f, h = 0.0f;
+    for (i = 0; i < nl; i++) {
+      TxtLinha l = ln[i].cor;
+      float x = (x0 + x1) * 0.5f - (float)l.w * 0.5f;
+      if (fundo) gfx_cor((GfxRect){ x - 18, yy - 6, (float)l.w + 36, (float)l.h + 12 }, .16f, 0, 0, 0, fundo * .16f * alpha);
+      if ((float)l.w > w) w = (float)l.w;
+      h += (float)l.h + (i ? 5.0f : 0.0f);
+      yy += (float)l.h + 5.0f;
+    }
+    a = gfx_grupo_comecar(&grupo, (GfxRect){ (x0 + x1) * 0.5f - w * 0.5f - m, y - m, w + 2.0f * m + 6.0f, h + 2.0f * m + 6.0f },
+                          alpha) ? 1.0f : alpha;
+    for (i = 0; i < nl; i++) {
+      TxtLinha l = ln[i].cor;
+      float x = (x0 + x1) * 0.5f - (float)l.w * 0.5f;
+      txt_desenhar_borda(ln[i].borda, x, y, borda, m, a);
+      txt_desenhar_alpha(l, x, y, a);
+      y += (float)l.h + 5.0f;
+    }
+    gfx_grupo_terminar(&grupo, alpha); }
   if (posicao < 0 && !g->junto && !g->lugarPrincipal) bandaFim = y;
 }
 
@@ -1613,7 +1629,7 @@ float legendasui_altura_secundaria(const LegendasGeo *g) {
   if (n <= 0) return 0.0f;
   secundario = estiloSecundario(principal, &est, &r, &gg, &b, &fundo, &borda);
   for (i = 0; i < n && nl < LEG2_LINHAS; i++)
-    nl += quebrar(&cues[i], e, est, r, gg, b, borda, ajustes_leg_borda_rgb(e->corBorda), larguraSecundaria(), ln + nl, LEG2_LINHAS - nl);
+    nl += quebrar(&cues[i], e, est, r, gg, b, borda, ajustes_leg_borda_cor(e->corBorda, borda), larguraSecundaria(), ln + nl, LEG2_LINHAS - nl);
   for (i = 0; i < nl; i++) altura += (float)ln[i].cor.h + (i ? 5.0f : 0.0f);
   return altura;
 }

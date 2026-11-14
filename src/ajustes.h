@@ -591,6 +591,7 @@ int   ajustes_leg2_fundo(void);
 int   ajustes_leg2_borda(void);
 void  ajustes_leg_contorno_rgb(int *r, int *g, int *b);   // #475: cor do contorno/sombra da legenda (0..255)
 unsigned ajustes_leg_borda_rgb(int corBorda);   // corBorda >= 0: explicit colour; -1: legacy #475 colour
+unsigned ajustes_leg_borda_cor(int corBorda, int borda);   // as above; Outline (1) unset = Stremio #222222
 // Independent secondary overrides; absent fields inherit the main style.
 int ajustes_leg2_fonte_principal(void);
 void ajustes_leg2_estilo(const VideoLegendaEstilo *principal, VideoLegendaEstilo *out);

@@ -688,6 +688,32 @@ static void ass_trilha_tailandes(ASS_Track *t) {
   }
 }
 
+/* The user's Border on a libass Style (owner 14/11/2026).
+ * Outline (1) is Stremio's look: its Tizen app draws subtitles with CSS
+ * `text-shadow: 1px 1px 0.1em rgb(34,34,34)` and no stroke. That is a shadow
+ * 1 px (1080p) down-right, blurred by a Gaussian of sigma 0.05 em (a CSS blur
+ * radius r is sigma r/2). libass blurs only the BORDER when there is one and
+ * makes the shadow from that blurred border, so a hair border (0.1 px) carries
+ * the blur and the fill stays sharp; the border itself is invisible
+ * (OutlineColour alpha FF, an image libass drops). libass sigma =
+ * \blur x 2/sqrt(ln 256). With an opaque fill libass fills the shadow in under
+ * the glyph, so the subtitle must fade as one (ass_desenhar_grupo).
+ * Shadow (2) and None (0) are as they were. `rgb` = the shadow colour. */
+static void ass_borda_estilo(ASS_Style *s, const PlainAssStyle *p, int resY, double fontSize, uint32_t rgb) {
+  s->Blur = 0.0;
+  if (p->border == 1) {
+    double k = resY > 0 ? resY / 1080.0 : 1.0, em = fontSize * (p->emMil > 0 ? p->emMil : 800) / 1000.0;
+    s->Outline = 0.1 * k;
+    s->Shadow = 1.0 * k;
+    s->Blur = 0.05 * em / (2.0 / sqrt(log(256.0)));
+    s->OutlineColour = (rgb << 8) | 0xFFu;
+    if (s->BorderStyle == 1) s->BackColour = rgb << 8;   // opaque; BorderStyle 4 keeps its box
+    return;
+  }
+  s->Outline = 0;
+  s->Shadow = p->border == 2 ? 4 : 0;
+}
+
 static void ass_plain_style_locked(const PlainAssStyle *p) {
   ASS_Style *s;
   if (!assTrack || !assTrack->n_styles) return;
@@ -711,11 +737,7 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
       free(s->FontName); *s = *original; s->FontName = font;
       if (p->overrides & PLAIN_ASS_COLOR) s->PrimaryColour = (uint32_t)p->rgb << 8;
       if (p->overrides & PLAIN_ASS_OUTLINE) s->OutlineColour = (uint32_t)p->outlineRgb << 8;
-      if (p->overrides & PLAIN_ASS_BORDER) {
-        s->BorderStyle = 1;
-        s->Outline = p->border == 1 ? 2 : 0;
-        s->Shadow = p->border == 2 ? 4 : 0;
-      }
+      if (p->overrides & PLAIN_ASS_BORDER) s->BorderStyle = 1;
       if (p->overrides & PLAIN_ASS_BG) {
         s->BorderStyle = p->background ? 4 : 1;
         s->BackColour = p->background ? (unsigned)(255 - p->background * 255 * 16 / 100) : 46u;
@@ -723,6 +745,10 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
       // BackColour carries shadow RGB unless it is a background box.
       if ((p->overrides & PLAIN_ASS_OUTLINE) && s->BorderStyle == 1)
         s->BackColour = ((uint32_t)p->outlineRgb << 8) | (s->BackColour & 255u);
+      /* Last: Outline's shadow takes the border colour (the chosen one, or
+       * the author's OutlineColour) and hides the hair border. */
+      if (p->overrides & PLAIN_ASS_BORDER)
+        ass_borda_estilo(s, p, assTrack->PlayResY, s->FontSize, s->OutlineColour >> 8);
       if (p->overrides & PLAIN_ASS_POS) s->MarginV = p->marginV * assTrack->PlayResY / 1080;
       if (p->overrides & PLAIN_ASS_BOLD) s->Bold = p->bold;
     }
@@ -747,8 +773,7 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
                    : (p->border == 2 ? (uint32_t)p->outlineRgb << 8 : 0u) | 46u;
   s->Bold = p->bold ? 1 : 0;
   s->BorderStyle = p->background ? 4 : 1;
-  s->Outline = p->border == 1 ? 2 : 0;
-  s->Shadow = p->border == 2 ? 4 : 0;
+  ass_borda_estilo(s, p, assTrack->PlayResY, p->size, (uint32_t)p->outlineRgb & 0xFFFFFFu);
   s->MarginV = p->marginV;
   s->MarginL = s->MarginR = 130;
   /* Direct style edits leave libass's per-event collision position cached.
@@ -1284,6 +1309,23 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
    * so processa o plano de video, nunca a nossa camada. Na mesma ordem da TV:
    * o ganho do contraste antes, a curva de gama depois. */
   const double gama = assperf_gama(), contraste = assperf_contraste();
+  /* Plain text fades as ONE picture (owner 14/11/2026, ass_borda_estilo). */
+  static GfxGrupo grupo;
+  const float alphaGrupo = alpha;
+  if (__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE) && alpha < 0.999f && assMain.count > 0) {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (i = 0; i < assMain.count; i++) {
+      const AssCpuImage *im = &assMain.images[i];
+      float dx = (x + assMain.ox) + (float)im->x / esc, dy = (y + assMain.oy) + (float)im->y / esc;
+      if (!assMainTex[i]) continue;
+      if (dx < x0) x0 = dx;
+      if (dy < y0) y0 = dy;
+      if (dx + (float)im->w / esc > x1) x1 = dx + (float)im->w / esc;
+      if (dy + (float)im->h / esc > y1) y1 = dy + (float)im->h / esc;
+    }
+    if (x1 > x0 && y1 > y0 && gfx_grupo_comecar(&grupo, (GfxRect){ x0 - 2.0f, y0 - 2.0f, x1 - x0 + 4.0f, y1 - y0 + 4.0f }, alpha))
+      alpha = 1.0f;
+  }
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
@@ -1304,6 +1346,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
              0, 0, 0, 0, r, g, b, alpha * op);
   }
+  gfx_grupo_terminar(&grupo, alphaGrupo);
   gfx_tex_aspect_atual = 0.0f;
   return assMain.count;
 }
@@ -2235,6 +2278,23 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     }
     corChave = assCorAtiva ? (int)(((unsigned)assCorR << 16) | ((unsigned)assCorG << 8) | (unsigned)assCorB) : -1;
     reenviar = assAtual.serial != assTexSerial || corChave != assTexCorChave;
+    /* Plain text fades as ONE picture (owner 14/11/2026, ass_borda_estilo). */
+    static GfxGrupo grupoVelho;
+    const float alphaGrupo = alpha;
+    if (__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE) && alpha < 0.999f && assAtual.count > 0) {
+      float kk = assAtual.k > 1 ? (float)assAtual.k : 1.0f, esc = assAtual.esc > 0.01f ? assAtual.esc : kk;
+      float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+      for (i = 0; i < assAtual.count; i++) {
+        const AssCpuImage *im = &assAtual.images[i];
+        float dx = (x + assAtual.ox) + (float)im->x / esc, dy = (y + assAtual.oy) + (float)im->y / esc;
+        if (dx < x0) x0 = dx;
+        if (dy < y0) y0 = dy;
+        if (dx + (float)im->w / esc > x1) x1 = dx + (float)im->w / esc;
+        if (dy + (float)im->h / esc > y1) y1 = dy + (float)im->h / esc;
+      }
+      if (x1 > x0 && y1 > y0 && gfx_grupo_comecar(&grupoVelho, (GfxRect){ x0 - 2.0f, y0 - 2.0f, x1 - x0 + 4.0f, y1 - y0 + 4.0f }, alpha))
+        alpha = 1.0f;
+    }
     for (i = 0; i < assAtual.count; i++) {
       const AssCpuImage *im = &assAtual.images[i];
       GLuint tex = reenviar ? ass_textura_locked(i, im)
@@ -2252,6 +2312,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
         gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_TEXTO,
                  0, 0, 0, 0, 1, 1, 1, alpha); }
     }
+    gfx_grupo_terminar(&grupoVelho, alphaGrupo);
     if (reenviar) { assTexSerial = assAtual.serial; assTexCorChave = corChave; }
     gfx_tex_aspect_atual = 0.0f;
     n = assAtual.count;

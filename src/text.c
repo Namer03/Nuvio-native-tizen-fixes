@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>   // ceilf, expf (sombraSuave)
 
 // Quantas linhas de texto ficam guardadas ao mesmo tempo.
 //
@@ -145,7 +146,7 @@ static unsigned char tentouLegendaLGCam[TXT_NCAM][TXT_LEG_N];
 #define tentouLegendaLG (tentouLegendaLGCam[camada])
 const char *const TXT_FAMILIAS_PT[TXT_FAMILIA_N] = {
   "Inter", "LG Display", "Droid Sans", "Montserrat", "Roboto",
-  "Atkinson Hyperlegible Next", "JetBrains Sans"
+  "Atkinson Hyperlegible Next", "JetBrains Sans", "Plus Jakarta Sans"
 };
 
 static Entrada cache[MAX_LINHAS];
@@ -635,8 +636,6 @@ static Escrita escritaDe(Uint32 cp) {
 static int carregarFamilia(TxtFamilia familia);
 static void abrirEstiloCamada(TxtFamilia familia, int i);
 static void camadaAtualizar(void);
-// Alvo de composicao do contorno da legenda (ver txt_desenhar_borda).
-static GfxMini bordaMini;
 
 // Quantos caracteres da linha `s` a fonte NAO desenha, e o primeiro deles em
 // *primeiro. Conta so o que faz falta: ASCII nunca, os DECORATIVOS que a fonte
@@ -1339,6 +1338,9 @@ int txt_iniciar(const char *dirRecursos, float escala) {
   snprintf(caminhoPeso[TXT_FAMILIA_JETBRAINS][0], 512, "%sfonts/JetBrainsSans-Regular.ttf", base);
   snprintf(caminhoPeso[TXT_FAMILIA_JETBRAINS][1], 512, "%sfonts/JetBrainsSans-SemiBold.ttf", base);
   snprintf(caminhoPeso[TXT_FAMILIA_JETBRAINS][2], 512, "%sfonts/JetBrainsSans-Bold.ttf", base);
+  snprintf(caminhoPeso[TXT_FAMILIA_JAKARTA][0], 512, "%sfonts/PlusJakartaSans-Regular.ttf", base);
+  snprintf(caminhoPeso[TXT_FAMILIA_JAKARTA][1], 512, "%sfonts/PlusJakartaSans-Medium.ttf", base);
+  snprintf(caminhoPeso[TXT_FAMILIA_JAKARTA][2], 512, "%sfonts/PlusJakartaSans-Bold.ttf", base);
   snprintf(caminhoMono[0], 512, "%sfonts/JetBrainsMonoNL-Regular.ttf", base);
   snprintf(caminhoMono[1], 512, "%sfonts/JetBrainsMonoNL-SemiBold.ttf", base);
   snprintf(caminhoMono[2], 512, "%sfonts/Montserrat-ExtraLight-Relogio.ttf", base);
@@ -1462,7 +1464,6 @@ void txt_encerrar(void) {
   for (int k = 0; k < TXT_NCAM; k++) importadasFechar(k);
   importadasRevisao = 0;
   arabeBoldFechar();
-  gfx_mini_liberar(&bordaMini);
   limparCacheTexto();
   // ORDEM: a fonte primeiro, o RWops depois, o buffer por ultimo. A face do
   // FreeType ainda referencia o stream, e o stream, os bytes.
@@ -1715,6 +1716,78 @@ static SDL_Surface *rasterTracking(TxtEstilo estilo, const char *s, SDL_Color co
                                    TxtFamilia familia, float trk, float *larg);
 // `trk` != NULL: a linha de txt_tracking, letra a letra com *trk entre elas,
 // numa textura so (a largura volta em *larg).
+// STREMIO'S SUBTITLE OUTLINE (owner 14/11/2026). Stremio's Tizen app draws
+// embedded subtitles with `text-shadow: 1px 1px 0.1em rgb(34,34,34)`
+// (stremio-video, TizenVideo.js renderSubtitle): no stroke, one soft shadow.
+// A CSS shadow blur radius r is a Gaussian of sigma r/2, so sigma = 0.05 em.
+// Here the border line becomes that shadow: the glyph coverage blurred, in
+// the border colour, with `margem` empty pixels on each side for the blur.
+static float suaveSigmaPx(TxtEstilo estilo) {
+  float corpo = corpoAtual(estilo) * ESC_T;   // the em in pixels, as the face was opened
+  return corpo > 0.0f ? 0.05f * corpo : 0.0f;
+}
+static int suaveMargemPx(TxtEstilo estilo) {
+  return (int)ceilf(3.0f * suaveSigmaPx(estilo)) + 1;
+}
+float txt_suave_margem(TxtEstilo estilo) {
+  if ((int)estilo < 0 || estilo >= TXT_NFONTES) return 0.0f;
+  camadaAtualizar();
+  return (float)suaveMargemPx(estilo) / ESC_T;
+}
+static SDL_Surface *sombraSuave(SDL_Surface *src, TxtEstilo estilo) {
+  const float sigma = suaveSigmaPx(estilo);
+  const int m = suaveMargemPx(estilo), raio = m - 1;
+  const int w = src->w + 2 * m, h = src->h + 2 * m;
+  float k[64], soma = 0.0f, *tmp = NULL;
+  Uint8 cr = 0, cg = 0, cb = 0;
+  SDL_Surface *out;
+  int x, y, i;
+  if (sigma <= 0.0f || raio < 1 || raio >= 64 ||
+      !(out = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ABGR8888)))
+    return src;
+  if (!(tmp = (float *)calloc((size_t)w * (size_t)h, sizeof *tmp))) { SDL_FreeSurface(out); return src; }
+  for (i = 0; i <= raio; i++) { k[i] = expf(-(float)(i * i) / (2.0f * sigma * sigma)); soma += i ? 2.0f * k[i] : k[i]; }
+  for (i = 0; i <= raio; i++) k[i] /= soma;
+  SDL_LockSurface(src); SDL_LockSurface(out);
+  /* The text colour (the border colour here) from the first covered pixel. */
+  for (y = 0; y < src->h && !cr && !cg && !cb; y++) {
+    const Uint8 *p = (const Uint8 *)src->pixels + y * src->pitch;
+    for (x = 0; x < src->w; x++) if (p[4 * x + 3] > 128) { cr = p[4 * x]; cg = p[4 * x + 1]; cb = p[4 * x + 2]; break; }
+  }
+  /* Horizontal pass: source alpha (with the margin) -> tmp. */
+  for (y = 0; y < src->h; y++) {
+    const Uint8 *p = (const Uint8 *)src->pixels + y * src->pitch;
+    float *t = tmp + (size_t)(y + m) * (size_t)w;
+    for (x = 0; x < w; x++) {
+      float acc = 0.0f;
+      int sx0 = x - m - raio, j;
+      for (j = 0; j <= 2 * raio; j++) {
+        int sx = sx0 + j;
+        if (sx >= 0 && sx < src->w) acc += k[j > raio ? j - raio : raio - j] * (float)p[4 * sx + 3];
+      }
+      t[x] = acc;
+    }
+  }
+  /* Vertical pass: tmp -> out alpha; RGB is the border colour everywhere. */
+  for (y = 0; y < h; y++) {
+    Uint8 *q = (Uint8 *)out->pixels + y * out->pitch;
+    for (x = 0; x < w; x++) {
+      float acc = 0.0f;
+      int j;
+      for (j = -raio; j <= raio; j++) {
+        int sy = y + j;
+        if (sy >= 0 && sy < h) acc += k[j < 0 ? -j : j] * tmp[(size_t)sy * (size_t)w + (size_t)x];
+      }
+      q[4 * x] = cr; q[4 * x + 1] = cg; q[4 * x + 2] = cb;
+      q[4 * x + 3] = (Uint8)(acc > 255.0f ? 255 : acc + 0.5f);
+    }
+  }
+  SDL_UnlockSurface(out); SDL_UnlockSurface(src);
+  free(tmp);
+  SDL_FreeSurface(src);
+  return out;
+}
+
 static TxtLinha linhaCache(TxtEstilo estilo, const char *s, int r, int g, int b,
                            int a, TxtFamilia familia, int enfase,
                            const float *trk, float *larg) {
@@ -1749,10 +1822,10 @@ static TxtLinha linhaCache(TxtEstilo estilo, const char *s, int r, int g, int b,
   // nao pode devolver a textura da lingua anterior.
   if (camada)
     snprintf(chave, sizeof chave, "%sE%dF%d:%d:%d:%d:%d|%02x%02x%02x|%.226s", pre, (int)(escCam * 100.0f + 0.5f), pisoCam[camada],
-             (int)familia, (int)estilo, enfase & 3, (int)variacaoCjk(), r & 255, g & 255, b & 255, s);
+             (int)familia, (int)estilo, enfase & 7, (int)variacaoCjk(), r & 255, g & 255, b & 255, s);
   else
     snprintf(chave, sizeof chave, "%s%d:%d:%d:%d|%02x%02x%02x|%.232s", pre, (int)familia,
-             (int)estilo, enfase & 3, (int)variacaoCjk(), r & 255, g & 255, b & 255, s);
+             (int)estilo, enfase & 7, (int)variacaoCjk(), r & 255, g & 255, b & 255, s);
 
   // Hash da chave para evitar o strcmp em quase todas as entradas: a busca
   // roda para CADA linha de CADA quadro, e comparar 288 bytes centenas de
@@ -1815,7 +1888,8 @@ static TxtLinha linhaCache(TxtEstilo estilo, const char *s, int r, int g, int b,
   SDL_Color cor = { (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a };
   float w = 0.0f;
   SDL_Surface *cv = trk ? rasterTracking(estilo, s, cor, familia, *trk, &w)
-                        : rasterLinha(estilo, s, cor, familia, enfase);
+                        : rasterLinha(estilo, s, cor, familia, enfase & ~TXT_ENF_SUAVE);
+  if (cv && !trk && (enfase & TXT_ENF_SUAVE)) cv = sombraSuave(cv, estilo);
   // O slot ja perdeu a textura: sem linha nova ele sai da tabela.
   if (!cv) { cache[slot].ocupado = 0; return vazia; }
 
@@ -2092,30 +2166,17 @@ void txt_desenhar_peso(TxtLinha l, float x, float y, float alpha, float peso) {
            1, 1, 1, alpha);
 }
 
-// CONTORNO COMPOSTO, nao empilhado. As 8 estampas da borda se cobrem nas
-// bordas retas do glifo (uma coluna de 2 px e vista por 3 delas, um canto
-// por todas): estampar cada uma com o `alpha` do usuario compoe a cobertura
-// sobreposta N vezes — com a legenda a 25% o miolo do anel sai a ~58% e o
-// canto a ~90%, muito mais escuro que o pedido, em qualquer fade. Por isso
-// o contorno e composto OPACO num alvo proprio (um GfxMini 1:1 em pixel de
-// tela) e so entao desenhado UMA vez com `alpha`: a cobertura final e a de
-// um unico desenho. Sem FBO (alvo indisponivel) volta ao empilhado de antes.
-void txt_desenhar_borda(TxtLinha b, float x, float y, int borda, float alpha) {
-  static const int dir[8][2] = { {-1,-1}, {0,-1}, {1,-1}, {-1,0}, {1,0}, {-1,1}, {0,1}, {1,1} };
-  int i;
-  if (borda == 2) { txt_desenhar_alpha(b, x + 4.f, y + 4.f, .82f * alpha); return; }
+// SUBTITLE BORDER (owner 14/11/2026). Outline (1) is Stremio's soft shadow:
+// the TXT_ENF_SUAVE line, offset 1 px right and down, its blur margin around
+// the text's corner. Shadow (2) stays as it was: the glyphs 4 px down-right
+// at 82 %. The fade of the subtitle is the caller's group (gfx_grupo_*): it
+// draws this and the text at 1 and the finished picture once with the
+// opacity, so the border never shows through the letters (the old 8-stamp
+// outline was composed apart and the text drawn over it at the same alpha).
+void txt_desenhar_borda(TxtLinha b, float x, float y, int borda, float margem, float alpha) {
   if (!b.tex || alpha <= 0.0f) return;
-  const float m = 4.f;  // margem para a estampa de +-2 e o canto AA
-  float esc = gfx_px_por_unidade();
-  int mw = (int)((b.w + 2.f * m) * esc + 0.5f), mh = (int)((b.h + 2.f * m) * esc + 0.5f);
-  if (esc <= 0.0f || mw < 4 || mh < 4 || !gfx_mini_alvo(&bordaMini, mw, mh)) {
-    for (i = 0; i < 8; i++) txt_desenhar_alpha(b, x + dir[i][0] * 2.f, y + dir[i][1] * 2.f, alpha);
-    return;
-  }
-  gfx_mini_comecar(&bordaMini, x - m, y - m, esc);
-  for (i = 0; i < 8; i++) txt_desenhar_alpha(b, x + dir[i][0] * 2.f, y + dir[i][1] * 2.f, 1.0f);
-  gfx_mini_terminar();
-  gfx_mini_desenhar(&bordaMini, (GfxRect){ x - m, y - m, (float)mw / esc, (float)mh / esc }, 0.0f, alpha);
+  if (borda == 2) txt_desenhar_alpha(b, x + 4.f, y + 4.f, .82f * alpha);
+  else if (borda == 1) txt_desenhar_alpha(b, x + 1.0f - margem, y + 1.0f - margem, alpha);
 }
 
 void txt_desenhar_tom(TxtLinha l, float x, float y, float cr, float cg, float cb, float alpha) {
@@ -2201,8 +2262,9 @@ static TxtLinha cortaFamilia(TxtEstilo estilo, const char *s, int r, int g,
   // e medir o portugues para desenhar o ingles poe as reticencias no lugar
   // errado — ou corta um texto que caberia inteiro.
   s = i18n(s);
+  const int medida = enfase & ~TXT_ENF_SUAVE;   // the soft shadow is cut like its text
   // Mede sem rasterizar: so a linha FINAL vira textura (ver larguraLinha).
-  if (!s || !*s || (float)larguraLinha(estilo, s, familia, enfase) <= maxW)
+  if (!s || !*s || (float)larguraLinha(estilo, s, familia, medida) <= maxW)
     return linhaFamilia(estilo, s, r, g, b, a, familia, enfase);
   char buf[512];
   size_t n = strlen(s);
@@ -2221,7 +2283,7 @@ static TxtLinha cortaFamilia(TxtEstilo estilo, const char *s, int r, int g,
     if (!n) break;
     char t[520];
     snprintf(t, sizeof t, "%s\xe2\x80\xa6", buf);
-    if ((float)larguraLinha(estilo, t, familia, enfase) <= maxW)
+    if ((float)larguraLinha(estilo, t, familia, medida) <= maxW)
       return linhaFamilia(estilo, t, r, g, b, a, familia, enfase);
   }
   return linhaFamilia(estilo, "\xe2\x80\xa6", r, g, b, a, familia, enfase);

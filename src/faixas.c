@@ -724,7 +724,6 @@ static int estPos(int id) {
 static const char *const EST_FUNDO[5] = { "Nenhum", "Escuro 25%", "Escuro 50%",
                                           "Escuro 75%", "Escuro 100%" };
 static const char *const EST_BORDA[3] = { "Nenhuma", "Contorno", "Sombra" };
-static const char *const EST_OPAC[4]  = { "100%", "75%", "50%", "25%" };
 
 /* Com o ASS desenhado pelo libass, fonte, cor, fundo, posicao, borda, negrito
  * e cor da borda sao do arquivo ate a pessoa mexer no campo (aqui ou nos
@@ -768,7 +767,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       break;
     case 1: snprintf(dst, tam, "%s", legfontes_selecionada(0) >= 0 ? legfontes_nome(legfontes_selecionada(0)) : TXT_FAMILIAS_PT[e->familia >= 0 && e->familia < TXT_FAMILIA_N ? e->familia : 0]); break;
     case 2: snprintf(dst, tam, "%s", VIDEO_LEG_CORES_PT[e->cor % VIDEO_LEG_NCORES]); break;
-    case 3: snprintf(dst, tam, "%s", EST_OPAC[e->opacidade > 3 ? 3 : e->opacidade]); break;
+    case 3: snprintf(dst, tam, "%d%%", (int)lroundf(video_legenda_opacidade(e) * 100.0f)); break;
     case 4: snprintf(dst, tam, "%s", EST_FUNDO[e->fundo > 4 ? 4 : e->fundo]); break;
     // O uMS aceita -3..4; a folha mostra 1..8 porque "posicao -3" nao diz nada
     // a quem esta olhando a tela.
@@ -871,7 +870,7 @@ typedef struct { int min, max, toque, segura, teto; } EstSlider;   // max == min
 // teto = quantas vezes o passo pode crescer segurando (aceleracao).
 static const EstSlider EST_SL[EST_TOTAL] = {
   [0] = { 50, 300, 10, 20, 1 },                                   // Tamanho %
-  [3] = { 0, 3, 1, 1, 1 },                                        // Opacidade: 25..100%
+  [3] = { VIDEO_LEG_OPAC_MIN, VIDEO_LEG_OPAC_MAX, 10, 10, 1 },   // Opacity %, steps of 10 (owner 14/11/2026)
   [5] = { 0, 7, 1, 1, 1 },                                        // Posicao: 8 niveis
   [7] = { -LEGUI_ATRASO_MAX, LEGUI_ATRASO_MAX, 100, 500, 4 },     // Atraso: 0,1 s / 0,5 s
 #ifdef NV_TPK
@@ -883,7 +882,7 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
   [EST2_TAM] = { 0, 26, 1, 1, 1 }, [EST2_FONTE] = { 0, TXT_FAMILIA_N, 1, 1, 1 },
-  [EST2_COR] = { 0, 6, 1, 1, 1 }, [EST2_OPAC] = { 0, 4, 1, 1, 1 }, [EST2_FUNDO] = { 0, 5, 1, 1, 1 },
+  [EST2_COR] = { 0, 6, 1, 1, 1 }, [EST2_OPAC] = { 0, 10, 1, 1, 1 }, [EST2_FUNDO] = { 0, 5, 1, 1, 1 },
   [EST2_POSICAO] = { 0, 8, 1, 1, 1 }, [EST2_LUGAR] = { 0, 1, 1, 1, 1 }, [EST2_BORDA] = { 0, 3, 1, 1, 1 },
   [EST2_COR_BORDA] = { 0, VIDEO_LEG_NCORES, 1, 1, 1 }, [EST2_NEGRITO] = { 0, 2, 1, 1, 1 },
   [EST2_ATRASO] = { -LEGUI_ATRASO_MAX, LEGUI_ATRASO_MAX, 100, 500, 4 },
@@ -916,7 +915,7 @@ static int estLer(int i) {
     case EST_GAMA: { int g = assperf_get(AP_GAMA); return g <= 5 ? -g : 11 - g; }
 #endif
     case 0: return e->tamanho;
-    case 3: return 3 - (e->opacidade < 0 ? 0 : e->opacidade > 3 ? 3 : e->opacidade);
+    case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
     case 5: return e->posicao;
     default: return e->atrasoMs;
   }
@@ -940,7 +939,7 @@ static void estGravar(int i, int v) {
     case EST_GAMA: assperf_definir(AP_GAMA, v == 0 ? 0 : v < 0 ? -v : 11 - v); return;
 #endif
     case 0: e->tamanho = v; break;
-    case 3: e->opacidade = 3 - v; break;
+    case 3: e->opacidade = v / 10 * 10; break;
     case 5: if (e->posicao != v) player_leg_estilo_tocou(PLR_LEG_POSICAO); e->posicao = v; break;
     default: e->atrasoMs = v; break;
   }

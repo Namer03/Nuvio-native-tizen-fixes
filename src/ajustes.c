@@ -1018,7 +1018,7 @@ static const char *V_ANIM[]      = { "Completas", "Reduzidas", "Automático" };
 static const char *V_FONTE_UI[]  = { "Inter", "LG Display", "Droid Sans",
                                      "Montserrat", "Roboto",
                                      "Atkinson Hyperlegible Next",
-                                     "JetBrains Sans" };
+                                     "JetBrains Sans", "Plus Jakarta Sans" };
 // A ORDEM IMPORTA: o indice 0 e o padrao (ver a lista de padroes, que e
 // posicional), e o padrao tem de ser 1080p. Numa TV que NAO concede a
 // superficie 4K a escolha nao faz nada, e numa que concede ela quadruplica o
@@ -1035,10 +1035,11 @@ static const char *V_LEG_COR[] = { "Branco", "Amarelo", "Verde", "Azul", "Vermel
 static const char *V_LEG_COR_BORDA[] = { "Preto", "Branco", "Amarelo", "Verde", "Azul", "Vermelho" };
 static const char *V_LEG_FUNDO[] = { "Nenhum", "Escuro 25%", "Escuro 50%", "Escuro 75%", "Escuro 100%" };
 static const char *V_LEG_BORDA[] = { "Nenhuma", "Contorno", "Sombra" };
-static const char *V_LEG_OPAC[] = { "100%", "75%", "50%", "25%" };
 static const char *V_LEG_POS[] = { "1", "2", "3", "4", "5", "6", "7", "8" };
-static const char *V_LEG2_FONTE[] = { "Igual à principal", "Inter", "LG Display", "Droid Sans", "Montserrat", "Roboto", "Atkinson Hyperlegible Next", "JetBrains Sans" };
-static const char *V_LEG2_OPAC[] = { "Igual à principal", "100%", "75%", "50%", "25%" };
+static const char *V_LEG2_FONTE[] = { "Igual à principal", "Inter", "LG Display", "Droid Sans", "Montserrat", "Roboto", "Atkinson Hyperlegible Next", "JetBrains Sans", "Plus Jakarta Sans" };
+// Opacity in steps of 10 (owner 14/11/2026); index k >= 1 = k x 10 %.
+static const char *V_LEG2_OPAC[] = { "Igual à principal", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%" };
+_Static_assert(sizeof V_LEG2_FONTE / sizeof *V_LEG2_FONTE == TXT_FAMILIA_N + 1, "second subtitle: Same + each family");
 static const char *V_LEG2_COR_BORDA[] = { "Igual à principal", "Preto", "Branco", "Amarelo", "Verde", "Azul", "Vermelho" };
 static const char *V_LEG2_NEGRITO[] = { "Igual à principal", "Ligado", "Desligado" };
 static const char *V_LEG2_POSICAO[] = { "Automático", "1", "2", "3", "4", "5", "6", "7", "8" };
@@ -1571,7 +1572,7 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Perfil e Stats na barra lateral", V_LIGA, 2),   // local: menuPerfilLocal
   ESC("Trailer do cartaz em foco",       V_FOCO_TRAILER, 3),   // trailerCartazModo (conta: focusedPosterBackdropTrailerEnabled)
   ESC("Itens por fileira",               V_ITENS_FIL, 3), // local: itensFileiraLocal
-  ESC("Fonte da interface", V_FONTE_UI, 7),
+  ESC("Fonte da interface", V_FONTE_UI, TXT_FAMILIA_N),
   ESC("Efeitos visuais", V_GPU_EF, 4),   // local: gpuEfeitosLocal; append values for compatibility
   ESC("Interface de vidro",              V_LIGA_AUTO, 3),   // local: vidroLocal
   // EXPERIMENTAL (p2p.h). Tocar torrent sem debrid, por um servidor de
@@ -1793,7 +1794,7 @@ static const Opcao OPCOES[AJ_N] = {
   NUM("Tamanho", TXT_LEG_PCT_MIN, TXT_LEG_PCT_MAX, 10, "%"),
   ESC("Fonte da legenda", V_FONTE_UI, TXT_FAMILIA_N),
   ESC("Cor", V_LEG_COR, VIDEO_LEG_NCORES),
-  ESC("Opacidade", V_LEG_OPAC, 4),
+  NUM("Opacidade", VIDEO_LEG_OPAC_MIN, VIDEO_LEG_OPAC_MAX, 10, "%"),   // owner 14/11/2026: steps of 10
   ESC("Fundo", V_LEG_FUNDO, 5),
   ESC("Posição", V_LEG_POS, 8),
   ESC("Borda", V_LEG_BORDA, 3),
@@ -1802,7 +1803,7 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Cor da borda", V_LEG_COR_BORDA, VIDEO_LEG_NCORES),
   ACAO("Restaurar padrão"),
   ESC("Fonte da legenda", V_LEG2_FONTE, TXT_FAMILIA_N + 1),
-  ESC("Opacidade", V_LEG2_OPAC, 5),
+  ESC("Opacidade", V_LEG2_OPAC, 11),
   ESC("Posição", V_LEG2_POSICAO, 9),
   NUM("Atraso", -LEG_ATRASO_MANUAL_MAX, LEG_ATRASO_MANUAL_MAX, 100, " ms"),
   ESC("Negrito", V_LEG2_NEGRITO, 3),
@@ -2165,7 +2166,7 @@ static const char *CHAVE[] = {
   "-legenda1Tamanho", "-legenda1Fonte", "-legenda1Cor", "-legenda1Opacidade",
   "-legenda1Fundo", "-legenda1Posicao", "-legenda1Borda", "-legenda1Atraso",
   "-legenda1Negrito", "-legenda1CorBorda", "-legenda1Restaurar",
-  "legenda2FonteLocal", "legenda2OpacidadeLocal", "legenda2PosicaoLocal", "legenda2AtrasoLocal",
+  "legenda2FonteLocal", "legenda2OpacidadePctLocal", "legenda2PosicaoLocal", "legenda2AtrasoLocal",
   "legenda2NegritoLocal", "legenda2CorBordaLocal", "-legenda2Restaurar",
   "colecaoExibicaoPadraoLocal",
   "playerExternoLocal",
@@ -3413,6 +3414,13 @@ unsigned ajustes_leg_borda_rgb(int corBorda) {
   ajustes_leg_contorno_rgb(&r, &g, &b);
   return (unsigned)(r << 16 | g << 8 | b);
 }
+// Outline is Stremio's soft shadow (owner 14/11/2026): with no border colour
+// chosen it is Stremio's rgb(34,34,34), not pure black; a chosen colour (or
+// the legacy outline colour when it isn't Black) stays as it is.
+unsigned ajustes_leg_borda_cor(int corBorda, int borda) {
+  unsigned rgb = ajustes_leg_borda_rgb(corBorda);
+  return borda == 1 && corBorda < 0 && rgb == 0 ? 0x222222u : rgb;
+}
 int ajustes_leg2_posicao(void) { int v = valor[AJ_LEG2_POSICAO]; return v >= 1 && v <= 8 ? v - 1 : -1; }
 int ajustes_leg2_atraso(void) { return valor[AJ_LEG2_ATRASO]; }
 int ajustes_leg2_definir_atraso(int ms) {
@@ -3436,7 +3444,7 @@ void ajustes_leg2_estilo(const VideoLegendaEstilo *principal, VideoLegendaEstilo
   if (f >= 0) out->fundo = f;
   if (b >= 0) out->borda = b;
   if (valor[AJ_LEG2_FONTE] > 0) out->familia = valor[AJ_LEG2_FONTE] - 1;
-  if (valor[AJ_LEG2_OPACIDADE] > 0) out->opacidade = valor[AJ_LEG2_OPACIDADE] - 1;
+  if (valor[AJ_LEG2_OPACIDADE] > 0 && valor[AJ_LEG2_OPACIDADE] <= 10) out->opacidade = valor[AJ_LEG2_OPACIDADE] * 10;
   if (valor[AJ_LEG2_NEGRITO] > 0) out->negrito = valor[AJ_LEG2_NEGRITO] == 1;
   if (valor[AJ_LEG2_COR_BORDA] > 0) out->corBorda = valor[AJ_LEG2_COR_BORDA] - 1;
   if (ajustes_leg2_posicao() >= 0) out->posicao = ajustes_leg2_posicao();
@@ -4893,7 +4901,7 @@ void ajustes_dir(const char *dir) {
     int focoAntigo = -1, viuFoco = 0;
     int sinopseAntiga = -1, sinopseQuatro = -1, viuSinopse = 0;
     int dtsSaidaAntiga = -1, dtsModoAntigo = -1, viuDtsTpk = 0;
-    int leg2TamanhoAntigo = -1, viuLeg2Escala = 0;
+    int leg2TamanhoAntigo = -1, viuLeg2Escala = 0, leg2OpacAntiga = -1, viuLeg2Opac = 0;
   while (fgets(linha, sizeof linha, f)) {
     char chave[64]; int v, i, inicio = 0;
     if (sscanf(linha, "%63s%n", chave, &inicio) != 1) continue;
@@ -4980,6 +4988,12 @@ void ajustes_dir(const char *dir) {
       if (v >= 0 && v <= 20) leg2TamanhoAntigo = v;
       continue;
     }
+    // Second subtitle opacity before the 10 % steps (owner 14/11/2026):
+    // 0 Same, 1..4 = 100/75/50/25 %.
+    if (!strcmp(chave, "legenda2OpacidadeLocal")) {
+      if (v >= 0 && v <= 4) leg2OpacAntiga = v;
+      continue;
+    }
     // Outline is aesthetic: migrate its removed Automatic value to On.
     if (!strcmp(chave, "vidroContornoLocal") && v == 2) v = 0;
     for (i = 0; i < AJ_N; i++) {
@@ -4998,6 +5012,7 @@ void ajustes_dir(const char *dir) {
       if (i == AJ_HERO_SINOPSE_TAM) viuSinopse = 1;
       if (i == AJ_DTS_AC3) viuDtsTpk = 1;
       if (i == AJ_LEG2_TAMANHO && v >= 0 && v < 27) viuLeg2Escala = 1;
+      if (i == AJ_LEG2_OPACIDADE) viuLeg2Opac = 1;
       break;
     }
   }
@@ -5010,6 +5025,9 @@ void ajustes_dir(const char *dir) {
     if (sinopseQuatro >= 0) valor[AJ_HERO_SINOPSE_TAM] = sinopseQuatro > 0;
     else if (sinopseAntiga >= 0) valor[AJ_HERO_SINOPSE_TAM] = sinopseAntiga > 0;
   }
+  /* Rounded up to the grid like the main (video_legenda_opac_antiga). */
+  if (!viuLeg2Opac && leg2OpacAntiga >= 0)
+    valor[AJ_LEG2_OPACIDADE] = leg2OpacAntiga ? video_legenda_opac_antiga(leg2OpacAntiga - 1) / 10 : 0;
   if (!viuLeg2Escala && leg2TamanhoAntigo >= 0) {
     static const int pct[] = {0,60,80,100,120,140,160,170,180,190,200,210,220,230,240,250,260,270,280,290,300};
     int p = pct[leg2TamanhoAntigo];
@@ -11361,7 +11379,7 @@ int ajustes_teste_quadro(const char *id) {
 void ajustes_teste_arte(int n) { ajArteFundoN = n; }
 
 void ajustes_teste_fonte_interface(int familia) {
-  if (familia < TXT_FAMILIA_INTER || familia > TXT_FAMILIA_JETBRAINS) return;
+  if (familia < TXT_FAMILIA_INTER || familia >= TXT_FAMILIA_N) return;
   valor[AJ_FONTE_UI] = familia;
   txt_definir_fonte_interface((TxtFamilia)familia);
 }
