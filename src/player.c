@@ -5497,6 +5497,20 @@ static void montarBloco(const LegendaCue *c, TxtEstilo est, int r, int g, int b,
   }
 }
 
+// APP-DRAWN SUBTITLES WANT THE PREMULTIPLIED LAYER (owner 14/11/2026, "colours
+// too faint at low opacity"). On the Tizen 8/9 GLView DALi composes our layer
+// as straight alpha and multiplies the colour by alpha a second time
+// (tpkborda.c): white at 30 % came out ~9 % bright, faint and grey. The
+// premultiplied switch was only on while libass drew; now also while the app
+// draws a text subtitle (main or second), from 250 ms before a cue to 1 s
+// after the last one, like libass (tpkborda_quadro).
+static Uint32 legAppTick;
+void player_legenda_app_marcar(void) { Uint32 t = SDL_GetTicks(); legAppTick = t ? t : 1u; }
+int player_legenda_app_quer(void) {
+  Uint32 t = legAppTick;
+  return t && (Uint32)(SDL_GetTicks() - t) < 1000u;
+}
+
 // alinha: 0 esquerda (x0 e a borda esquerda), 1 centro (x0 e o centro),
 // 2 direita (x0 e a borda direita).
 static float blocoX(const LegBloco *bl, int i, float x0, int alinha) {
@@ -5512,6 +5526,7 @@ static void desenharBloco(const LegBloco *bl, float x0, float y, float alpha, in
   GfxRect caixa = { 0, y - m, 0, bl->h + 2.0f * m + 6.0f };
   int i;
   if (bl->n <= 0) return;
+  player_legenda_app_marcar();
   if (legEstilo.fundo) {
     float fa = legEstilo.fundo * .16f * alpha;
     for (i = 0; i < bl->n; i++) {
@@ -5815,7 +5830,39 @@ static void desenharLegendaPrincipal(float *topoPilha){
     cues[0].cor = -1; cues[0].posX = cues[0].posY = -1.f;
     n = 1;
   }
+  /* The next cue within 250 ms: the premultiplied layer is on before it shows. */
+  if (n <= 0 && overlay) { LegendaCue prox; if (legenda_cues(posLeg + 0.25, atraso, &prox, 1) > 0) player_legenda_app_marcar(); }
   if (n <= 0) return;
+  /* SYNC DIAGNOSTIC (owner 14/11/2026, "subtitles don't seem to sync"): when a
+   * new cue shows, how late it is on the subtitle clock and every term of that
+   * clock. The first 12 cues after each new subtitle document, then one every
+   * 30 s. lateness = (position on the subtitle's timeline) - cue start: about
+   * one frame means the app drew it on time for the player's clock. */
+  { static unsigned gerVista; static double inicioVisto = -1.0; static int nLog; static Uint32 ultLog;
+    unsigned ger = legenda_geracao();
+    double t = posLeg + atraso / 1000.0;
+    if (ger != gerVista) { gerVista = ger; nLog = 0; inicioVisto = -1.0; }
+    if (overlay && cues[0].fim > cues[0].inicio && cues[0].inicio != inicioVisto) {
+      Uint32 agora = SDL_GetTicks();
+      inicioVisto = cues[0].inicio;
+      if (nLog < 12 || agora - ultLog >= 30000u) {
+        char trecho[40]; size_t k;
+        snprintf(trecho, sizeof trecho, "%s", cues[0].texto);
+        for (k = 0; trecho[k]; k++) if (trecho[k] == '\n' || trecho[k] == '\r') trecho[k] = ' ';
+        nLog++; ultLog = agora;
+        printf("[legshow] cue %.3f-%.3f shown at %.3f (late %+d ms) | video %.3f, subtitle clock %.3f, "
+               "picture-sync -%d ms, offset %+d ms (manual %+d) | \"%s\"\n",
+               cues[0].inicio, cues[0].fim, t, (int)lround((t - cues[0].inicio) * 1000.0),
+               comVideo ? video_pos() : posSeg, posLegenda(),
+#ifdef NV_TPK
+               legimagem_ms(),
+#else
+               0,
+#endif
+               atraso, legEstilo.atrasoMs, trecho);
+        fflush(stdout);
+      }
+    } }
   int pct=legEstilo.tamanho;if(pct<TXT_LEG_PCT_MIN)pct=TXT_LEG_PCT_MIN;if(pct>TXT_LEG_PCT_MAX)pct=TXT_LEG_PCT_MAX;pct=(pct/10)*10;
   TxtEstilo est=(TxtEstilo)(TXT_LEG_50+(pct-50)/10);corLegenda(legEstilo.cor,&r,&g,&b);
   float alpha=video_legenda_opacidade(&legEstilo)*entrada;

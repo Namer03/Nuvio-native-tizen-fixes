@@ -1589,6 +1589,7 @@ void legendasui_desenhar_secundaria(const LegendasGeo *g) {
   /* Owner 14/11/2026: faded as ONE picture, like the main (player.c
    * desenharBloco): background boxes first, then border + text composed at 1
    * in a group drawn once with the opacity. */
+  player_legenda_app_marcar();   // tpkborda: the premultiplied layer (player.c)
   { static GfxGrupo grupo;
     float m = borda == 1 ? txt_suave_margem(est) : 0.0f, yy = y, a, w = 0.0f, h = 0.0f;
     for (i = 0; i < nl; i++) {
