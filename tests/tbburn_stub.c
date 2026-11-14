@@ -31,8 +31,8 @@ int  tbburn_hdr_da_fonte(void) { return 0; }
 int  tbburn_hdr_permitido(void) { return 0; }
 void tbburn_hdr_lembrar(int s) { (void)s; }
 __attribute__((weak)) int  tbburn_linha_visivel(void) { return 0; }
-__attribute__((weak)) int  ajustes_tb_audio_remux(void) { return 0; }
-__attribute__((weak)) void ajustes_definir_tb_audio_remux(int r) { (void)r; }
+__attribute__((weak)) int  ajustes_tb_audio_modo(void) { return 0; }
+__attribute__((weak)) void ajustes_definir_tb_audio_modo(int r) { (void)r; }
 __attribute__((weak)) int  legref_em_rede(void) { return 0; }
 #include "dts/tbaudio_tpk.h"
 __attribute__((weak)) int  tba_disponivel(void) { return 0; }

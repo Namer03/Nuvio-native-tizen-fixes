@@ -2,17 +2,21 @@
  * picture plays (tbburn.h), the sound comes from the original file, read by
  * Nuvio on ONE sequential connection (dts_engine_open_demux), instead of
  * TorBox's stereo downmix. A local HTTP server on 127.0.0.1 (one session at a
- * time) serves the TV player one of two deliveries:
+ * time) serves the TV player one of these (Settings > "Original audio with
+ * burn-in" and the Audio menu row; owner 14/11, default TorBox audio):
  *
- *   PARALLEL (default): a master playlist whose video is TorBox's own media
- *     playlist (mirrored with absolute URLs: the TV downloads the video from
- *     TorBox itself) and whose audio is one HLS audio rendition per audio
- *     track of the file (#EXT-X-MEDIA TYPE=AUDIO), made here segment by
- *     segment on TorBox's timeline. No video passes through Nuvio.
- *   REMUX (fallback, Settings / Audio menu): one stream. Nuvio downloads
- *     TorBox segment k, keeps its video packets and muxes in the original
- *     audio of the same time window (MPEG-TS). On any failure the TorBox
+ *   TORBOX AUDIO (default): no session; the TV plays TorBox's stream as is.
+ *   REMUX: one stream. Nuvio downloads TorBox segment k (alongside making
+ *     the audio), keeps its video packets and muxes in the original audio of
+ *     the same window (MPEG-TS). On a failure after the download TorBox's
  *     segment goes through unchanged with its own audio (logged).
+ *   PARALLEL (codecs hint): a master playlist whose video is TorBox's media
+ *     playlist (mirrored, absolute URLs: the TV downloads the video itself)
+ *     and whose audio is one HLS rendition per audio track of the file, in
+ *     2 s segments. CODECS names the video and only the renditions' audio.
+ *     The S95C played TorBox's own audio here without the hint (14/11).
+ *   PARALLEL (strip TorBox audio): the same renditions, but the video comes
+ *     through Nuvio with TorBox's audio packets removed (no decoding).
  *
  * Audio by codec: AAC / AC3 / E-AC3 / Opus / MP3 copied into MPEG-TS; DTS,
  * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC copied as is
@@ -20,9 +24,10 @@
  * Audio-menu test row "FLAC: Convert", converted (AC3 5.1 / AAC 2.0). In
  * REMUX the output is MPEG-TS only, so FLAC is always converted there.
  *
- * Connections: the original file 1 (this module), plus in REMUX one TorBox
- * segment download at a time; every generation is serialized. Nothing here
- * logs a URL (TorBox's carry its token).
+ * Connections: the original file 1 (this module), plus in REMUX / strip one
+ * TorBox segment download at a time. Audio generation is serialized; a
+ * segment the player hung up on, or left for another position, is dropped.
+ * Nothing here logs a URL (TorBox's carry its token).
  *
  * Only the .tpk built with FFmpeg has the server; elsewhere the
  * calls are stubs (tba_disponivel() == 0). The playlist helpers are pure and
@@ -31,7 +36,7 @@
 #define NV_TBAUDIO_TPK_H
 #include <stddef.h>
 
-enum { TBA_PARALELO = 0, TBA_REMUX = 1 };
+enum { TBA_TORBOX = 0, TBA_REMUX = 1, TBA_PARALELO = 2, TBA_PARALELO_SEM = 3, TBA_MODOS };
 
 int  tba_disponivel(void);
 /* New session (replaces any previous one). tb_m3u8: TorBox's playlist URL (a
@@ -102,4 +107,8 @@ int  tba_ts_primeiro_pts(const unsigned char *b, size_t n, double *s);
  * baseMediaDecodeTime of the first traf in a media segment. 1 found. */
 int  tba_mp4_escala(const unsigned char *b, size_t n, unsigned *escala);
 int  tba_mp4_tfdt(const unsigned char *b, size_t n, unsigned long long *t);
+/* MPEG-TS bytes without the audio elementary streams (PMT rewritten, CRC
+ * recomputed, audio packets dropped). `out` holds at least `n` bytes. 0 when
+ * it cannot (no PAT/PMT, PMT over one packet, the PCR on an audio PID). */
+int  tba_ts_sem_audio(const unsigned char *in, size_t n, unsigned char *out, size_t *nout, int *removidas);
 #endif

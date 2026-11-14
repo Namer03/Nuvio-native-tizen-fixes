@@ -733,9 +733,9 @@ typedef enum {
   // LOCAL, append-only; the .tpk only (foraDestaPlataforma).
   AJ_TB_PLANO,
   AJ_LEG_QUEIMAR,
-  // Original audio with TorBox burn-in (dts/tbaudio_tpk.h, owner 13/11):
-  // Parallel (TorBox's video + Nuvio's audio renditions, default) or Remux
-  // (one stream made by Nuvio). LOCAL, append-only; the .tpk only.
+  // Original audio with TorBox burn-in (dts/tbaudio_tpk.h, owners 13-14/11):
+  // TorBox audio (TorBox's stream as is, default), Remux, Parallel (codecs
+  // hint), Parallel (strip TorBox audio) = TBA_*. LOCAL, append-only; .tpk.
   AJ_TB_AUDIO,
   AJ_N
 } OpcaoId;
@@ -789,7 +789,7 @@ static const char *V_QUALIDADE[] = { "Automática", "4K", "1080p", "720p" };
 static const char *V_LIGA[]      = { "Ligado", "Desligado" };
 // Plano do TorBox (tbburn.h): so o Pro converte video, o que a legenda queimada precisa.
 static const char *V_TB_PLANO[]  = { "Standard", "Pro" };
-static const char *V_TB_AUDIO[]  = { "Paralelo", "Remux" };
+static const char *V_TB_AUDIO[]  = { "Áudio do TorBox", "Remux", "Paralelo (codecs)", "Paralelo (sem áudio do TorBox)" };
 static const char *V_LIGA_AUTO[] = { "Ligado", "Desligado", "Automático" };
 // Estilo da fileira de formato do player; o indice e o PLR_FMT_* de ajustes.h
 // e o gravado em "plrFormatoLocal".
@@ -1881,7 +1881,7 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Sincronia por áudio em rede móvel", V_LIGA, 2),   // local: legendaSyncAudioMovelLocal (Android)
   ESC("Plano do TorBox", V_TB_PLANO, 2),                 // local: torboxPlanoLocal
   ESC("Queimar ASS pelo TorBox", V_LIGA, 2),             // local: legendaQueimarLocal
-  ESC("Áudio original com a queima", V_TB_AUDIO, 2),     // local: torboxAudioLocal
+  ESC("Áudio original com a queima", V_TB_AUDIO, 4),     // local: torboxAudioLocal
 };
 
 // Nome de cada opcao no arquivo. O formato era POSICIONAL — uma linha por
@@ -3221,10 +3221,10 @@ static int passoAdiante(int op, int dir);
 static int definirValorDireto(int op, int novo);
 int ajustes_tb_pro(void) { return valor[AJ_TB_PLANO] == 1; }
 static void riscoNotar(int op, int antes);
-int ajustes_tb_audio_remux(void) { return valor[AJ_TB_AUDIO] == 1; }
-void ajustes_definir_tb_audio_remux(int remux) {
+int ajustes_tb_audio_modo(void) { return valor[AJ_TB_AUDIO] >= 0 && valor[AJ_TB_AUDIO] < 4 ? valor[AJ_TB_AUDIO] : 0; }
+void ajustes_definir_tb_audio_modo(int modo) {
   int a = valor[AJ_TB_AUDIO];
-  valor[AJ_TB_AUDIO] = remux ? 1 : 0;
+  valor[AJ_TB_AUDIO] = modo >= 0 && modo < 4 ? modo : 0;
   AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar());
   riscoNotar(AJ_TB_AUDIO, a);
 }
@@ -7796,7 +7796,7 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_LEG_SYNC_AUDIO: return "Quando a legenda incorporada não serve para sincronizar, acerta a legenda externa pelas falas do áudio. Vale só nesta TV.";
     case AJ_LEG_SYNC_AUDIO_MOVEL: return "Para a sincronia por áudio: lê alguns trechos do filme à frente também em rede móvel (até 150 MB). Desligado, só no Wi-Fi ou cabo. Vale só nesta TV.";
     case AJ_TB_PLANO: return "O seu plano no TorBox. Só o Pro converte o vídeo, que é o que a legenda queimada precisa. Vale só nesta TV.";
-    case AJ_TB_AUDIO: return inativa(op) ? "Precisa de Queimar ASS pelo TorBox ligado, do TorBox Pro e da chave do TorBox." : "Com a legenda queimada, o som vem do arquivo original e não do TorBox. Paralelo: a TV pega a imagem do TorBox e o áudio do Nuvio, separados. Remux: o Nuvio junta os dois num fluxo só, como no DTS. Vale só nesta TV.";
+    case AJ_TB_AUDIO: return inativa(op) ? "Precisa de Queimar ASS pelo TorBox ligado, do TorBox Pro e da chave do TorBox." : "Com a legenda queimada, de onde vem o som. Áudio do TorBox: o fluxo do TorBox como está. Remux e Paralelo: o áudio original do arquivo, pelo Nuvio. Vale só nesta TV.";
     case AJ_LEG_QUEIMAR: return inativa(op) ? "Precisa do TorBox Pro e da chave do TorBox." : "Legendas ASS do arquivo, em fontes do TorBox, tocam como um vídeo do TorBox com a legenda dentro da imagem. Imagem com menos qualidade; tamanho, opacidade e atraso não valem nela. Vale só nesta TV.";
     case AJ_LEG_FORCADA: return "Quando o áudio já está no idioma da legenda, liga só a legenda forçada desse idioma (falas em outra língua e placas), ou nenhuma se o arquivo não tiver. Desligado, liga a legenda completa como antes.";
     case AJ_LEG_MOSTRAR: return valor[op] ? "Todas as legendas, com detalhes" : "Recomendadas";

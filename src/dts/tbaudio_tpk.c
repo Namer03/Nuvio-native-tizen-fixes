@@ -265,6 +265,119 @@ int tba_mp4_tfdt(const unsigned char *b, size_t n, unsigned long long *t) {
   return 1;
 }
 
+// MPEG-TS without its audio (Parallel, strip): the audio elementary streams
+// leave the PMT and their packets are dropped; nothing is decoded.
+static unsigned crc32mpeg(const unsigned char *b, size_t n) {
+  unsigned c = 0xFFFFFFFFu;
+  size_t i;
+  int k;
+  for (i = 0; i < n; i++) {
+    c ^= (unsigned)b[i] << 24;
+    for (k = 0; k < 8; k++) c = c & 0x80000000u ? (c << 1) ^ 0x04C11DB7u : c << 1;
+  }
+  return c;
+}
+static int esAudio(int tipo, const unsigned char *d, int n) {
+  int i;
+  switch (tipo) {
+    case 0x03: case 0x04: case 0x0F: case 0x11: case 0x81: case 0x82: case 0x83: case 0x84:
+    case 0x85: case 0x86: case 0x87: case 0xA1: case 0xA2: return 1;
+    case 0x06:   // private PES: audio only by its descriptor
+      for (i = 0; i + 2 <= n; i += 2 + d[i + 1]) {
+        int t = d[i], l = d[i + 1];
+        if (i + 2 + l > n) break;
+        if (t == 0x6A || t == 0x7A || t == 0x7B || t == 0x7C) return 1;   // AC-3, E-AC-3, DTS, AAC
+        if (t == 0x05 && l >= 4 && (!memcmp(d + i + 2, "AC-3", 4) || !memcmp(d + i + 2, "EAC3", 4) ||
+                                    !memcmp(d + i + 2, "Opus", 4) || !memcmp(d + i + 2, "DTS", 3))) return 1;
+        if (t == 0x7F && l >= 1 && (d[i + 2] == 0x80 || d[i + 2] == 0x15)) return 1;    // Opus, AC-4
+      }
+      return 0;
+    default: return 0;
+  }
+}
+static size_t tsInicio(const unsigned char *t) {   // payload offset of a TS packet, 0 = none
+  int af = (t[3] >> 4) & 3;
+  size_t o = 4;
+  if (!(af & 1)) return 0;
+  if (af & 2) o += 1 + (size_t)t[4];
+  return o < 188 ? o : 0;
+}
+int tba_ts_sem_audio(const unsigned char *in, size_t n, unsigned char *out, size_t *nout, int *removidas) {
+  size_t o = 0, k = 0;
+  int pmt = -1, pcr = -1, nA = 0, i;
+  int audio[16];
+  unsigned char sec[1024];
+  size_t nsec = 0;
+  if (removidas) *removidas = 0;
+  if (!in || !out || !nout) return 0;
+  while (o + 188 * 2 <= n && !(in[o] == 0x47 && in[o + 188] == 0x47)) o++;
+  // PAT -> PMT PID
+  for (size_t q = o; q + 188 <= n && pmt < 0; q += 188) {
+    const unsigned char *t = in + q;
+    size_t pi = tsInicio(t);
+    if (t[0] != 0x47 || ((t[1] & 0x1F) << 8 | t[2]) != 0 || !(t[1] & 0x40) || !pi) continue;
+    pi += 1 + t[pi];
+    if (pi + 12 > 188 || t[pi] != 0x00) continue;
+    { int len = (t[pi + 1] & 0x0F) << 8 | t[pi + 2];
+      size_t e = pi + 3 + (size_t)len - 4, j;
+      for (j = pi + 8; j + 4 <= e && e <= 188; j += 4) {
+        int prog = t[j] << 8 | t[j + 1];
+        if (prog) { pmt = (t[j + 2] & 0x1F) << 8 | t[j + 3]; break; }
+      } }
+  }
+  if (pmt < 0) return 0;
+  // PMT: drop the audio streams, rebuild the section
+  for (size_t q = o; q + 188 <= n && !nsec; q += 188) {
+    const unsigned char *t = in + q;
+    size_t pi = tsInicio(t), e, j;
+    int len, pil;
+    if (t[0] != 0x47 || ((t[1] & 0x1F) << 8 | t[2]) != pmt || !(t[1] & 0x40) || !pi) continue;
+    pi += 1 + t[pi];
+    if (pi + 12 > 188 || t[pi] != 0x02) return 0;
+    len = (t[pi + 1] & 0x0F) << 8 | t[pi + 2];
+    if (pi + 3 + (size_t)len > 188) return 0;   // a PMT spanning packets: not handled
+    pcr = (t[pi + 8] & 0x1F) << 8 | t[pi + 9];
+    pil = (t[pi + 10] & 0x0F) << 8 | t[pi + 11];
+    memcpy(sec, t + pi, 12 + (size_t)pil); nsec = 12 + (size_t)pil;
+    e = pi + 3 + (size_t)len - 4;
+    for (j = pi + 12 + (size_t)pil; j + 5 <= e; ) {
+      int tipo = t[j], pid = (t[j + 1] & 0x1F) << 8 | t[j + 2], el = (t[j + 3] & 0x0F) << 8 | t[j + 4];
+      if (j + 5 + (size_t)el > e) return 0;
+      if (esAudio(tipo, t + j + 5, el)) { if (nA < 16) audio[nA++] = pid; }
+      else { memcpy(sec + nsec, t + j, 5 + (size_t)el); nsec += 5 + (size_t)el; }
+      j += 5 + (size_t)el;
+    }
+  }
+  if (!nsec) return 0;
+  for (i = 0; i < nA; i++) if (audio[i] == pcr) return 0;   // the clock rides on audio: cannot drop it
+  { int nl = (int)nsec + 4 - 3;
+    unsigned c;
+    sec[1] = (unsigned char)((sec[1] & 0xF0) | ((nl >> 8) & 0x0F)); sec[2] = (unsigned char)(nl & 0xFF);
+    c = crc32mpeg(sec, nsec);
+    sec[nsec] = (unsigned char)(c >> 24); sec[nsec + 1] = (unsigned char)(c >> 16);
+    sec[nsec + 2] = (unsigned char)(c >> 8); sec[nsec + 3] = (unsigned char)c; nsec += 4; }
+  for (; o + 188 <= n; o += 188) {
+    const unsigned char *t = in + o;
+    int pid = (t[1] & 0x1F) << 8 | t[2], drop = 0;
+    if (t[0] != 0x47) break;
+    for (i = 0; i < nA; i++) if (audio[i] == pid) drop = 1;
+    if (drop) continue;
+    memcpy(out + k, t, 188);
+    if (pid == pmt && (t[1] & 0x40)) {
+      size_t pi = tsInicio(t);
+      if (pi && pi + 1 + t[pi] + nsec <= 188) {
+        size_t s0 = pi + 1 + t[pi];
+        memcpy(out + k + s0, sec, nsec);
+        memset(out + k + s0 + nsec, 0xFF, 188 - s0 - nsec);
+      }
+    }
+    k += 188;
+  }
+  *nout = k;
+  if (removidas) *removidas = nA;
+  return 1;
+}
+
 // ---- S2: sockets to TorBox in /proc/net/tcp (logging only) -----------------
 #if (defined(NV_TPK) || defined(NV_TBAUDIO_TEST)) && !defined(__EMSCRIPTEN__)
 #include <pthread.h>
@@ -447,9 +560,12 @@ void tba_log(void) {}
 #define TB_CABECA      (256 * 1024)      // head of TorBox segment 0: its first PTS
 #define TB_SEG_MAX     (30u * 1024u * 1024u)
 #define FILA_MAX       512
-#define LER_ADIANTE_S  20.0              // a jump this short reads on instead of seeking
+#define AUD_SEG_S      2.0               // Parallel audio segments: a seek reads ~2 s, not 5 (like DTS)
 
 enum { M_TS = 0, M_MP4, M_AC3, M_AAC, M_FORA };
+static const char *modoNome(int m) {
+  return m == TBA_REMUX ? "Remux" : m == TBA_PARALELO ? "Parallel (codecs hint)" : m == TBA_PARALELO_SEM ? "Parallel (strip TorBox audio)" : "TorBox audio";
+}
 static const char *const MODO_NOME[] = { "copied (MPEG-TS)", "copied (fMP4)", "to AC3", "to AAC", "not offered" };
 
 typedef struct {
@@ -472,6 +588,8 @@ typedef struct Sessao {
   char *plTexto, plBase[4096], *espelho;
   TbaPl pl;
   double *ini, ultimo, dur;            // segment starts on TorBox's timeline, last length, total
+  double *aIni; int naSeg;             // Parallel audio segments (AUD_SEG_S) on the same timeline
+  char codecsV[48];                    // video CODECS of TorBox's stream ("" unknown)
   int tbMp4;
   unsigned char *tbInit; size_t tbInitN;
   double tbOff; int tbOffOk;
@@ -481,9 +599,13 @@ typedef struct Sessao {
   AVFormatContext *ic;
   double origV0, durArq;
   Faixa fx[TBA_FAIXAS]; int nfx;
-  // generator (gm)
-  pthread_mutex_t gm;
+  // generator (gm); TorBox video downloads (vm, Parallel strip)
+  pthread_mutex_t gm, vm;
   int gOk, gFaixa, gSeg, gModo;
+  const double *gIni;                  // the segment list gSeg counts in
+  atomic_int espera;                   // requests waiting for gm
+  atomic_long espChave;                // the last one: (track+1) * 1000000 + segment
+  int stripAviso;
   Item fila[FILA_MAX]; int fIni, fN;
   AVPacket *pk;
   AVCodecContext *dec, *enc;
@@ -493,7 +615,7 @@ typedef struct Sessao {
   int64_t base48, amostras;
   int eof, leu;   // leu: the demuxer has read packets (a seek is needed for a fresh start)
   // log
-  long nSeg, nPass, nErro; long long bytes; double msLer, msTb, msMux, gapUlt; int gapOk;
+  long nSeg, nPass, nErro, nLarg, nVid; long long bytes; double msLer, msTb, msMux, gapUlt, msVid; int gapOk;
   char ultErro[160];
 } Sessao;
 
@@ -544,9 +666,9 @@ static void soltar(Sessao *s) {
   av_packet_free(&s->pk); av_frame_free(&s->fr); av_frame_free(&s->ef);
   if (s->eng) { dts_engine_cancel(s->eng); dts_engine_destroy(s->eng); }
   tba_pl_liberar(&s->pl);
-  free(s->ini); free(s->plTexto); free(s->espelho); free(s->tbInit);
+  free(s->ini); free(s->aIni); free(s->plTexto); free(s->espelho); free(s->tbInit);
   free(s->tbUrl); free(s->orig); free(s->cab);
-  pthread_mutex_destroy(&s->m); pthread_cond_destroy(&s->c); pthread_mutex_destroy(&s->gm);
+  pthread_mutex_destroy(&s->m); pthread_cond_destroy(&s->c); pthread_mutex_destroy(&s->gm); pthread_mutex_destroy(&s->vm);
   free(s);
 }
 static void falhar(Sessao *s, const char *porque) {
@@ -569,12 +691,14 @@ static int acumular(const void *d, size_t n, void *u) {
   if (k) { memcpy(a->b + a->n, d, k); a->n += k; }
   return a->n < a->max;   // 0 stops the transfer once the cap is reached
 }
-static int pararSe(void *u) { return ((Sessao *)u)->cancel; }
+typedef struct { Sessao *s; volatile int *mais; } Parar;
+static int pararSe(void *u) { Parar *p = u; return p->s->cancel || (p->mais && *p->mais); }
 // GET into memory. `max` caps the body (a capped body is still returned).
 // `final` (may be NULL) gets the final URL. Returns the body or NULL.
-static unsigned char *baixar(Sessao *s, const char *url, size_t max, size_t *n, char *final, size_t fn,
-                             int *status, double *ms) {
+static unsigned char *baixarP(Sessao *s, const char *url, size_t max, size_t *n, char *final, size_t fn,
+                              int *status, double *ms, volatile int *mais) {
   RedePedido p; RedeResposta r; Acum a;
+  Parar pp = { s, mais };
   char faixa[64];
   const char *cabs[2] = { NULL, NULL };
   int cabeca = max <= TB_CABECA;
@@ -589,7 +713,7 @@ static unsigned char *baixar(Sessao *s, const char *url, size_t max, size_t *n, 
   p.max_bytes = REDE_CORPO_MAXIMO;
   if (cabeca) { snprintf(faixa, sizeof faixa, "Range: bytes=0-%zu", max - 1); cabs[0] = faixa; p.cabecalhos = cabs; }
   p.receber_corpo = acumular; p.corpo_usuario = &a;
-  p.parar = pararSe; p.parar_usuario = s;
+  p.parar = pararSe; p.parar_usuario = &pp;
   int st;
   rede_pedir(&p, &r);
   st = r.status;
@@ -598,10 +722,14 @@ static unsigned char *baixar(Sessao *s, const char *url, size_t max, size_t *n, 
   rede_resposta_limpar(&r);
   if (ms) *ms = agoraMs() - t0;
   // A capped body ends the transfer on purpose (curl 23): what arrived counts.
-  if (s->cancel || st < 200 || st >= 300 || !a.n) { free(a.b); return NULL; }
+  if (s->cancel || (mais && *mais) || st < 200 || st >= 300 || !a.n) { free(a.b); return NULL; }
   a.b[a.n] = 0;
   *n = a.n;
   return a.b;
+}
+static unsigned char *baixar(Sessao *s, const char *url, size_t max, size_t *n, char *final, size_t fn,
+                             int *status, double *ms) {
+  return baixarP(s, url, max, n, final, fn, status, ms, NULL);
 }
 
 // ---- preparation ---------------------------------------------------------------
@@ -633,6 +761,50 @@ static void modosRecalcular(Sessao *s) {
   for (i = 0; i < s->nfx; i++) s->fx[i].modo = modoDe(&s->fx[i], s->flacConv, s->modo == TBA_REMUX);
 }
 
+typedef struct { const unsigned char *b; size_t n, o; } Mem;
+static int memLer(void *u, uint8_t *d, int n) {
+  Mem *m = u;
+  size_t k = m->n - m->o < (size_t)n ? m->n - m->o : (size_t)n;
+  if (!k) return AVERROR_EOF;
+  memcpy(d, m->b + m->o, k); m->o += k;
+  return (int)k;
+}
+static int64_t memBuscar(void *u, int64_t o, int de) {
+  Mem *m = u;
+  if (de == AVSEEK_SIZE) return (int64_t)m->n;
+  if (de == SEEK_CUR) o += (int64_t)m->o; else if (de == SEEK_END) o += (int64_t)m->n;
+  if (o < 0 || (size_t)o > m->n) return -1;
+  m->o = (size_t)o;
+  return o;
+}
+// The video CODECS string of TorBox's stream from the first bytes of segment 0
+// (Parallel codecs hint): "avc1.PPCCLL" / "hvc1.P.4.LL.B0". "" when unknown.
+static void codecsDe(Sessao *s, const unsigned char *b, size_t n, int mp4) {
+  Mem mem = { b, n, 0 };
+  unsigned char *buf = av_malloc(65536);
+  AVIOContext *io = buf ? avio_alloc_context(buf, 65536, 0, &mem, memLer, NULL, memBuscar) : NULL;
+  AVFormatContext *in = avformat_alloc_context();
+  unsigned i;
+  if (!io || !in) { av_free(buf); if (io) avio_context_free(&io); avformat_free_context(in); return; }
+  in->pb = io;
+  if (avformat_open_input(&in, NULL, av_find_input_format(mp4 ? "mov" : "mpegts"), NULL) == 0) {
+    avformat_find_stream_info(in, NULL);
+    for (i = 0; i < in->nb_streams; i++) {
+      AVCodecParameters *c = in->streams[i]->codecpar;
+      if (c->codec_type != AVMEDIA_TYPE_VIDEO) continue;
+      if (c->codec_id == AV_CODEC_ID_H264 && c->profile > 0 && c->level > 0)
+        snprintf(s->codecsV, sizeof s->codecsV, "avc1.%02X00%02X", c->profile & 0xFF, c->level & 0xFF);
+      else if (c->codec_id == AV_CODEC_ID_HEVC && c->profile > 0 && c->level > 0)
+        snprintf(s->codecsV, sizeof s->codecsV, "hvc1.%d.4.L%d.B0", c->profile, c->level);
+      printf("[tbaudio] TorBox video: %s %dx%d, profile %d, level %d -> CODECS \"%s\"\n", avcodec_get_name(c->codec_id),
+             c->width, c->height, c->profile, c->level, s->codecsV[0] ? s->codecsV : "unknown");
+      break;
+    }
+    avformat_close_input(&in);
+  } else avformat_free_context(in);
+  av_freep(&io->buffer);
+  avio_context_free(&io);
+}
 static int prepTorbox(Sessao *s) {
   size_t n = 0;
   int st = 0;
@@ -673,6 +845,10 @@ static int prepTorbox(Sessao *s) {
     if (s->tbInit && tba_mp4_escala(s->tbInit, s->tbInitN, &esc)) {
       unsigned char *h = baixar(s, s->pl.seg[0].uri, TB_CABECA, &n, NULL, 0, &st, &ms);
       if (h && tba_mp4_tfdt(h, n, &t)) { s->tbOff = (double)t / esc; s->tbOffOk = 1; }
+      if (h) {
+        unsigned char *j = malloc(s->tbInitN + n);
+        if (j) { memcpy(j, s->tbInit, s->tbInitN); memcpy(j + s->tbInitN, h, n); codecsDe(s, j, s->tbInitN + n, 1); free(j); }
+      }
       free(h);
     }
   } else {
@@ -680,6 +856,7 @@ static int prepTorbox(Sessao *s) {
     if (h && tba_ts_primeiro_pts(h, n, &s->tbOff)) s->tbOffOk = 1;
     if (!h) printf("[tbaudio] TorBox segment 0 head did not download (HTTP %d)\n", st);
     if (h) printf("[tbaudio] TorBox segment 0 head: %zu bytes in %.0f ms\n", n, ms);
+    if (h) codecsDe(s, h, n, 0);
     free(h);
   }
   printf("[tbaudio] TorBox's first video PTS: %s%.3f s\n", s->tbOffOk ? "" : "UNKNOWN, using ", s->tbOffOk ? s->tbOff : 0.0);
@@ -722,6 +899,12 @@ static int prepOriginal(Sessao *s, int ordPedido) {
   if (v >= 0 && ic->streams[v]->start_time != AV_NOPTS_VALUE)
     s->origV0 = ic->streams[v]->start_time * av_q2d(ic->streams[v]->time_base);
   else if (ic->start_time != AV_NOPTS_VALUE) s->origV0 = ic->start_time / (double)AV_TIME_BASE;
+  // The seek index (Matroska reads its Cues on the first seek): read now, not
+  // on the viewer's first seek (log 14/11: first seek 7.7-13 s, later 2 s).
+  { double t1 = agoraMs();
+    int r = s->durArq > 10 ? av_seek_frame(ic, -1, (int64_t)(s->durArq * 0.5 * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) : -1;
+    s->leu = 1;
+    printf("[tbaudio] seek index %s in %.0f ms\n", r >= 0 ? "read" : "not read (no seek)", agoraMs() - t1); }
   modosRecalcular(s);
   s->audio = -1;
   for (i = 0; i < s->nfx; i++) if (s->fx[i].ord == ordPedido && s->fx[i].modo != M_FORA) s->audio = i;
@@ -752,10 +935,16 @@ static void *preparar(void *u) {
     else
       printf("[tbaudio] total %.3f s kept (file %.3f s%s)\n", s->dur, s->durArq, s->pl.fim ? "" : ", no ENDLIST");
     s->espelho = tba_pl_espelho(s->plTexto, s->plBase, s->ultimo != s->pl.seg[s->pl.nseg - 1].dur ? s->ultimo : -1);
+    s->naSeg = (int)floor(s->dur / AUD_SEG_S);   // a tail under 0.5 s joins the last segment
+    if (s->dur - s->naSeg * AUD_SEG_S > 0.5) s->naSeg++;
+    if (s->naSeg < 1) s->naSeg = 1;
+    s->aIni = malloc(sizeof *s->aIni * (size_t)(s->naSeg + 1));
+    if (s->aIni) { int k; for (k = 0; k < s->naSeg; k++) s->aIni[k] = k * AUD_SEG_S; s->aIni[s->naSeg] = s->dur; }
+    else { free(s->espelho); s->espelho = NULL; }
     pthread_mutex_lock(&s->m);
     if (!s->falhou && s->espelho) {
       s->pronto = 1;
-      printf("[tbaudio] ready in %.0f ms: %s, audio %d\n", agoraMs() - t0, s->modo == TBA_REMUX ? "Remux" : "Parallel",
+      printf("[tbaudio] ready in %.0f ms: %s, audio %d\n", agoraMs() - t0, modoNome(s->modo),
              s->fx[s->audio].ord);
     } else if (!s->falhou) { s->falhou = 1; snprintf(s->motivo, sizeof s->motivo, "out of memory"); }
     pthread_cond_broadcast(&s->c);
@@ -888,15 +1077,37 @@ static int produzir(Sessao *s, const Faixa *f, char *err, size_t en) {
     if (s->fN) return 1;
   }
 }
-// Positions the generator for segment `seg` of track `fi`. *saltou = 1 when
-// packets before the segment must be dropped.
-static int posicionar(Sessao *s, int fi, int seg, int *saltou, const char **como, char *err, size_t en) {
+// Stop what is being made: the player hung up (`so` closed) or asked for a
+// segment that is not this one or the next (a seek). 1 hung up, 2 superseded.
+static int abandonar(Sessao *s, int so, long chave) {
+  if (s->cancel) return 1;
+  if (so >= 0) {
+    struct pollfd p = { so, POLLIN, 0 };
+    if (poll(&p, 1, 0) > 0) {
+      char c;
+      if (p.revents & (POLLHUP | POLLERR)) return 1;
+      if (recv(so, &c, 1, MSG_PEEK | MSG_DONTWAIT) == 0) return 1;
+    }
+  }
+  if (atomic_load(&s->espera) > 0) {
+    long w = atomic_load(&s->espChave);
+    if (w != chave && w != chave + 1) return 2;
+  }
+  return 0;
+}
+// Positions the generator for segment `seg` of track `fi` on the list `ini`
+// (TorBox's segments for Remux, the 2 s audio segments for Parallel), whose
+// segments are about `len` s. *saltou = 1 when packets before the segment
+// must be dropped. A jump of more than one segment seeks: these files run at
+// 40 Mbit/s, reading 15 s through took 6.4 s (log 14/11).
+static int posicionar(Sessao *s, int fi, int seg, const double *ini, double len, int *saltou, const char **como,
+                      char *err, size_t en) {
   const Faixa *f = &s->fx[fi];
-  double alvo = s->ini[seg] + s->origV0;
+  double alvo = ini[seg] + s->origV0;
+  int mesmo = s->gOk && s->gFaixa == fi && s->gModo == f->modo && s->gIni == ini && s->gSeg >= 0;
   *saltou = 0; *como = "continued";
-  if (s->gOk && s->gFaixa == fi && s->gModo == f->modo && s->gSeg == seg) return 0;
-  if (s->gOk && s->gFaixa == fi && s->gModo == f->modo && seg > s->gSeg && s->gSeg >= 0 &&
-      s->ini[seg] - s->ini[s->gSeg] <= LER_ADIANTE_S) { *saltou = 1; *como = "read ahead"; return 0; }
+  if (mesmo && s->gSeg == seg) return 0;
+  if (mesmo && seg > s->gSeg && ini[seg] - ini[s->gSeg] <= len + 0.5) { *saltou = 1; *como = "read ahead"; return 0; }
   *saltou = 1; *como = "seeked";
   filaLimpar(s);
   s->eof = 0;
@@ -905,12 +1116,12 @@ static int posicionar(Sessao *s, int fi, int seg, int *saltou, const char **como
   else codecLiberar(s);
   dts_engine_interrupt(s->eng, 0);
   if (seg > 0 || s->leu) {
-    double a = alvo - 2.0 < 0 ? 0 : alvo - 2.0;
-    if (av_seek_frame(s->ic, -1, (int64_t)(a * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) {
+    // Straight to the segment: the index gives the keyframe at or before it.
+    if (av_seek_frame(s->ic, -1, (int64_t)(alvo * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) {
       snprintf(err, en, "seek in the original file"); s->gOk = 0; return -1;
     }
   }
-  s->gOk = 1; s->gFaixa = fi; s->gModo = f->modo; s->gSeg = seg;
+  s->gOk = 1; s->gFaixa = fi; s->gModo = f->modo; s->gSeg = seg; s->gIni = ini;
   return 0;
 }
 
@@ -994,13 +1205,14 @@ static int escreverAudio(Sessao *s, Mux *m, int idx, AVPacket *p, AVRational tb,
 
 typedef struct { unsigned char *b; size_t n; char tipo[48]; int status; } Resp;
 
-// Audio of track fi for TorBox segment `seg` (PARALLEL). seg -1 = the fMP4 init.
-static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en) {
+// Audio of track fi, Parallel segment `seg` (AUD_SEG_S) or -1 = the fMP4 init.
+// -2 = stopped (the player hung up or moved on), nothing to send.
+static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en, int so, long chave) {
   const Faixa *f = &s->fx[fi];
   AVCodecParameters *par = avcodec_parameters_alloc();
   AVRational tb, srcTb;
   Mux m;
-  int mp4 = f->modo == M_MP4, saltou = 0, nPk = 0, rr = 0;
+  int mp4 = f->modo == M_MP4, saltou = 0, nPk = 0, rr = 0, ab = 0;
   const char *como = "";
   double t0 = agoraMs(), fs, fe, pri = -1, tl;
   if (!par) { snprintf(err, en, "out of memory"); return -1; }
@@ -1016,17 +1228,18 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en)
     snprintf(r->tipo, sizeof r->tipo, "audio/mp4");
     return r->b ? 0 : -1;
   }
-  if (posicionar(s, fi, seg, &saltou, &como, err, en) < 0) { avcodec_parameters_free(&par); return -1; }
+  if (posicionar(s, fi, seg, s->aIni, AUD_SEG_S, &saltou, &como, err, en) < 0) { avcodec_parameters_free(&par); return -1; }
   parametrosSaida(s, f, par, &tb);
   srcTb = s->dec ? (AVRational){1, 48000} : s->ic->streams[f->si]->time_base;
   if (muxAbrir(&m, mp4 ? "mp4" : "mpegts", NULL, (AVRational){0, 1}, par, tb, f->lingua) < 0) {
     muxFechar(&m); avcodec_parameters_free(&par); snprintf(err, en, "muxer"); return -1;
   }
   avcodec_parameters_free(&par);
-  fs = s->ini[seg] + s->origV0;
-  fe = seg + 1 < s->pl.nseg ? s->ini[seg + 1] + s->origV0 : 1e18;
+  fs = s->aIni[seg] + s->origV0;
+  fe = seg + 1 < s->naSeg ? s->aIni[seg + 1] + s->origV0 : 1e18;
   for (;;) {
     Item it;
+    if ((ab = abandonar(s, so, chave)) != 0) { rr = -2; break; }
     if (!s->fN) { rr = produzir(s, f, err, en); if (rr < 0) break; if (rr == 0 && !s->fN) { rr = 0; break; } continue; }
     it = s->fila[s->fIni];
     if (it.t >= fe) break;
@@ -1038,60 +1251,94 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en)
     nPk++;
   }
   tl = agoraMs();
+  if (rr == -2) {
+    // The packets already taken belong to this segment: the next request
+    // seeks (or continues past them only when it is the next segment).
+    muxFechar(&m);
+    if (ab == 2) s->gOk = 0;
+    s->nLarg++;
+    snprintf(err, en, "%s after %.0f ms", ab == 1 ? "the player hung up" : "the player asked for another segment", tl - t0);
+    return -2;
+  }
   if (rr < 0) { muxFechar(&m); s->gOk = 0; return -1; }
   r->b = muxFim(&m, mp4, mp4, &r->n);
   if (!r->b) { snprintf(err, en, "out of memory"); return -1; }
   snprintf(r->tipo, sizeof r->tipo, mp4 ? "audio/mp4" : "video/mp2t");
   s->gSeg = seg + 1;
   s->nSeg++; s->bytes += (long long)r->n; s->msLer += tl - t0;
-  printf("[tbaudio] audio %d seg %d (%.1f-%.1f s): %d packets, %zu KB, %.0f ms, %s; first audio at %.3f s (segment starts %.3f s)\n",
-         f->ord, seg, s->ini[seg], s->ini[seg] + s->pl.seg[seg].dur, nPk, r->n / 1024, tl - t0, como,
-         pri >= 0 ? pri - s->origV0 : -1.0, s->ini[seg]);
+  printf("[tbaudio] audio %d seg %d (%.1f-%.1f s): %d packets, %zu KB, %.0f ms, %s; first audio at %.3f s\n",
+         f->ord, seg, s->aIni[seg], s->aIni[seg + 1], nPk, r->n / 1024, tl - t0, como, pri >= 0 ? pri - s->origV0 : -1.0);
   fflush(stdout);
   return 0;
 }
 
 // ---- REMUX: TorBox's video + the original audio, one MPEG-TS segment ------------
-typedef struct { const unsigned char *b; size_t n, o; } Mem;
-static int memLer(void *u, uint8_t *d, int n) {
-  Mem *m = u;
-  size_t k = m->n - m->o < (size_t)n ? m->n - m->o : (size_t)n;
-  if (!k) return AVERROR_EOF;
-  memcpy(d, m->b + m->o, k); m->o += k;
-  return (int)k;
+// TorBox's segment downloads in a thread while the audio is made (A, owner
+// 14/11): TorBox 1 + the original 1 at once, as before in total.
+typedef struct { Sessao *s; const char *url; unsigned char *b; size_t n; int st; double ms; volatile int parar; } Dl;
+static void *baixarFio(void *u) {
+  Dl *d = u;
+  d->b = baixarP(d->s, d->url, TB_SEG_MAX, &d->n, NULL, 0, &d->st, &d->ms, &d->parar);
+  return NULL;
 }
-static int64_t memBuscar(void *u, int64_t o, int de) {
-  Mem *m = u;
-  if (de == AVSEEK_SIZE) return (int64_t)m->n;
-  if (de == SEEK_CUR) o += (int64_t)m->o; else if (de == SEEK_END) o += (int64_t)m->n;
-  if (o < 0 || (size_t)o > m->n) return -1;
-  m->o = (size_t)o;
-  return o;
-}
-static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en) {
+static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en, int so, long chave) {
   const Faixa *f = &s->fx[s->audio];
-  unsigned char *tb = NULL, *junto = NULL;
-  size_t n = 0;
-  int st = 0, vi = -1, i, saltou = 0, rr = 0, nV = 0, nA = 0;
+  unsigned char *junto = NULL;
+  int vi = -1, i, saltou = 0, rr = 0, nV = 0, nA = 0, ab = 0, fio = 0, nCol = 0, capCol = 0;
   const char *como = "";
-  double ms = 0, t0, fs, fe, vPri = -1, aPri = -1;
+  double t0 = agoraMs(), tAud = 0, fs, fe, vPri = -1, aPri = -1;
   AVFormatContext *in = NULL;
   AVIOContext *io = NULL;
   Mem mem;
   Mux m;
   AVCodecParameters *par = NULL;
   AVRational atb, srcTb;
+  Item *col = NULL;
+  pthread_t th;
+  Dl dl;
   memset(&m, 0, sizeof m);
-  tb = baixar(s, s->pl.seg[seg].uri, TB_SEG_MAX, &n, NULL, 0, &st, &ms);
-  if (!tb) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, st); return -1; }
-  s->msTb += ms;
-  t0 = agoraMs();
+  memset(&dl, 0, sizeof dl);
+  dl.s = s; dl.url = s->pl.seg[seg].uri;
+  fio = pthread_create(&th, NULL, baixarFio, &dl) == 0;
+  if (!fio) baixarFio(&dl);
+  // The original audio of the same window, meanwhile.
+  if (posicionar(s, s->audio, seg, s->ini, s->pl.seg[seg].dur, &saltou, &como, err, en) < 0) { rr = -1; goto juntar; }
+  fs = s->ini[seg] + s->origV0;
+  fe = seg + 1 < s->pl.nseg ? s->ini[seg + 1] + s->origV0 : 1e18;
+  for (;;) {
+    Item it;
+    if ((ab = abandonar(s, so, chave)) != 0) { rr = -2; break; }
+    if (!s->fN) { rr = produzir(s, f, err, en); if (rr < 0) break; if (rr == 0 && !s->fN) { rr = 0; break; } continue; }
+    it = s->fila[s->fIni];
+    if (it.t >= fe) break;
+    s->fIni = (s->fIni + 1) % FILA_MAX; s->fN--;
+    if (saltou && it.t < fs - 0.001) { av_packet_free(&it.p); continue; }
+    if (nCol == capCol) {
+      Item *g = realloc(col, sizeof *g * (size_t)(capCol ? capCol * 2 : 512));
+      if (!g) { av_packet_free(&it.p); snprintf(err, en, "out of memory"); rr = -1; break; }
+      col = g; capCol = capCol ? capCol * 2 : 512;
+    }
+    col[nCol++] = it;
+  }
+  tAud = agoraMs() - t0;
+juntar:
+  if (rr == -2 || rr < 0) dl.parar = 1;
+  if (fio) pthread_join(th, NULL);
+  s->msTb += dl.ms;
+  if (rr == -2) {
+    if (ab == 2) s->gOk = 0;
+    s->nLarg++;
+    snprintf(err, en, "%s after %.0f ms", ab == 1 ? "the player hung up" : "the player asked for another segment", agoraMs() - t0);
+    goto fim;
+  }
+  if (!dl.b) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, dl.st); rr = -1; goto fim; }
+  if (rr < 0) { s->gOk = 0; goto passar; }
   if (s->tbMp4 && s->tbInit) {   // fMP4: the init in front, so the demuxer sees moov
-    junto = malloc(s->tbInitN + n);
+    junto = malloc(s->tbInitN + dl.n);
     if (!junto) { snprintf(err, en, "out of memory"); goto passar; }
-    memcpy(junto, s->tbInit, s->tbInitN); memcpy(junto + s->tbInitN, tb, n);
-    mem.b = junto; mem.n = s->tbInitN + n;
-  } else { mem.b = tb; mem.n = n; }
+    memcpy(junto, s->tbInit, s->tbInitN); memcpy(junto + s->tbInitN, dl.b, dl.n);
+    mem.b = junto; mem.n = s->tbInitN + dl.n;
+  } else { mem.b = dl.b; mem.n = dl.n; }
   mem.o = 0;
   { unsigned char *buf = av_malloc(65536);
     io = buf ? avio_alloc_context(buf, 65536, 0, &mem, memLer, NULL, memBuscar) : NULL;
@@ -1105,7 +1352,6 @@ static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en) {
   avformat_find_stream_info(in, NULL);
   for (i = 0; i < (int)in->nb_streams; i++) if (in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) { vi = i; break; }
   if (vi < 0) { snprintf(err, en, "no video in TorBox's segment"); goto passar; }
-  if (posicionar(s, s->audio, seg, &saltou, &como, err, en) < 0) goto passar;
   par = avcodec_parameters_alloc();
   if (!par) { snprintf(err, en, "out of memory"); goto passar; }
   parametrosSaida(s, f, par, &atb);
@@ -1127,49 +1373,68 @@ static int gerarRemux(Sessao *s, int seg, Resp *r, char *err, size_t en) {
     av_packet_free(&p);
   }
   if (!nV) { snprintf(err, en, "no video packets in TorBox's segment"); goto passar; }
-  fs = s->ini[seg] + s->origV0;
-  fe = seg + 1 < s->pl.nseg ? s->ini[seg + 1] + s->origV0 : 1e18;
-  for (;;) {
-    Item it;
-    if (!s->fN) { rr = produzir(s, f, err, en); if (rr < 0) break; if (rr == 0 && !s->fN) break; continue; }
-    it = s->fila[s->fIni];
-    if (it.t >= fe) break;
-    s->fIni = (s->fIni + 1) % FILA_MAX; s->fN--;
-    if (saltou && it.t < fs - 0.001) { av_packet_free(&it.p); continue; }
-    if (aPri < 0) aPri = it.t - s->origV0 + (s->tbOffOk ? s->tbOff : 0);
-    if (escreverAudio(s, &m, 1, it.p, srcTb, 1) < 0) { av_packet_free(&it.p); snprintf(err, en, "audio write"); rr = -1; break; }
-    av_packet_free(&it.p);
+  for (i = 0; i < nCol; i++) {
+    if (aPri < 0) aPri = col[i].t - s->origV0 + (s->tbOffOk ? s->tbOff : 0);
+    if (escreverAudio(s, &m, 1, col[i].p, srcTb, 1) < 0) { snprintf(err, en, "audio write"); goto passar; }
+    av_packet_free(&col[i].p);
     nA++;
   }
-  if (rr < 0) { s->gOk = 0; goto passar; }
   r->b = muxFim(&m, 0, 0, &r->n);
   if (!r->b) { snprintf(err, en, "out of memory"); goto passar; }
   snprintf(r->tipo, sizeof r->tipo, "video/mp2t");
   s->gSeg = seg + 1;
   s->nSeg++; s->bytes += (long long)r->n; s->msMux += agoraMs() - t0;
   if (vPri >= 0 && aPri >= 0) { s->gapUlt = aPri - vPri; s->gapOk = 1; }
-  printf("[tbaudio] remux seg %d (%.1f-%.1f s): TorBox %zu KB in %.0f ms, %d video + %d audio packets, %zu KB out in %.0f ms, %s; "
-         "A/V start gap %+.3f s\n", seg, s->ini[seg], s->ini[seg] + s->pl.seg[seg].dur, n / 1024, ms, nV, nA, r->n / 1024,
-         agoraMs() - t0, como, vPri >= 0 && aPri >= 0 ? aPri - vPri : 0.0);
+  printf("[tbaudio] remux seg %d (%.1f-%.1f s): TorBox %zu KB in %.0f ms (alongside), audio %.0f ms (%s), %d video + %d audio "
+         "packets, %zu KB out, total %.0f ms; A/V start gap %+.3f s\n", seg, s->ini[seg], s->ini[seg] + s->pl.seg[seg].dur,
+         dl.n / 1024, dl.ms, tAud, como, nV, nA, r->n / 1024, agoraMs() - t0, vPri >= 0 && aPri >= 0 ? aPri - vPri : 0.0);
   fflush(stdout);
-  avcodec_parameters_free(&par);
-  avformat_close_input(&in);
-  if (io) { av_freep(&io->buffer); avio_context_free(&io); }
-  free(junto); free(tb);
-  return 0;
+  rr = 0;
+  goto fim;
 passar:
-  // Any failure: TorBox's segment as it is, with its own audio.
+  // Any failure after the download: TorBox's segment as it is, with its own audio.
   muxFechar(&m);
-  avcodec_parameters_free(&par);
-  if (in) avformat_close_input(&in);
-  if (io) { av_freep(&io->buffer); avio_context_free(&io); }
-  free(junto);
   s->nPass++;
   snprintf(s->ultErro, sizeof s->ultErro, "%s", err);
   printf("[tbaudio] remux seg %d: passing TorBox's segment through with its own audio (%s)\n", seg, err);
   fflush(stdout);
-  r->b = tb; r->n = n;
+  r->b = dl.b; r->n = dl.n; dl.b = NULL;
   snprintf(r->tipo, sizeof r->tipo, s->tbMp4 ? "video/mp4" : "video/mp2t");
+  rr = 0;
+fim:
+  muxFechar(&m);
+  avcodec_parameters_free(&par);
+  if (in) avformat_close_input(&in);
+  if (io) { av_freep(&io->buffer); avio_context_free(&io); }
+  for (i = 0; i < nCol; i++) av_packet_free(&col[i].p);
+  free(col); free(junto); free(dl.b);
+  return rr;
+}
+
+// Parallel (strip): TorBox's video segment without its audio. vm, not gm: the
+// video never waits behind the audio generator.
+static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
+  double ms = 0, t0 = agoraMs();
+  size_t n = 0, k = 0;
+  int st = 0, nA = 0;
+  unsigned char *b = baixar(s, s->pl.seg[seg].uri, TB_SEG_MAX, &n, NULL, 0, &st, &ms);
+  if (!b) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, st); return -1; }
+  if (s->tbMp4) {
+    if (!s->stripAviso++) { printf("[tbaudio] TorBox's segments are fMP4: passed as they are (only MPEG-TS is stripped)\n"); fflush(stdout); }
+    r->b = b; r->n = n; snprintf(r->tipo, sizeof r->tipo, "video/mp4");
+    return 0;
+  }
+  r->b = malloc(n + 1);
+  if (r->b && tba_ts_sem_audio(b, n, r->b, &k, &nA)) {
+    free(b); r->n = k;
+  } else {
+    if (!s->stripAviso++) { printf("[tbaudio] TorBox's audio could not be removed from segment %d (the clock is on it, or a PMT over 1 packet): passed as it is\n", seg); fflush(stdout); }
+    free(r->b); r->b = b; r->n = n;
+  }
+  snprintf(r->tipo, sizeof r->tipo, "video/mp2t");
+  s->nVid++; s->msVid += agoraMs() - t0;
+  printf("[tbaudio] video seg %d: TorBox %zu KB in %.0f ms, %d audio stream(s) removed, %zu KB out\n", seg, n / 1024, ms, nA, r->n / 1024);
+  fflush(stdout);
   return 0;
 }
 
@@ -1190,20 +1455,39 @@ static void tx(Txt *t, const char *fmt, ...) {
   }
 }
 static double durSeg(const Sessao *s, int i) { return i == s->pl.nseg - 1 ? s->ultimo : s->pl.seg[i].dur; }
-static void plMidia(Sessao *s, Txt *t, const char *pref, const char *ext, int mapa, const char *nomeMapa) {
+// TorBox's segments (Remux, Parallel strip video).
+static void plMidia(Sessao *s, Txt *t, const char *pref, const char *ext) {
   double max = 0;
   int i;
   for (i = 0; i < s->pl.nseg; i++) if (durSeg(s, i) > max) max = durSeg(s, i);
-  tx(t, "#EXTM3U\n#EXT-X-VERSION:%d\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
-        "#EXT-X-INDEPENDENT-SEGMENTS\n", mapa ? 7 : 3, (int)ceil(max));
-  if (mapa) tx(t, "#EXT-X-MAP:URI=\"%s\"\n", nomeMapa);
+  tx(t, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        "#EXT-X-INDEPENDENT-SEGMENTS\n", (int)ceil(max));
   for (i = 0; i < s->pl.nseg; i++) tx(t, "#EXTINF:%.6f,\n%s%d%s\n", durSeg(s, i), pref, i, ext);
+  tx(t, "#EXT-X-ENDLIST\n");
+}
+// One audio rendition: AUD_SEG_S segments (short: a seek reads ~2 s).
+static void plAudio(Sessao *s, Txt *t, int k) {
+  int i, mp4 = s->fx[k].modo == M_MP4;
+  tx(t, "#EXTM3U\n#EXT-X-VERSION:%d\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        "#EXT-X-INDEPENDENT-SEGMENTS\n", mp4 ? 7 : 3, (int)ceil(AUD_SEG_S));
+  if (mp4) tx(t, "#EXT-X-MAP:URI=\"a%d_init.mp4\"\n", k);
+  for (i = 0; i < s->naSeg; i++) tx(t, "#EXTINF:%.6f,\na%d_%d%s\n", s->aIni[i + 1] - s->aIni[i], k, i, mp4 ? ".m4s" : ".ts");
   tx(t, "#EXT-X-ENDLIST\n");
 }
 static void nomeRendicao(const Faixa *f, char *o, size_t n) {
   char *c;
   snprintf(o, n, "%s %d (%s %dch)", f->nome[0] ? f->nome : nomeLingua(f->lingua), f->ord + 1, f->codec, f->canais);
   for (c = o; *c; c++) if (*c == '"' || *c == ',' || (unsigned char)*c < 32) *c = ' ';
+}
+static const char *codecsAudio(const Faixa *f) {
+  switch (f->modo) {
+    case M_AC3: return "ac-3";
+    case M_AAC: return "mp4a.40.2";
+    case M_MP4: return "fLaC";
+    default:
+      return f->id == AV_CODEC_ID_AC3 ? "ac-3" : f->id == AV_CODEC_ID_EAC3 ? "ec-3" : f->id == AV_CODEC_ID_OPUS ? "Opus" :
+             f->id == AV_CODEC_ID_MP3 ? "mp4a.40.34" : f->id == AV_CODEC_ID_MP2 ? "mp4a.40.33" : "mp4a.40.2";
+  }
 }
 static void plMaster(Sessao *s, Txt *t) {
   int i, mp4 = 0;
@@ -1223,7 +1507,21 @@ static void plMaster(Sessao *s, Txt *t) {
   }
   tx(t, "#EXT-X-STREAM-INF:BANDWIDTH=%ld,AUDIO=\"aud\"", s->banda > 0 ? s->banda + 1500000 : 12000000L);
   if (s->resolucao[0]) tx(t, ",RESOLUTION=%s", s->resolucao);
-  tx(t, "\nv.m3u8\n");
+  // Codecs hint: the variant names its video codec and only the renditions'
+  // audio codecs, so the player knows the audio is not inside the video.
+  if (s->modo == TBA_PARALELO && s->codecsV[0]) {
+    char lista[160];
+    size_t k = 0;
+    lista[0] = 0;
+    for (i = 0; i < s->nfx; i++) {
+      const char *c;
+      if (s->fx[i].modo == M_FORA) continue;
+      c = codecsAudio(&s->fx[i]);
+      if (!strstr(lista, c) && k + strlen(c) + 2 < sizeof lista) k += (size_t)snprintf(lista + k, sizeof lista - k, ",%s", c);
+    }
+    tx(t, ",CODECS=\"%s%s\"", s->codecsV, lista);
+  }
+  tx(t, "\n%s\n", s->modo == TBA_PARALELO_SEM && !s->tbMp4 ? "vs.m3u8" : "v.m3u8");
 }
 
 // ---- HTTP ---------------------------------------------------------------------------
@@ -1258,11 +1556,20 @@ static int esperarPronto(Sessao *s) {
   pthread_mutex_unlock(&s->m);
   return ok;
 }
+// A generated answer: -2 = stopped (close the connection, nothing sent).
+static int entregar(int so, Sessao *s, const char *nome, int e, Resp *r, const char *err, int manter, int head) {
+  if (e == -2) { printf("[tbaudio] %s dropped: %s\n", nome, err); fflush(stdout); return 0; }
+  if (e < 0) {
+    if (!s->cancel) { s->nErro++; snprintf(s->ultErro, sizeof s->ultErro, "%s", err); printf("[tbaudio] %s failed: %s\n", nome, err); fflush(stdout); }
+    return responder(so, 502, NULL, "", 0, 0, head, s) && 0;
+  }
+  return responder(so, 200, r->tipo, r->b, r->n, manter, head, s);
+}
 // One request. Returns 0 to close the connection.
 static int atender(int so, const char *metodo, const char *caminho, int manter) {
   Sessao *s = pegar();
   char nome[128], err[160] = "";
-  int head = !strcmp(metodo, "HEAD"), k = -1, i = -1, ok = 1;
+  int head = !strcmp(metodo, "HEAD"), k = -1, i = -1, ok = 1, e;
   size_t lt;
   Resp r;
   double t0 = agoraMs();
@@ -1278,13 +1585,11 @@ static int atender(int so, const char *metodo, const char *caminho, int manter) 
     ok = responder(so, 503, NULL, "", 0, 0, head, s) && 0;
     soltar(s); return ok;
   }
-  if (!strcmp(nome, "master.m3u8") || !strcmp(nome, "r.m3u8")) {
+  if (!strcmp(nome, "master.m3u8") || !strcmp(nome, "r.m3u8") || !strcmp(nome, "vs.m3u8")) {
     Txt t = { 0 };
-    pthread_mutex_lock(&s->gm);
-    if (nome[0] == 'm') plMaster(s, &t); else plMidia(s, &t, "r_", ".ts", 0, NULL);
-    pthread_mutex_unlock(&s->gm);
+    if (nome[0] == 'm') plMaster(s, &t); else if (nome[0] == 'r') plMidia(s, &t, "r_", ".ts"); else plMidia(s, &t, "v_", ".ts");
     ok = t.b && responder(so, 200, "application/vnd.apple.mpegurl", t.b, t.n, manter, head, s);
-    printf("[tbaudio] %s served (%zu bytes)\n", nome, t.n);
+    printf("[tbaudio] %s served (%zu bytes)%s\n", nome, t.n, nome[0] == 'v' ? ": TorBox's video through Nuvio, its audio removed" : "");
     fflush(stdout);
     free(t.b);
   } else if (!strcmp(nome, "v.m3u8")) {
@@ -1293,45 +1598,47 @@ static int atender(int so, const char *metodo, const char *caminho, int manter) 
     fflush(stdout);
   } else if (sscanf(nome, "a%d.m3u8", &k) == 1 && strstr(nome, ".m3u8") && !strchr(nome, '_')) {
     Txt t = { 0 };
-    char pref[16], mapa[24];
     if (k < 0 || k >= s->nfx || s->fx[k].modo == M_FORA) { soltar(s); return responder(so, 404, NULL, "", 0, manter, head, s); }
-    snprintf(pref, sizeof pref, "a%d_", k); snprintf(mapa, sizeof mapa, "a%d_init.mp4", k);
-    pthread_mutex_lock(&s->gm);
-    plMidia(s, &t, pref, s->fx[k].modo == M_MP4 ? ".m4s" : ".ts", s->fx[k].modo == M_MP4, mapa);
-    pthread_mutex_unlock(&s->gm);
+    plAudio(s, &t, k);
     ok = t.b && responder(so, 200, "application/vnd.apple.mpegurl", t.b, t.n, manter, head, s);
-    printf("[tbaudio] audio playlist a%d (audio %d, %s) served\n", k, s->fx[k].ord, MODO_NOME[s->fx[k].modo]);
+    printf("[tbaudio] audio playlist a%d (audio %d, %s, %d segments of %.0f s) served\n", k, s->fx[k].ord, MODO_NOME[s->fx[k].modo],
+           s->naSeg, AUD_SEG_S);
     fflush(stdout);
     free(t.b);
   } else if (sscanf(nome, "a%d_init.mp4", &k) == 1 && strstr(nome, "_init.mp4")) {
-    int e;
     if (k < 0 || k >= s->nfx || s->fx[k].modo != M_MP4) { soltar(s); return responder(so, 404, NULL, "", 0, manter, head, s); }
     pthread_mutex_lock(&s->gm);
-    e = gerarAudio(s, k, -1, &r, err, sizeof err);
+    e = gerarAudio(s, k, -1, &r, err, sizeof err, -1, -1);
     pthread_mutex_unlock(&s->gm);
     printf("[tbaudio] a%d init: %s (%zu bytes)\n", k, e < 0 ? err : "ok", r.n);
     fflush(stdout);
-    ok = e < 0 ? responder(so, 502, NULL, "", 0, 0, head, s) && 0 : responder(so, 200, r.tipo, r.b, r.n, manter, head, s);
+    ok = entregar(so, s, nome, e, &r, err, manter, head);
   } else if (sscanf(nome, "a%d_%d.", &k, &i) == 2) {
-    int e;
-    if (k < 0 || k >= s->nfx || s->fx[k].modo == M_FORA || i < 0 || i >= s->pl.nseg) {
+    long chave = (long)(k + 1) * 1000000L + i;
+    if (k < 0 || k >= s->nfx || s->fx[k].modo == M_FORA || i < 0 || i >= s->naSeg) {
       soltar(s); return responder(so, 404, NULL, "", 0, manter, head, s);
     }
+    atomic_store(&s->espChave, chave); atomic_fetch_add(&s->espera, 1);
     pthread_mutex_lock(&s->gm);
-    e = gerarAudio(s, k, i, &r, err, sizeof err);
-    if (e < 0) { s->nErro++; snprintf(s->ultErro, sizeof s->ultErro, "%s", err); }
+    atomic_fetch_sub(&s->espera, 1);
+    e = gerarAudio(s, k, i, &r, err, sizeof err, so, chave);
     pthread_mutex_unlock(&s->gm);
-    if (e < 0) { printf("[tbaudio] audio seg a%d_%d failed: %s\n", k, i, err); fflush(stdout); }
-    ok = e < 0 ? responder(so, 502, NULL, "", 0, 0, head, s) && 0 : responder(so, 200, r.tipo, r.b, r.n, manter, head, s);
+    ok = entregar(so, s, nome, e, &r, err, manter, head);
   } else if (sscanf(nome, "r_%d.ts", &i) == 1) {
-    int e;
+    long chave = i;
     if (i < 0 || i >= s->pl.nseg) { soltar(s); return responder(so, 404, NULL, "", 0, manter, head, s); }
+    atomic_store(&s->espChave, chave); atomic_fetch_add(&s->espera, 1);
     pthread_mutex_lock(&s->gm);
-    e = gerarRemux(s, i, &r, err, sizeof err);
-    if (e < 0) { s->nErro++; snprintf(s->ultErro, sizeof s->ultErro, "%s", err); }
+    atomic_fetch_sub(&s->espera, 1);
+    e = gerarRemux(s, i, &r, err, sizeof err, so, chave);
     pthread_mutex_unlock(&s->gm);
-    if (e < 0) { printf("[tbaudio] remux seg %d failed: %s\n", i, err); fflush(stdout); }
-    ok = e < 0 ? responder(so, 502, NULL, "", 0, 0, head, s) && 0 : responder(so, 200, r.tipo, r.b, r.n, manter, head, s);
+    ok = entregar(so, s, nome, e, &r, err, manter, head);
+  } else if (sscanf(nome, "v_%d.ts", &i) == 1) {
+    if (i < 0 || i >= s->pl.nseg) { soltar(s); return responder(so, 404, NULL, "", 0, manter, head, s); }
+    pthread_mutex_lock(&s->vm);
+    e = gerarVideo(s, i, &r, err, sizeof err);
+    pthread_mutex_unlock(&s->vm);
+    ok = entregar(so, s, nome, e, &r, err, manter, head);
   } else ok = responder(so, 404, NULL, "", 0, manter, head, s);
   if (r.b && (agoraMs() - t0) > 4000) { printf("[tbaudio] %s took %.0f ms (the player waited)\n", nome, agoraMs() - t0); fflush(stdout); }
   free(r.b);
@@ -1418,6 +1725,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   pthread_t t;
   if (out && n) out[0] = 0;
   if (!tbUrl || !*tbUrl || !orig || !*orig || !out) return 0;
+  if (modo != TBA_REMUX && modo != TBA_PARALELO && modo != TBA_PARALELO_SEM) return 0;   // TorBox audio: no session
   tba_fechar();
   pthread_mutex_lock(&trava);
   if (!subirServidor()) { pthread_mutex_unlock(&trava); printf("[tbaudio] local server did not start\n"); return 0; }
@@ -1426,7 +1734,9 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   if (!s) return 0;
   atomic_store(&s->refs, 2);   // the API's, the preparation's
   pthread_mutex_init(&s->m, NULL); pthread_cond_init(&s->c, NULL); pthread_mutex_init(&s->gm, NULL);
-  s->modo = modo == TBA_REMUX ? TBA_REMUX : TBA_PARALELO; s->flacConv = flacConv ? 1 : 0;
+  pthread_mutex_init(&s->vm, NULL);
+  atomic_store(&s->espChave, -1L);
+  s->modo = modo; s->flacConv = flacConv ? 1 : 0;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1;
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
   gerarToken(s->tok, 28);
@@ -1438,7 +1748,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   else pthread_detach(t);
   snprintf(out, n, "http://127.0.0.1:%d/%s/%s", porta, s->tok, s->modo == TBA_REMUX ? "r.m3u8" : "master.m3u8");
   printf("[tbaudio] session open: %s, audio %d, FLAC %s; the player opens http://127.0.0.1:%d/<token>/%s\n",
-         s->modo == TBA_REMUX ? "Remux" : "Parallel", ordinal, s->flacConv ? "converted" : "as is", porta,
+         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is", porta,
          s->modo == TBA_REMUX ? "r.m3u8" : "master.m3u8");
   fflush(stdout);
   return 1;
@@ -1452,8 +1762,8 @@ void tba_fechar(void) {
   s->cancel = 1;
   if (s->eng) dts_engine_interrupt(s->eng, 1);
   pthread_mutex_lock(&s->m); pthread_cond_broadcast(&s->c); pthread_mutex_unlock(&s->m);
-  printf("[tbaudio] session closed: %ld segments, %lld KB out, %ld passed through, %ld failed%s%s\n",
-         s->nSeg, s->bytes / 1024, s->nPass, s->nErro, s->ultErro[0] ? "; last error: " : "", s->ultErro);
+  printf("[tbaudio] session closed: %ld segments, %lld KB out, %ld passed through, %ld dropped, %ld failed%s%s\n",
+         s->nSeg, s->bytes / 1024, s->nPass, s->nLarg, s->nErro, s->ultErro[0] ? "; last error: " : "", s->ultErro);
   fflush(stdout);
   soltar(s);
 }
@@ -1533,10 +1843,11 @@ void tba_log(void) {
   if (s) {
     char gap[48] = "";
     if (s->gapOk) snprintf(gap, sizeof gap, ", last A/V start gap %+.3f s", s->gapUlt);
-    printf("[tbaudio] 10s: %s, %s, %ld segments (%lld KB), avg %.0f ms each%s; passed through %ld, failed %ld%s%s\n",
-           s->modo == TBA_REMUX ? "Remux" : "Parallel", s->pronto ? "ready" : s->falhou ? "failed" : "preparing",
-           s->nSeg, s->bytes / 1024, s->nSeg ? (s->msLer + s->msMux + s->msTb) / s->nSeg : 0.0,
-           gap, s->nPass, s->nErro, s->ultErro[0] ? "; last: " : "", s->ultErro);
+    printf("[tbaudio] 10s: %s, %s, %ld segments (%lld KB), avg %.0f ms each%s; video segments %ld (avg %.0f ms); "
+           "passed through %ld, dropped %ld, failed %ld%s%s\n",
+           modoNome(s->modo), s->pronto ? "ready" : s->falhou ? "failed" : "preparing",
+           s->nSeg, s->bytes / 1024, s->nSeg ? (s->msLer + s->msMux) / s->nSeg : 0.0,
+           gap, s->nVid, s->nVid ? s->msVid / s->nVid : 0.0, s->nPass, s->nLarg, s->nErro, s->ultErro[0] ? "; last: " : "", s->ultErro);
     fflush(stdout);
   }
   soltar(s);

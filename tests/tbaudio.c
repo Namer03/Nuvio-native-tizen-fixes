@@ -1,5 +1,5 @@
 // tests/tbaudio.sh: original audio with TorBox burn-in (src/dts/tbaudio_tpk.c).
-//   tbaudio puros <ts> <init.mp4> <seg.m4s>   pure helpers on real files
+//   tbaudio puros <ts> <init.mp4> <seg.m4s> <stripped.ts>   pure helpers on real files
 //   tbaudio sessao <tb m3u8> <orig> <modo> <ordinal> <flac> <urlfile>
 //       opens a session, writes the player URL to <urlfile>, serves until killed.
 #include "../src/dts/tbaudio_tpk.h"
@@ -23,7 +23,7 @@ static unsigned char *ler(const char *c, size_t *n) {
   return b;
 }
 
-static int puros(const char *ts, const char *init, const char *seg) {
+static int puros(const char *ts, const char *init, const char *seg, const char *semAudio) {
   char o[512];
   TbaPl pl;
   size_t n;
@@ -70,6 +70,16 @@ static int puros(const char *ts, const char *init, const char *seg) {
   b = ler(ts, &n);
   ok("TS: first video PTS of the fixture (1.4 s, ffmpeg's default offset)", b && tba_ts_primeiro_pts(b, n, &s) && s > 1.39 && s < 1.45);
   printf("     (TS first PTS %.4f)\n", b ? s : -1.0);
+  if (b) {
+    unsigned char *o = malloc(n);
+    size_t k = 0;
+    int rem = 0;
+    FILE *f;
+    ok("TS strip: audio removed (1 stream), smaller, whole packets", o && tba_ts_sem_audio(b, n, o, &k, &rem) && rem == 1 && k < n && k % 188 == 0);
+    if (o && (f = fopen(semAudio, "wb"))) { fwrite(o, 1, k, f); fclose(f); }
+    ok("TS strip: nothing to strip in non-TS bytes", !tba_ts_sem_audio((const unsigned char *)"not a transport stream at all", 30, o, &k, &rem));
+    free(o);
+  }
   free(b);
   b = ler(init, &n);
   ok("fMP4 init: video timescale", b && tba_mp4_escala(b, n, &esc) && esc > 0);
@@ -83,7 +93,7 @@ static int puros(const char *ts, const char *init, const char *seg) {
 }
 
 int main(int argc, char **argv) {
-  if (argc == 5 && !strcmp(argv[1], "puros")) return puros(argv[2], argv[3], argv[4]);
+  if (argc == 6 && !strcmp(argv[1], "puros")) return puros(argv[2], argv[3], argv[4], argv[5]);
   if (argc == 8 && !strcmp(argv[1], "sessao")) {
     char url[256];
     FILE *f;

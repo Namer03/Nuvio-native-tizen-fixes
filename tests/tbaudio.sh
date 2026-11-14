@@ -43,7 +43,8 @@ inicio() { ffprobe -v error -select_streams "$2" -show_entries stream=start_time
 perto() { awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'; }
 codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,channels -of csv=p=0 "$1" | head -1; }
 
-"$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" || fail=1
+"$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
+check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
 sessao() {   # <playlist path> <modo> <ordinal> <flac>
   rm -f "$work/url"
@@ -54,8 +55,9 @@ sessao() {   # <playlist path> <modo> <ordinal> <flac>
 }
 fim() { kill "$sp" 2>/dev/null || true; wait "$sp" 2>/dev/null || true; }
 
-# 1. Parallel over MPEG-TS: every codec, on TorBox's timeline.
-sessao tb/playlist.m3u8 0 0 0
+# Modes: 1 Remux, 2 Parallel (codecs hint), 3 Parallel (strip TorBox audio).
+# 1. Parallel over MPEG-TS: every codec, on TorBox's timeline, 2 s segments.
+sessao tb/playlist.m3u8 2 0 0
 curl -s "$U" > "$work/out/master.m3u8"
 check "master: one rendition per audio track (5)" "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master.m3u8') = 5 ]"
 check "master: the chosen track is DEFAULT" "grep -q 'DEFAULT=YES.*URI=\"a0.m3u8\"' '$work/out/master.m3u8'"
@@ -63,8 +65,12 @@ curl -s "$B/v.m3u8" > "$work/out/v.m3u8"
 check "video playlist: TorBox's segments, absolute URLs" "grep -q '^http://127.0.0.1:$port/tb/s0.ts' '$work/out/v.m3u8'"
 check "S3: the last #EXTINF matches the file (2.0 s, TorBox said 5)" "tail -3 '$work/out/v.m3u8' | grep -qE '^#EXTINF:2\\.0[0-9]*,'"
 check "no URL of the source in the log" "! grep -q 'token=secret\\|orig.mkv' '$work/s.log'"
-for k in 0 1 3 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_2.ts"; done
-curl -s -o "$work/out/a2i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2_2.m4s" "$B/a2_2.m4s"
+check "codecs hint: CODECS names the video and the renditions' audio" "grep -qE 'CODECS=\"avc1\\.[0-9A-F]{6},mp4a\\.40\\.2,ac-3,fLaC,Opus\"' '$work/out/master.m3u8'"
+curl -s "$B/a0.m3u8" > "$work/out/a0.m3u8"
+check "audio playlist: 2 s segments (16 for 32 s)" "grep -q '^#EXT-X-TARGETDURATION:2' '$work/out/a0.m3u8' && [ \$(grep -c '^a0_' '$work/out/a0.m3u8') = 16 ]"
+check "seek index read at preparation" "grep -q 'seek index read' '$work/s.log'"
+for k in 0 1 3 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
+curl -s -o "$work/out/a2i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2_2.m4s" "$B/a2_5.m4s"
 cat "$work/out/a2i.mp4" "$work/out/a2_2.m4s" > "$work/out/flac.mp4"
 v2=$(inicio "$work/src/tb/s2.ts" v)
 check "AAC copied, starts with TorBox's video segment ($(inicio "$work/out/a0_2.ts" a) vs $v2)" "[ '$(codec "$work/out/a0_2.ts")' = 'aac,2' ] && perto $(inicio "$work/out/a0_2.ts" a) $v2 0.05"
@@ -76,10 +82,26 @@ timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 12 -c copy "$work/o
 check "a player reads the master: video + audio, starts together" \
   "[ -s '$work/out/play.ts' ] && perto $(inicio "$work/out/play.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/play.ts" a 2>/dev/null || echo 0) 0.05"
 check "the session got ready" "grep -q 'ready in' '$work/s.log'"
+# A request the player gives up on is dropped, and the next one is not kept waiting.
+curl -s -m 0.3 -o /dev/null "$B/a4_14.ts" || true
+t0=$(date +%s%N); curl -s -o "$work/out/after.ts" "$B/a4_3.ts"; t1=$(date +%s%N)
+check "after a hang-up the next segment comes ($(( (t1 - t0) / 1000000 )) ms)" "[ -s '$work/out/after.ts' ] && [ \$(( (t1 - t0) / 1000000 )) -lt 5000 ]"
+fim
+
+# 1b. Parallel, strip TorBox's audio: the video through Nuvio without audio.
+sessao tb/playlist.m3u8 3 0 0
+curl -s "$U" > "$work/out/ms.m3u8"
+check "strip: the master points at Nuvio's video playlist" "grep -q '^vs.m3u8' '$work/out/ms.m3u8' && ! grep -q CODECS '$work/out/ms.m3u8'"
+curl -s "$B/vs.m3u8" | grep -q '^v_0.ts' && curl -s -o "$work/out/v2.ts" "$B/v_2.ts"
+check "strip: video segment without audio, same start as TorBox's" \
+  "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/v2.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ] && perto $(inicio "$work/out/v2.ts" v 2>/dev/null || echo 0) $(inicio "$work/src/tb/s2.ts" v) 0.001"
+timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 12 -c copy "$work/out/plays.ts" || true
+check "strip: a player reads it, video + Nuvio's audio together" \
+  "[ -s '$work/out/plays.ts' ] && perto $(inicio "$work/out/plays.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/plays.ts" a 2>/dev/null || echo 0) 0.05"
 fim
 
 # 2. FLAC converted (test row), Parallel.
-sessao tb/playlist.m3u8 0 2 1
+sessao tb/playlist.m3u8 2 2 1
 curl -s -o "$work/out/f.ts" "$B/a2_3.ts"
 check "FLAC converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/f.ts"))" "[ '$(codec "$work/out/f.ts")' = 'aac,2' ]"
 fim
@@ -87,6 +109,7 @@ fim
 # 3. Remux: TorBox's video + the original audio in one MPEG-TS.
 sessao tb/playlist.m3u8 1 4 0
 for i in 0 1 6; do curl -s -o "$work/out/r$i.ts" "$B/r_$i.ts"; done
+check "remux: TorBox's segment downloads alongside the audio" "grep -q '(alongside)' '$work/s.log'"
 check "remux: video + AC3 5.1 from DTS" "ffprobe -v error -show_entries stream=codec_name -of csv=p=0 '$work/out/r1.ts' | tr '\n' ' ' | grep -q 'h264 ac3'"
 check "remux: audio starts with the video ($(inicio "$work/out/r1.ts" a) vs $(inicio "$work/out/r1.ts" v))" \
   "perto $(inicio "$work/out/r1.ts" a) $(inicio "$work/out/r1.ts" v) 0.05"
@@ -94,7 +117,7 @@ check "remux: the last segment too" "[ -s '$work/out/r6.ts' ] && ffprobe -v erro
 fim
 
 # 4. fMP4 TorBox behind a master playlist, both modes.
-sessao tb4/master.m3u8 0 1 0
+sessao tb4/master.m3u8 2 1 0
 curl -s -o "$work/out/m1.ts" "$B/a1_2.ts"
 check "fMP4 source: first PTS from tfdt, audio placed" "grep -q \"TorBox's first video PTS: 0.000 s\" '$work/s.log' && [ '$(codec "$work/out/m1.ts")' = 'ac3,6' ]"
 fim

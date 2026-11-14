@@ -520,6 +520,9 @@ void faixas_abrir(void) { faixas_abrir_em(0); }
 // com as duas colunas lado a lado (comparar o par escolhido e o motivo dele
 // existir); o que muda e onde o foco comeca.
 void faixas_abrir_em(int col) {
+#ifdef NV_TPK
+  video_tpk_tba_soltar();   // a value changed without OK last time is not kept
+#endif
   int n;
   aberta = 1;
   modo = (col == 1) ? 1 : 0;
@@ -1495,6 +1498,14 @@ void faixas_evento(const SDL_Event *e) {
   // Na de audio nao ha para onde ir — antes elas pulavam para a coluna de
   // legenda, que e justamente o que fazia os dois botoes do player parecerem o
   // mesmo botao.
+#ifdef NV_TPK
+  // Original audio / FLAC rows (tbburn.h): Left/Right change the value shown,
+  // OK applies it (aplicar).
+  if (!modo && coluna == 0 && foco[0] >= video_n_audio() && (k == SDLK_LEFT || k == SDLK_RIGHT)) {
+    video_tpk_tba_passo(foco[0] - video_n_audio(), k == SDLK_RIGHT ? 1 : -1);
+    return;
+  }
+#endif
   if (k == SDLK_LEFT || k == SDLK_RIGHT) return;
   if (k == SDLK_UP)    { if (foco[coluna] > 0) foco[coluna]--; ajustarRolagem(); return; }
   if (k == SDLK_DOWN)  { if (foco[coluna] < nLinhas(coluna) - 1) foco[coluna]++;

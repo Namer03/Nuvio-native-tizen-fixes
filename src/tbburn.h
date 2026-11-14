@@ -101,11 +101,16 @@ int  video_tpk_leg_queimavel(int i);
 // 1 = burned in is on (or being asked for) and `i` is burnable: hidden from Main/Second.
 int  video_tpk_leg_oculta(int i);
 // Audio menu rows under the tracks (faixas.c), original audio with burn-in
-// (dts/tbaudio_tpk.h): 0 = "Original audio: Parallel | Remux" (saves Settings;
-// reopens while burned), 1 = "FLAC: As is | Convert" (files with FLAC).
+// (dts/tbaudio_tpk.h): 0 = "Original audio: TorBox audio | Remux | Parallel
+// (codecs hint) | Parallel (strip TorBox audio)" (saves Settings; reopens while
+// burned), 1 = "FLAC: As is | Convert" (files with FLAC).
 int  video_tpk_tba_linhas(void);
 void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns);
 void video_tpk_tba_ok(int k);
+// Left/Right on a row: changes the value shown only; OK applies (owner 14/11).
+void video_tpk_tba_passo(int k, int dir);
+// The sheet opened or closed without OK: back to the current values.
+void video_tpk_tba_soltar(void);
 #endif
 
 // ---- pure (tests) ----------------------------------------------------------

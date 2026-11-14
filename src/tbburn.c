@@ -240,7 +240,9 @@ static int pegarIds(const Pedido *p, int *item, int *arquivo, int *usenet, char 
   int achou;
   *usenet = 0;
   pthread_mutex_lock(&trava);
-  if (ids.procurou && !strcmp(ids.url, p->url)) {
+  // Only a FOUND file is reused: a miss is looked up again next time (owner
+  // 14/11, Horimiya E07: one miss was reused for every retry).
+  if (ids.procurou && ids.achou && !strcmp(ids.url, p->url)) {
     *item = ids.item; *arquivo = ids.arquivo; *usenet = ids.usenet; snprintf(como, n, "%.56s (remembered)", ids.como);
     achou = ids.achou;
     pthread_mutex_unlock(&trava);

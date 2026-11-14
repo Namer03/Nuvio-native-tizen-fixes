@@ -606,9 +606,10 @@ int   ajustes_legenda_sync_audio_movel(void); // 1 = it may sample the film on m
 // embedded ASS in with TorBox is On AND the plan is Pro (.tpk only; else 0).
 int   ajustes_tb_pro(void);
 int   ajustes_leg_queimar(void);
-// Original audio with TorBox burn-in (dts/tbaudio_tpk.h): 1 = Remux, 0 = Parallel.
-int   ajustes_tb_audio_remux(void);
-void  ajustes_definir_tb_audio_remux(int remux);
+// Original audio with TorBox burn-in (dts/tbaudio_tpk.h): TBA_TORBOX (0, default),
+// TBA_REMUX, TBA_PARALELO (codecs hint), TBA_PARALELO_SEM (strip TorBox audio).
+int   ajustes_tb_audio_modo(void);
+void  ajustes_definir_tb_audio_modo(int modo);
 // The second subtitle's style fields, for the player's Style column (Main /
 // Second). _leg2_op gives the setting behind a field (-1 none); _op_* read and
 // step any setting like Left/Right in Settings (saved, applied live).
